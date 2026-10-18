@@ -1,0 +1,3654 @@
+[
+ {
+  "type": "agent_start"
+ },
+ {
+  "type": "turn_start"
+ },
+ {
+  "type": "message_start",
+  "message": {
+   "role": "system",
+   "content": "",
+   "sections": {
+    "preamble": "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.",
+    "tools": "<tools>\n- read: Read file contents\n- edit: Make precise file edits with exact text replacement, including multiple disjoint edits in one call\n- bash: Execute bash commands (ls, grep, find, etc.)\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n</tools>",
+    "rules": "<rules>\n- Use bash for file operations like ls, rg, find\n- Use read to examine files instead of cat or sed.\n- Use edit for precise changes (edits[].oldText must match exactly)\n- When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls\n- Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.\n- Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.\n- You can inspect PI_* environment variables for current model and session details.\n- Be concise in your responses\n- Show file paths clearly when working with files\n</rules>",
+    "docs": "<docs>\nPi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: /Users/dev/ws/flypi/node_modules/@earendil-works/pi-coding-agent/README.md\n- Additional docs: /Users/dev/ws/flypi/node_modules/@earendil-works/pi-coding-agent/docs\n- Examples: /Users/dev/ws/flypi/node_modules/@earendil-works/pi-coding-agent/examples (extensions, custom tools, SDK)\n- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory\n- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md), MCP servers (docs/mcp.md), codemode scripts and non-LLM models such as classifiers and image models (docs/codemode.md)\n- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing\n- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)\n</docs>",
+    "cwd": "<cwd>\n<root>\n</cwd>"
+   },
+   "toolsAdded": [
+    {
+     "name": "read",
+     "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "path"
+      ],
+      "properties": {
+       "path": {
+        "type": "string",
+        "description": "Path to the file to read (relative or absolute)"
+       },
+       "offset": {
+        "type": "number",
+        "description": "Line number to start reading from (1-indexed)"
+       },
+       "limit": {
+        "type": "number",
+        "description": "Maximum number of lines to read"
+       }
+      }
+     },
+     "constrainedSampling": {
+      "type": "json_schema",
+      "strict": "prefer"
+     }
+    },
+    {
+     "name": "edit",
+     "description": "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "path",
+       "edits"
+      ],
+      "properties": {
+       "path": {
+        "type": "string",
+        "description": "Path to the file to edit (relative or absolute)"
+       },
+       "edits": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "required": [
+          "oldText",
+          "newText"
+         ],
+         "properties": {
+          "oldText": {
+           "type": "string",
+           "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+          },
+          "newText": {
+           "type": "string",
+           "description": "Replacement text for this targeted edit."
+          }
+         }
+        },
+        "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
+       }
+      }
+     },
+     "constrainedSampling": {
+      "type": "json_schema",
+      "strict": "prefer"
+     }
+    },
+    {
+     "name": "bash",
+     "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "command"
+      ],
+      "properties": {
+       "command": {
+        "type": "string",
+        "description": "Shell command to execute"
+       },
+       "timeout": {
+        "type": "number",
+        "description": "Timeout in seconds (optional, no default timeout)"
+       }
+      }
+     },
+     "constrainedSampling": {
+      "type": "json_schema",
+      "strict": "prefer"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "type": "message_end",
+  "message": {
+   "role": "system",
+   "content": "",
+   "sections": {
+    "preamble": "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.",
+    "tools": "<tools>\n- read: Read file contents\n- edit: Make precise file edits with exact text replacement, including multiple disjoint edits in one call\n- bash: Execute bash commands (ls, grep, find, etc.)\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n</tools>",
+    "rules": "<rules>\n- Use bash for file operations like ls, rg, find\n- Use read to examine files instead of cat or sed.\n- Use edit for precise changes (edits[].oldText must match exactly)\n- When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls\n- Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.\n- Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.\n- You can inspect PI_* environment variables for current model and session details.\n- Be concise in your responses\n- Show file paths clearly when working with files\n</rules>",
+    "docs": "<docs>\nPi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: /Users/dev/ws/flypi/node_modules/@earendil-works/pi-coding-agent/README.md\n- Additional docs: /Users/dev/ws/flypi/node_modules/@earendil-works/pi-coding-agent/docs\n- Examples: /Users/dev/ws/flypi/node_modules/@earendil-works/pi-coding-agent/examples (extensions, custom tools, SDK)\n- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory\n- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md), MCP servers (docs/mcp.md), codemode scripts and non-LLM models such as classifiers and image models (docs/codemode.md)\n- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing\n- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)\n</docs>",
+    "cwd": "<cwd>\n<root>\n</cwd>"
+   },
+   "toolsAdded": [
+    {
+     "name": "read",
+     "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "path"
+      ],
+      "properties": {
+       "path": {
+        "type": "string",
+        "description": "Path to the file to read (relative or absolute)"
+       },
+       "offset": {
+        "type": "number",
+        "description": "Line number to start reading from (1-indexed)"
+       },
+       "limit": {
+        "type": "number",
+        "description": "Maximum number of lines to read"
+       }
+      }
+     },
+     "constrainedSampling": {
+      "type": "json_schema",
+      "strict": "prefer"
+     }
+    },
+    {
+     "name": "edit",
+     "description": "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "path",
+       "edits"
+      ],
+      "properties": {
+       "path": {
+        "type": "string",
+        "description": "Path to the file to edit (relative or absolute)"
+       },
+       "edits": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "required": [
+          "oldText",
+          "newText"
+         ],
+         "properties": {
+          "oldText": {
+           "type": "string",
+           "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+          },
+          "newText": {
+           "type": "string",
+           "description": "Replacement text for this targeted edit."
+          }
+         }
+        },
+        "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
+       }
+      }
+     },
+     "constrainedSampling": {
+      "type": "json_schema",
+      "strict": "prefer"
+     }
+    },
+    {
+     "name": "bash",
+     "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "command"
+      ],
+      "properties": {
+       "command": {
+        "type": "string",
+        "description": "Shell command to execute"
+       },
+       "timeout": {
+        "type": "number",
+        "description": "Timeout in seconds (optional, no default timeout)"
+       }
+      }
+     },
+     "constrainedSampling": {
+      "type": "json_schema",
+      "strict": "prefer"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "type": "message_start",
+  "message": {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "fix the failing test in this repo"
+    }
+   ]
+  }
+ },
+ {
+  "type": "message_end",
+  "message": {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "fix the failing test in this repo"
+    }
+   ]
+  }
+ },
+ {
+  "type": "message_start",
+  "message": {
+   "role": "assistant",
+   "content": [],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 1318,
+    "output": 8,
+    "cacheRead": 0,
+    "cacheWrite": 1318,
+    "totalTokens": 2644,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_start",
+   "contentIndex": 0,
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-1",
+      "name": "read",
+      "arguments": {
+       "path": "sort.test.mjs"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 1318,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 1318,
+     "totalTokens": 2644,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-1",
+     "name": "read",
+     "arguments": {
+      "path": "sort.test.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 1318,
+    "output": 8,
+    "cacheRead": 0,
+    "cacheWrite": 1318,
+    "totalTokens": 2644,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": "{\"path\":\"sor",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-1",
+      "name": "read",
+      "arguments": {
+       "path": "sort.test.mjs"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 1318,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 1318,
+     "totalTokens": 2644,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-1",
+     "name": "read",
+     "arguments": {
+      "path": "sort.test.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 1318,
+    "output": 8,
+    "cacheRead": 0,
+    "cacheWrite": 1318,
+    "totalTokens": 2644,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": "t.test.mjs\"}",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-1",
+      "name": "read",
+      "arguments": {
+       "path": "sort.test.mjs"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 1318,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 1318,
+     "totalTokens": 2644,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-1",
+     "name": "read",
+     "arguments": {
+      "path": "sort.test.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 1318,
+    "output": 8,
+    "cacheRead": 0,
+    "cacheWrite": 1318,
+    "totalTokens": 2644,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_end",
+   "contentIndex": 0,
+   "toolCall": {
+    "type": "toolCall",
+    "id": "call-1",
+    "name": "read",
+    "arguments": {
+     "path": "sort.test.mjs"
+    }
+   },
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-1",
+      "name": "read",
+      "arguments": {
+       "path": "sort.test.mjs"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 1318,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 1318,
+     "totalTokens": 2644,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-1",
+     "name": "read",
+     "arguments": {
+      "path": "sort.test.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 1318,
+    "output": 8,
+    "cacheRead": 0,
+    "cacheWrite": 1318,
+    "totalTokens": 2644,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_end",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-1",
+     "name": "read",
+     "arguments": {
+      "path": "sort.test.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 1318,
+    "output": 8,
+    "cacheRead": 0,
+    "cacheWrite": 1318,
+    "totalTokens": 2644,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "toolUse",
+   "thinkingLevel": "medium"
+  }
+ },
+ {
+  "type": "tool_execution_start",
+  "toolCallId": "call-1",
+  "toolName": "read",
+  "args": {
+   "path": "sort.test.mjs"
+  }
+ },
+ {
+  "type": "tool_execution_end",
+  "toolCallId": "call-1",
+  "toolName": "read",
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "import { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { sort } from \"./sort.mjs\";\n\ntest(\"sorts numbers ascending\", () => {\n  assert.deepEqual(sort([10, 9, 2]), [2, 9, 10]);\n});\n"
+    }
+   ],
+   "structuredContent": "import { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { sort } from \"./sort.mjs\";\n\ntest(\"sorts numbers ascending\", () => {\n  assert.deepEqual(sort([10, 9, 2]), [2, 9, 10]);\n});\n"
+  },
+  "isError": false
+ },
+ {
+  "type": "message_start",
+  "message": {
+   "role": "toolResult",
+   "toolCallId": "call-1",
+   "toolName": "read",
+   "content": [
+    {
+     "type": "text",
+     "text": "import { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { sort } from \"./sort.mjs\";\n\ntest(\"sorts numbers ascending\", () => {\n  assert.deepEqual(sort([10, 9, 2]), [2, 9, 10]);\n});\n"
+    }
+   ],
+   "isError": false
+  }
+ },
+ {
+  "type": "message_end",
+  "message": {
+   "role": "toolResult",
+   "toolCallId": "call-1",
+   "toolName": "read",
+   "content": [
+    {
+     "type": "text",
+     "text": "import { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { sort } from \"./sort.mjs\";\n\ntest(\"sorts numbers ascending\", () => {\n  assert.deepEqual(sort([10, 9, 2]), [2, 9, 10]);\n});\n"
+    }
+   ],
+   "isError": false
+  }
+ },
+ {
+  "type": "turn_end",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-1",
+     "name": "read",
+     "arguments": {
+      "path": "sort.test.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 1318,
+    "output": 8,
+    "cacheRead": 0,
+    "cacheWrite": 1318,
+    "totalTokens": 2644,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "toolUse",
+   "thinkingLevel": "medium"
+  },
+  "toolResults": [
+   {
+    "role": "toolResult",
+    "toolCallId": "call-1",
+    "toolName": "read",
+    "content": [
+     {
+      "type": "text",
+      "text": "import { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { sort } from \"./sort.mjs\";\n\ntest(\"sorts numbers ascending\", () => {\n  assert.deepEqual(sort([10, 9, 2]), [2, 9, 10]);\n});\n"
+     }
+    ],
+    "isError": false
+   }
+  ]
+ },
+ {
+  "type": "turn_start"
+ },
+ {
+  "type": "message_start",
+  "message": {
+   "role": "assistant",
+   "content": [],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 66,
+    "output": 6,
+    "cacheRead": 1318,
+    "cacheWrite": 66,
+    "totalTokens": 1456,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_start",
+   "contentIndex": 0,
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-2",
+      "name": "read",
+      "arguments": {
+       "path": "sort.mjs"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 66,
+     "output": 6,
+     "cacheRead": 1318,
+     "cacheWrite": 66,
+     "totalTokens": 1456,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-2",
+     "name": "read",
+     "arguments": {
+      "path": "sort.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 66,
+    "output": 6,
+    "cacheRead": 1318,
+    "cacheWrite": 66,
+    "totalTokens": 1456,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": "{\"path\":\"sort.mj",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-2",
+      "name": "read",
+      "arguments": {
+       "path": "sort.mjs"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 66,
+     "output": 6,
+     "cacheRead": 1318,
+     "cacheWrite": 66,
+     "totalTokens": 1456,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-2",
+     "name": "read",
+     "arguments": {
+      "path": "sort.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 66,
+    "output": 6,
+    "cacheRead": 1318,
+    "cacheWrite": 66,
+    "totalTokens": 1456,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": "s\"}",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-2",
+      "name": "read",
+      "arguments": {
+       "path": "sort.mjs"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 66,
+     "output": 6,
+     "cacheRead": 1318,
+     "cacheWrite": 66,
+     "totalTokens": 1456,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-2",
+     "name": "read",
+     "arguments": {
+      "path": "sort.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 66,
+    "output": 6,
+    "cacheRead": 1318,
+    "cacheWrite": 66,
+    "totalTokens": 1456,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_end",
+   "contentIndex": 0,
+   "toolCall": {
+    "type": "toolCall",
+    "id": "call-2",
+    "name": "read",
+    "arguments": {
+     "path": "sort.mjs"
+    }
+   },
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-2",
+      "name": "read",
+      "arguments": {
+       "path": "sort.mjs"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 66,
+     "output": 6,
+     "cacheRead": 1318,
+     "cacheWrite": 66,
+     "totalTokens": 1456,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-2",
+     "name": "read",
+     "arguments": {
+      "path": "sort.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 66,
+    "output": 6,
+    "cacheRead": 1318,
+    "cacheWrite": 66,
+    "totalTokens": 1456,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_end",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-2",
+     "name": "read",
+     "arguments": {
+      "path": "sort.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 66,
+    "output": 6,
+    "cacheRead": 1318,
+    "cacheWrite": 66,
+    "totalTokens": 1456,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "toolUse",
+   "thinkingLevel": "medium"
+  }
+ },
+ {
+  "type": "tool_execution_start",
+  "toolCallId": "call-2",
+  "toolName": "read",
+  "args": {
+   "path": "sort.mjs"
+  }
+ },
+ {
+  "type": "tool_execution_end",
+  "toolCallId": "call-2",
+  "toolName": "read",
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "export function sort(values) {\n  return values.sort();\n}\n"
+    }
+   ],
+   "structuredContent": "export function sort(values) {\n  return values.sort();\n}\n"
+  },
+  "isError": false
+ },
+ {
+  "type": "message_start",
+  "message": {
+   "role": "toolResult",
+   "toolCallId": "call-2",
+   "toolName": "read",
+   "content": [
+    {
+     "type": "text",
+     "text": "export function sort(values) {\n  return values.sort();\n}\n"
+    }
+   ],
+   "isError": false
+  }
+ },
+ {
+  "type": "message_end",
+  "message": {
+   "role": "toolResult",
+   "toolCallId": "call-2",
+   "toolName": "read",
+   "content": [
+    {
+     "type": "text",
+     "text": "export function sort(values) {\n  return values.sort();\n}\n"
+    }
+   ],
+   "isError": false
+  }
+ },
+ {
+  "type": "turn_end",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-2",
+     "name": "read",
+     "arguments": {
+      "path": "sort.mjs"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 66,
+    "output": 6,
+    "cacheRead": 1318,
+    "cacheWrite": 66,
+    "totalTokens": 1456,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "toolUse",
+   "thinkingLevel": "medium"
+  },
+  "toolResults": [
+   {
+    "role": "toolResult",
+    "toolCallId": "call-2",
+    "toolName": "read",
+    "content": [
+     {
+      "type": "text",
+      "text": "export function sort(values) {\n  return values.sort();\n}\n"
+     }
+    ],
+    "isError": false
+   }
+  ]
+ },
+ {
+  "type": "turn_start"
+ },
+ {
+  "type": "message_start",
+  "message": {
+   "role": "assistant",
+   "content": [],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_start",
+   "contentIndex": 0,
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-3",
+      "name": "edit",
+      "arguments": {
+       "path": "sort.mjs",
+       "edits": [
+        {
+         "oldText": "return values.sort();",
+         "newText": "return values.sort((a, b) => a - b);"
+        }
+       ]
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 28,
+     "output": 30,
+     "cacheRead": 1384,
+     "cacheWrite": 28,
+     "totalTokens": 1470,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-3",
+     "name": "edit",
+     "arguments": {
+      "path": "sort.mjs",
+      "edits": [
+       {
+        "oldText": "return values.sort();",
+        "newText": "return values.sort((a, b) => a - b);"
+       }
+      ]
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": "{\"path\":\"sort.mjs\",\"",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-3",
+      "name": "edit",
+      "arguments": {
+       "path": "sort.mjs",
+       "edits": [
+        {
+         "oldText": "return values.sort();",
+         "newText": "return values.sort((a, b) => a - b);"
+        }
+       ]
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 28,
+     "output": 30,
+     "cacheRead": 1384,
+     "cacheWrite": 28,
+     "totalTokens": 1470,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-3",
+     "name": "edit",
+     "arguments": {
+      "path": "sort.mjs",
+      "edits": [
+       {
+        "oldText": "return values.sort();",
+        "newText": "return values.sort((a, b) => a - b);"
+       }
+      ]
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": "edits\":[{\"ol",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-3",
+      "name": "edit",
+      "arguments": {
+       "path": "sort.mjs",
+       "edits": [
+        {
+         "oldText": "return values.sort();",
+         "newText": "return values.sort((a, b) => a - b);"
+        }
+       ]
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 28,
+     "output": 30,
+     "cacheRead": 1384,
+     "cacheWrite": 28,
+     "totalTokens": 1470,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-3",
+     "name": "edit",
+     "arguments": {
+      "path": "sort.mjs",
+      "edits": [
+       {
+        "oldText": "return values.sort();",
+        "newText": "return values.sort((a, b) => a - b);"
+       }
+      ]
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": "dText\":\"return v",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-3",
+      "name": "edit",
+      "arguments": {
+       "path": "sort.mjs",
+       "edits": [
+        {
+         "oldText": "return values.sort();",
+         "newText": "return values.sort((a, b) => a - b);"
+        }
+       ]
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 28,
+     "output": 30,
+     "cacheRead": 1384,
+     "cacheWrite": 28,
+     "totalTokens": 1470,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-3",
+     "name": "edit",
+     "arguments": {
+      "path": "sort.mjs",
+      "edits": [
+       {
+        "oldText": "return values.sort();",
+        "newText": "return values.sort((a, b) => a - b);"
+       }
+      ]
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": "alues.sort();\",\"newT",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-3",
+      "name": "edit",
+      "arguments": {
+       "path": "sort.mjs",
+       "edits": [
+        {
+         "oldText": "return values.sort();",
+         "newText": "return values.sort((a, b) => a - b);"
+        }
+       ]
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 28,
+     "output": 30,
+     "cacheRead": 1384,
+     "cacheWrite": 28,
+     "totalTokens": 1470,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-3",
+     "name": "edit",
+     "arguments": {
+      "path": "sort.mjs",
+      "edits": [
+       {
+        "oldText": "return values.sort();",
+        "newText": "return values.sort((a, b) => a - b);"
+       }
+      ]
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": "ext\":\"return",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-3",
+      "name": "edit",
+      "arguments": {
+       "path": "sort.mjs",
+       "edits": [
+        {
+         "oldText": "return values.sort();",
+         "newText": "return values.sort((a, b) => a - b);"
+        }
+       ]
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 28,
+     "output": 30,
+     "cacheRead": 1384,
+     "cacheWrite": 28,
+     "totalTokens": 1470,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-3",
+     "name": "edit",
+     "arguments": {
+      "path": "sort.mjs",
+      "edits": [
+       {
+        "oldText": "return values.sort();",
+        "newText": "return values.sort((a, b) => a - b);"
+       }
+      ]
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": " values.sort((a, b) ",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-3",
+      "name": "edit",
+      "arguments": {
+       "path": "sort.mjs",
+       "edits": [
+        {
+         "oldText": "return values.sort();",
+         "newText": "return values.sort((a, b) => a - b);"
+        }
+       ]
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 28,
+     "output": 30,
+     "cacheRead": 1384,
+     "cacheWrite": 28,
+     "totalTokens": 1470,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-3",
+     "name": "edit",
+     "arguments": {
+      "path": "sort.mjs",
+      "edits": [
+       {
+        "oldText": "return values.sort();",
+        "newText": "return values.sort((a, b) => a - b);"
+       }
+      ]
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": "=> a - b);\"}]}",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-3",
+      "name": "edit",
+      "arguments": {
+       "path": "sort.mjs",
+       "edits": [
+        {
+         "oldText": "return values.sort();",
+         "newText": "return values.sort((a, b) => a - b);"
+        }
+       ]
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 28,
+     "output": 30,
+     "cacheRead": 1384,
+     "cacheWrite": 28,
+     "totalTokens": 1470,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-3",
+     "name": "edit",
+     "arguments": {
+      "path": "sort.mjs",
+      "edits": [
+       {
+        "oldText": "return values.sort();",
+        "newText": "return values.sort((a, b) => a - b);"
+       }
+      ]
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_end",
+   "contentIndex": 0,
+   "toolCall": {
+    "type": "toolCall",
+    "id": "call-3",
+    "name": "edit",
+    "arguments": {
+     "path": "sort.mjs",
+     "edits": [
+      {
+       "oldText": "return values.sort();",
+       "newText": "return values.sort((a, b) => a - b);"
+      }
+     ]
+    }
+   },
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-3",
+      "name": "edit",
+      "arguments": {
+       "path": "sort.mjs",
+       "edits": [
+        {
+         "oldText": "return values.sort();",
+         "newText": "return values.sort((a, b) => a - b);"
+        }
+       ]
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 28,
+     "output": 30,
+     "cacheRead": 1384,
+     "cacheWrite": 28,
+     "totalTokens": 1470,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-3",
+     "name": "edit",
+     "arguments": {
+      "path": "sort.mjs",
+      "edits": [
+       {
+        "oldText": "return values.sort();",
+        "newText": "return values.sort((a, b) => a - b);"
+       }
+      ]
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_end",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-3",
+     "name": "edit",
+     "arguments": {
+      "path": "sort.mjs",
+      "edits": [
+       {
+        "oldText": "return values.sort();",
+        "newText": "return values.sort((a, b) => a - b);"
+       }
+      ]
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "toolUse",
+   "thinkingLevel": "medium"
+  }
+ },
+ {
+  "type": "tool_execution_start",
+  "toolCallId": "call-3",
+  "toolName": "edit",
+  "args": {
+   "path": "sort.mjs",
+   "edits": [
+    {
+     "oldText": "return values.sort();",
+     "newText": "return values.sort((a, b) => a - b);"
+    }
+   ]
+  }
+ },
+ {
+  "type": "tool_execution_end",
+  "toolCallId": "call-3",
+  "toolName": "edit",
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "Successfully replaced 1 block(s) in sort.mjs."
+    }
+   ],
+   "details": {
+    "diff": " 1 export function sort(values) {\n-2   return values.sort();\n+2   return values.sort((a, b) => a - b);\n 3 }",
+    "patch": "--- sort.mjs\n+++ sort.mjs\n@@ -1,3 +1,3 @@\n export function sort(values) {\n-  return values.sort();\n+  return values.sort((a, b) => a - b);\n }\n",
+    "firstChangedLine": 2
+   }
+  },
+  "isError": false
+ },
+ {
+  "type": "message_start",
+  "message": {
+   "role": "toolResult",
+   "toolCallId": "call-3",
+   "toolName": "edit",
+   "content": [
+    {
+     "type": "text",
+     "text": "Successfully replaced 1 block(s) in sort.mjs."
+    }
+   ],
+   "details": {
+    "diff": " 1 export function sort(values) {\n-2   return values.sort();\n+2   return values.sort((a, b) => a - b);\n 3 }",
+    "patch": "--- sort.mjs\n+++ sort.mjs\n@@ -1,3 +1,3 @@\n export function sort(values) {\n-  return values.sort();\n+  return values.sort((a, b) => a - b);\n }\n",
+    "firstChangedLine": 2
+   },
+   "isError": false
+  }
+ },
+ {
+  "type": "message_end",
+  "message": {
+   "role": "toolResult",
+   "toolCallId": "call-3",
+   "toolName": "edit",
+   "content": [
+    {
+     "type": "text",
+     "text": "Successfully replaced 1 block(s) in sort.mjs."
+    }
+   ],
+   "details": {
+    "diff": " 1 export function sort(values) {\n-2   return values.sort();\n+2   return values.sort((a, b) => a - b);\n 3 }",
+    "patch": "--- sort.mjs\n+++ sort.mjs\n@@ -1,3 +1,3 @@\n export function sort(values) {\n-  return values.sort();\n+  return values.sort((a, b) => a - b);\n }\n",
+    "firstChangedLine": 2
+   },
+   "isError": false
+  }
+ },
+ {
+  "type": "turn_end",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-3",
+     "name": "edit",
+     "arguments": {
+      "path": "sort.mjs",
+      "edits": [
+       {
+        "oldText": "return values.sort();",
+        "newText": "return values.sort((a, b) => a - b);"
+       }
+      ]
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 28,
+    "output": 30,
+    "cacheRead": 1384,
+    "cacheWrite": 28,
+    "totalTokens": 1470,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "toolUse",
+   "thinkingLevel": "medium"
+  },
+  "toolResults": [
+   {
+    "role": "toolResult",
+    "toolCallId": "call-3",
+    "toolName": "edit",
+    "content": [
+     {
+      "type": "text",
+      "text": "Successfully replaced 1 block(s) in sort.mjs."
+     }
+    ],
+    "details": {
+     "diff": " 1 export function sort(values) {\n-2   return values.sort();\n+2   return values.sort((a, b) => a - b);\n 3 }",
+     "patch": "--- sort.mjs\n+++ sort.mjs\n@@ -1,3 +1,3 @@\n export function sort(values) {\n-  return values.sort();\n+  return values.sort((a, b) => a - b);\n }\n",
+     "firstChangedLine": 2
+    },
+    "isError": false
+   }
+  ]
+ },
+ {
+  "type": "turn_start"
+ },
+ {
+  "type": "message_start",
+  "message": {
+   "role": "assistant",
+   "content": [],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 48,
+    "output": 8,
+    "cacheRead": 1412,
+    "cacheWrite": 49,
+    "totalTokens": 1517,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_start",
+   "contentIndex": 0,
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-4",
+      "name": "bash",
+      "arguments": {
+       "command": "node --test"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 48,
+     "output": 8,
+     "cacheRead": 1412,
+     "cacheWrite": 49,
+     "totalTokens": 1517,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-4",
+     "name": "bash",
+     "arguments": {
+      "command": "node --test"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 48,
+    "output": 8,
+    "cacheRead": 1412,
+    "cacheWrite": 49,
+    "totalTokens": 1517,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": "{\"command\":\"node",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-4",
+      "name": "bash",
+      "arguments": {
+       "command": "node --test"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 48,
+     "output": 8,
+     "cacheRead": 1412,
+     "cacheWrite": 49,
+     "totalTokens": 1517,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-4",
+     "name": "bash",
+     "arguments": {
+      "command": "node --test"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 48,
+    "output": 8,
+    "cacheRead": 1412,
+    "cacheWrite": 49,
+    "totalTokens": 1517,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_delta",
+   "contentIndex": 0,
+   "delta": " --test\"}",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-4",
+      "name": "bash",
+      "arguments": {
+       "command": "node --test"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 48,
+     "output": 8,
+     "cacheRead": 1412,
+     "cacheWrite": 49,
+     "totalTokens": 1517,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-4",
+     "name": "bash",
+     "arguments": {
+      "command": "node --test"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 48,
+    "output": 8,
+    "cacheRead": 1412,
+    "cacheWrite": 49,
+    "totalTokens": 1517,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "toolcall_end",
+   "contentIndex": 0,
+   "toolCall": {
+    "type": "toolCall",
+    "id": "call-4",
+    "name": "bash",
+    "arguments": {
+     "command": "node --test"
+    }
+   },
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-4",
+      "name": "bash",
+      "arguments": {
+       "command": "node --test"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 48,
+     "output": 8,
+     "cacheRead": 1412,
+     "cacheWrite": 49,
+     "totalTokens": 1517,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-4",
+     "name": "bash",
+     "arguments": {
+      "command": "node --test"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 48,
+    "output": 8,
+    "cacheRead": 1412,
+    "cacheWrite": 49,
+    "totalTokens": 1517,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_end",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-4",
+     "name": "bash",
+     "arguments": {
+      "command": "node --test"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 48,
+    "output": 8,
+    "cacheRead": 1412,
+    "cacheWrite": 49,
+    "totalTokens": 1517,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "toolUse",
+   "thinkingLevel": "medium"
+  }
+ },
+ {
+  "type": "tool_execution_start",
+  "toolCallId": "call-4",
+  "toolName": "bash",
+  "args": {
+   "command": "node --test"
+  }
+ },
+ {
+  "type": "tool_execution_update",
+  "toolCallId": "call-4",
+  "toolName": "bash",
+  "args": {
+   "command": "node --test"
+  },
+  "partialResult": {
+   "content": []
+  }
+ },
+ {
+  "type": "tool_execution_update",
+  "toolCallId": "call-4",
+  "toolName": "bash",
+  "args": {
+   "command": "node --test"
+  },
+  "partialResult": {
+   "content": [
+    {
+     "type": "text",
+     "text": "✔ sorts numbers ascending (0.399375ms)\n"
+    }
+   ],
+   "details": {}
+  }
+ },
+ {
+  "type": "tool_execution_update",
+  "toolCallId": "call-4",
+  "toolName": "bash",
+  "args": {
+   "command": "node --test"
+  },
+  "partialResult": {
+   "content": [
+    {
+     "type": "text",
+     "text": "✔ sorts numbers ascending (0.399375ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 29.458917\n"
+    }
+   ],
+   "details": {}
+  }
+ },
+ {
+  "type": "tool_execution_end",
+  "toolCallId": "call-4",
+  "toolName": "bash",
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "✔ sorts numbers ascending (0.399375ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 29.458917\n"
+    }
+   ],
+   "structuredContent": {
+    "output": "✔ sorts numbers ascending (0.399375ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 29.458917\n",
+    "truncated": false,
+    "exit_code": 0,
+    "wall_time_seconds": 0.1
+   }
+  },
+  "isError": false
+ },
+ {
+  "type": "message_start",
+  "message": {
+   "role": "toolResult",
+   "toolCallId": "call-4",
+   "toolName": "bash",
+   "content": [
+    {
+     "type": "text",
+     "text": "✔ sorts numbers ascending (0.399375ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 29.458917\n"
+    }
+   ],
+   "isError": false
+  }
+ },
+ {
+  "type": "message_end",
+  "message": {
+   "role": "toolResult",
+   "toolCallId": "call-4",
+   "toolName": "bash",
+   "content": [
+    {
+     "type": "text",
+     "text": "✔ sorts numbers ascending (0.399375ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 29.458917\n"
+    }
+   ],
+   "isError": false
+  }
+ },
+ {
+  "type": "turn_end",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call-4",
+     "name": "bash",
+     "arguments": {
+      "command": "node --test"
+     }
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 48,
+    "output": 8,
+    "cacheRead": 1412,
+    "cacheWrite": 49,
+    "totalTokens": 1517,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "toolUse",
+   "thinkingLevel": "medium"
+  },
+  "toolResults": [
+   {
+    "role": "toolResult",
+    "toolCallId": "call-4",
+    "toolName": "bash",
+    "content": [
+     {
+      "type": "text",
+      "text": "✔ sorts numbers ascending (0.399375ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 29.458917\n"
+     }
+    ],
+    "isError": false
+   }
+  ]
+ },
+ {
+  "type": "turn_start"
+ },
+ {
+  "type": "message_start",
+  "message": {
+   "role": "assistant",
+   "content": [],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "text_start",
+   "contentIndex": 0,
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 50,
+     "output": 28,
+     "cacheRead": 1460,
+     "cacheWrite": 50,
+     "totalTokens": 1588,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "text_delta",
+   "contentIndex": 0,
+   "delta": "sort() was compa",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 50,
+     "output": 28,
+     "cacheRead": 1460,
+     "cacheWrite": 50,
+     "totalTokens": 1588,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "text_delta",
+   "contentIndex": 0,
+   "delta": "ring numbers",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 50,
+     "output": 28,
+     "cacheRead": 1460,
+     "cacheWrite": 50,
+     "totalTokens": 1588,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "text_delta",
+   "contentIndex": 0,
+   "delta": " as strings, so ",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 50,
+     "output": 28,
+     "cacheRead": 1460,
+     "cacheWrite": 50,
+     "totalTokens": 1588,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "text_delta",
+   "contentIndex": 0,
+   "delta": "[10, 9, 2] staye",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 50,
+     "output": 28,
+     "cacheRead": 1460,
+     "cacheWrite": 50,
+     "totalTokens": 1588,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "text_delta",
+   "contentIndex": 0,
+   "delta": "d put. Numeric compa",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 50,
+     "output": 28,
+     "cacheRead": 1460,
+     "cacheWrite": 50,
+     "totalTokens": 1588,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "text_delta",
+   "contentIndex": 0,
+   "delta": "rator added;",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 50,
+     "output": 28,
+     "cacheRead": 1460,
+     "cacheWrite": 50,
+     "totalTokens": 1588,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "text_delta",
+   "contentIndex": 0,
+   "delta": " node --test pas",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 50,
+     "output": 28,
+     "cacheRead": 1460,
+     "cacheWrite": 50,
+     "totalTokens": 1588,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "text_delta",
+   "contentIndex": 0,
+   "delta": "ses.",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 50,
+     "output": 28,
+     "cacheRead": 1460,
+     "cacheWrite": 50,
+     "totalTokens": 1588,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_update",
+  "assistantMessageEvent": {
+   "type": "text_end",
+   "contentIndex": 0,
+   "content": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes.",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 50,
+     "output": 28,
+     "cacheRead": 1460,
+     "cacheWrite": 50,
+     "totalTokens": 1588,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending"
+   }
+  },
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "pending"
+  }
+ },
+ {
+  "type": "message_end",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "stop",
+   "thinkingLevel": "medium"
+  }
+ },
+ {
+  "type": "turn_end",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+    }
+   ],
+   "api": "faux:stable",
+   "provider": "flypi-stub",
+   "model": "stub",
+   "usage": {
+    "input": 50,
+    "output": 28,
+    "cacheRead": 1460,
+    "cacheWrite": 50,
+    "totalTokens": 1588,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "stop",
+   "thinkingLevel": "medium"
+  },
+  "toolResults": []
+ },
+ {
+  "type": "agent_end",
+  "messages": [
+   {
+    "role": "system",
+    "content": "",
+    "sections": {
+     "preamble": "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.",
+     "tools": "<tools>\n- read: Read file contents\n- edit: Make precise file edits with exact text replacement, including multiple disjoint edits in one call\n- bash: Execute bash commands (ls, grep, find, etc.)\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n</tools>",
+     "rules": "<rules>\n- Use bash for file operations like ls, rg, find\n- Use read to examine files instead of cat or sed.\n- Use edit for precise changes (edits[].oldText must match exactly)\n- When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls\n- Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.\n- Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.\n- You can inspect PI_* environment variables for current model and session details.\n- Be concise in your responses\n- Show file paths clearly when working with files\n</rules>",
+     "docs": "<docs>\nPi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: /Users/dev/ws/flypi/node_modules/@earendil-works/pi-coding-agent/README.md\n- Additional docs: /Users/dev/ws/flypi/node_modules/@earendil-works/pi-coding-agent/docs\n- Examples: /Users/dev/ws/flypi/node_modules/@earendil-works/pi-coding-agent/examples (extensions, custom tools, SDK)\n- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory\n- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md), MCP servers (docs/mcp.md), codemode scripts and non-LLM models such as classifiers and image models (docs/codemode.md)\n- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing\n- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)\n</docs>",
+     "cwd": "<cwd>\n<root>\n</cwd>"
+    },
+    "toolsAdded": [
+     {
+      "name": "read",
+      "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+      "parameters": {
+       "type": "object",
+       "required": [
+        "path"
+       ],
+       "properties": {
+        "path": {
+         "type": "string",
+         "description": "Path to the file to read (relative or absolute)"
+        },
+        "offset": {
+         "type": "number",
+         "description": "Line number to start reading from (1-indexed)"
+        },
+        "limit": {
+         "type": "number",
+         "description": "Maximum number of lines to read"
+        }
+       }
+      },
+      "constrainedSampling": {
+       "type": "json_schema",
+       "strict": "prefer"
+      }
+     },
+     {
+      "name": "edit",
+      "description": "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+      "parameters": {
+       "type": "object",
+       "required": [
+        "path",
+        "edits"
+       ],
+       "properties": {
+        "path": {
+         "type": "string",
+         "description": "Path to the file to edit (relative or absolute)"
+        },
+        "edits": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "required": [
+           "oldText",
+           "newText"
+          ],
+          "properties": {
+           "oldText": {
+            "type": "string",
+            "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+           },
+           "newText": {
+            "type": "string",
+            "description": "Replacement text for this targeted edit."
+           }
+          }
+         },
+         "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
+        }
+       }
+      },
+      "constrainedSampling": {
+       "type": "json_schema",
+       "strict": "prefer"
+      }
+     },
+     {
+      "name": "bash",
+      "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+      "parameters": {
+       "type": "object",
+       "required": [
+        "command"
+       ],
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "Shell command to execute"
+        },
+        "timeout": {
+         "type": "number",
+         "description": "Timeout in seconds (optional, no default timeout)"
+        }
+       }
+      },
+      "constrainedSampling": {
+       "type": "json_schema",
+       "strict": "prefer"
+      }
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "fix the failing test in this repo"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-1",
+      "name": "read",
+      "arguments": {
+       "path": "sort.test.mjs"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 1318,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 1318,
+     "totalTokens": 2644,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "toolUse",
+    "thinkingLevel": "medium"
+   },
+   {
+    "role": "toolResult",
+    "toolCallId": "call-1",
+    "toolName": "read",
+    "content": [
+     {
+      "type": "text",
+      "text": "import { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { sort } from \"./sort.mjs\";\n\ntest(\"sorts numbers ascending\", () => {\n  assert.deepEqual(sort([10, 9, 2]), [2, 9, 10]);\n});\n"
+     }
+    ],
+    "isError": false
+   },
+   {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-2",
+      "name": "read",
+      "arguments": {
+       "path": "sort.mjs"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 66,
+     "output": 6,
+     "cacheRead": 1318,
+     "cacheWrite": 66,
+     "totalTokens": 1456,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "toolUse",
+    "thinkingLevel": "medium"
+   },
+   {
+    "role": "toolResult",
+    "toolCallId": "call-2",
+    "toolName": "read",
+    "content": [
+     {
+      "type": "text",
+      "text": "export function sort(values) {\n  return values.sort();\n}\n"
+     }
+    ],
+    "isError": false
+   },
+   {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-3",
+      "name": "edit",
+      "arguments": {
+       "path": "sort.mjs",
+       "edits": [
+        {
+         "oldText": "return values.sort();",
+         "newText": "return values.sort((a, b) => a - b);"
+        }
+       ]
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 28,
+     "output": 30,
+     "cacheRead": 1384,
+     "cacheWrite": 28,
+     "totalTokens": 1470,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "toolUse",
+    "thinkingLevel": "medium"
+   },
+   {
+    "role": "toolResult",
+    "toolCallId": "call-3",
+    "toolName": "edit",
+    "content": [
+     {
+      "type": "text",
+      "text": "Successfully replaced 1 block(s) in sort.mjs."
+     }
+    ],
+    "details": {
+     "diff": " 1 export function sort(values) {\n-2   return values.sort();\n+2   return values.sort((a, b) => a - b);\n 3 }",
+     "patch": "--- sort.mjs\n+++ sort.mjs\n@@ -1,3 +1,3 @@\n export function sort(values) {\n-  return values.sort();\n+  return values.sort((a, b) => a - b);\n }\n",
+     "firstChangedLine": 2
+    },
+    "isError": false
+   },
+   {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "toolCall",
+      "id": "call-4",
+      "name": "bash",
+      "arguments": {
+       "command": "node --test"
+      }
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 48,
+     "output": 8,
+     "cacheRead": 1412,
+     "cacheWrite": 49,
+     "totalTokens": 1517,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "toolUse",
+    "thinkingLevel": "medium"
+   },
+   {
+    "role": "toolResult",
+    "toolCallId": "call-4",
+    "toolName": "bash",
+    "content": [
+     {
+      "type": "text",
+      "text": "✔ sorts numbers ascending (0.399375ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 29.458917\n"
+     }
+    ],
+    "isError": false
+   },
+   {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "sort() was comparing numbers as strings, so [10, 9, 2] stayed put. Numeric comparator added; node --test passes."
+     }
+    ],
+    "api": "faux:stable",
+    "provider": "flypi-stub",
+    "model": "stub",
+    "usage": {
+     "input": 50,
+     "output": 28,
+     "cacheRead": 1460,
+     "cacheWrite": 50,
+     "totalTokens": 1588,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "stop",
+    "thinkingLevel": "medium"
+   }
+  ],
+  "willRetry": false
+ },
+ {
+  "type": "agent_settled"
+ }
+]

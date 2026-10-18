@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+coverage/
+*.tgz
+
+# local config and runtime state — everything flypi generates or that points at this machine
+.flypi/
+.env
+.env.local
+*.log
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# internal design notes and plans - not published, not in git
+.scratch/

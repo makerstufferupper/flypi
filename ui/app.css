@@ -1,0 +1,250 @@
+/* Plain CSS, no UI framework (docs/architecture.md: "No UI framework"). */
+:root {
+	/* Tells the browser which palette the native widgets (option lists, checkboxes, scrollbars,
+	   text-caret) should use — see ui/lib/theme.ts for the attribute that flips it. */
+	color-scheme: light;
+	--bg: #fbfbfd;
+	--panel: #ffffff;
+	--line: #e3e4e9;
+	--ink: #17181d;
+	--muted: #6b6f7a;
+	--accent: #2f6f4f;
+	--error: #a3262a;
+	--surface: #f4f5f7;
+	--code: #f6f7f9;
+	--queue: #f2f7f4;
+}
+/* Both palettes are variables, so the theme is one attribute on <html> (ui/lib/theme.ts). */
+:root[data-theme="dark"] {
+	color-scheme: dark;
+	--bg: #13151a;
+	--panel: #1b1e25;
+	--line: #2c303a;
+	--ink: #e6e8ee;
+	--muted: #98a0ae;
+	--accent: #6cb892;
+	--error: #e08084;
+	--surface: #232730;
+	--code: #1f232b;
+	--queue: #1d2b24;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); }
+.layout { display: grid; grid-template-columns: var(--sidebar-w, 15rem) 0.5rem minmax(0, 1fr) 0.5rem var(--activity-w, 22rem); gap: 0.25rem; padding: 0.75rem; height: 100vh; font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; }
+/* The install-restart page (ui/App.svelte): the whole layout is gone because every part of it talks to a
+   daemon that is on its way out. One centred sentence, and the page's own reload is the way back. */
+.updating { display: grid; place-content: center; gap: 0.3rem; height: 100vh; padding: 1rem; text-align: center; color: var(--muted); font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; }
+.updating h2 { color: var(--ink); font-size: 1.1rem; margin: 0 0 0.3rem; }
+.updating p { margin: 0; }
+.sidebar, .chat, .activity-panel, .settings-view { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 0.75rem; overflow: auto; }
+/* Visible grab handles, one per column edge. A native `resize` corner triangle inside a panel is the
+   thing nobody finds; the widths are rem values on the grid tracks, kept in localStorage
+   (ui/lib/panels.ts), and the chat takes whatever is left. */
+.gutter { cursor: col-resize; touch-action: none; border-radius: 3px; background: var(--line); }
+.gutter:hover, .gutter:focus-visible { background: var(--accent); }
+.activity-panel { display: flex; flex-direction: column; }
+.sidebar h1 { font-size: 1rem; margin: 0 0 0.5rem; }
+.sidebar .port { color: var(--muted); font-weight: 400; }
+/* The update line the daemon's `/healthz` puts in the sidebar (App.svelte, src/daemon/update.ts): quiet text
+   with one small verb, because the install happens by itself and this is the option to not wait for it. */
+.sidebar .update { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; color: var(--muted); font-size: 0.8rem; margin: 0 0 0.5rem; }
+/* The title row carries the panel's actions as icons: the settings and memory views put them beside their
+   heading, which is more than a narrow panel can hold on one line. A flex row that cannot wrap does not
+   shrink the icons or clip them — it pushes the last one past the panel's edge, where `.sidebar
+   { overflow: auto }` makes it reachable only by scrolling sideways, which reads as the button having
+   disappeared. So the row wraps. The sidebar does not use it that way: its five icons are a fixed size and
+   get a row of their own below the title (.panel-actions), which never wraps. */
+.panel-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.5rem; }
+.panel-head h1 { flex: 1; margin: 0; }
+.panel-actions { display: flex; gap: 0.35rem; margin-bottom: 0.5rem; }
+.icon { padding: 0.2rem 0.35rem; flex: none; }
+/* ui/public holds one logo per palette (ui/lib/theme.ts); the title text is the accessible name, so
+   the image is decoration. The files are 192px squares — 3x for anything up to 4rem, and far more than
+   a tab icon needs (index.html) — made with `sips -Z 192` from assets/pikea-logo-*.jpeg. Past 4rem,
+   or if the artwork changes, regenerate them rather than upscaling these. */
+.panel-head .logo { width: 2.5rem; height: 2.5rem; border-radius: 6px; flex: none; }
+.icon svg { display: block; width: 1.05rem; height: 1.05rem; }
+.field { display: block; margin-bottom: 0.5rem; font-size: 12px; color: var(--muted); }
+.field select { width: 100%; margin-top: 0.15rem; }
+.sessions { list-style: none; margin: 0.5rem 0; padding: 0; }
+/* A row is its label plus the one destructive action on it. The label takes the width and can shrink;
+   the icon never does. The delete stays visible rather than hover-only — a touch screen has no hover. */
+.sessions li { display: flex; align-items: center; gap: 0.15rem; }
+.sessions li > :first-child { flex: 1; min-width: 0; }
+.sessions .remove { opacity: 0.6; }
+.sessions .remove:hover { opacity: 1; }
+/* Rows are plain text: no chrome around each item, and a row lights up when you point at it. The row
+   you are in keeps its tint and is an inline rename field, so it is styled to look like the text it
+   replaces (the global input rules would otherwise give it a box). */
+.sessions .session { text-align: left; width: 100%; border: 0; background: none; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sessions .session:hover { background: var(--surface); }
+.sessions .session.current { background: var(--queue); }
+.sessions input.name { width: 100%; border: 0; border-radius: 6px; background: var(--queue); color: inherit; font-weight: 600; }
+.sessions input.name:hover { background: var(--queue); }
+button, select, input, textarea { font: inherit; color: inherit; }
+button { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 0.25rem 0.5rem; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+/* The browser paints input/select/textarea white in both themes, so the text goes invisible. */
+input:not([type="checkbox"]), select, textarea { border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.4rem; background: var(--surface); }
+textarea { width: 100%; }
+.chat { display: flex; flex-direction: column; }
+.messages { list-style: none; margin: 0; padding: 0; flex: 1; overflow: auto; }
+.msg { border-bottom: 1px solid var(--line); padding: 0.4rem 0; }
+.msg .role { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.msg[data-role="user"] .role { color: var(--accent); }
+.usage { font-size: 11px; color: var(--muted); float: right; }
+/* The one action on an answer: an icon button with the sidebar's own look (see .icon) and its name in
+   aria-label, kept quiet so the answer stays the thing you read. */
+.msg .fork { margin-top: 0.2rem; opacity: 0.45; }
+.msg:hover .fork { opacity: 0.8; }
+.msg .fork:hover { opacity: 1; }
+.markdown pre, .tool-output, .thinking pre, .system-prompt, .orphan-result, .memory-block, .cache-usage, .cfg-log {
+	background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 0.4rem; overflow: auto; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12.5px;
+}
+.markdown pre { margin: 0.35rem 0; }
+.markdown code { font-family: ui-monospace, monospace; }
+details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.tool-card { border: 1px solid var(--line); border-radius: 6px; margin: 0.35rem 0; padding: 0.35rem 0.5rem; }
+.tool-card[data-state="running"] { border-color: var(--accent); }
+.tool-card[data-state="error"] { border-color: var(--error); }
+.tool-card header { display: flex; gap: 0.5rem; align-items: baseline; }
+.tool-name { font-weight: 600; }
+.tool-args { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.tool-state { font-size: 11px; color: var(--muted); }
+.queue { list-style: none; margin: 0.35rem 0 0; padding: 0; }
+.queued { border-left: 3px solid var(--accent); background: var(--queue); padding: 0.25rem 0.4rem; font-size: 12.5px; }
+/* What an extension command said (src/server/extension-ui.ts). It is not part of the transcript — pi keeps
+   `ctx.ui.notify` out of the session file — so it sits here, with the level as its only colour. */
+.extension-output { list-style: none; margin: 0.35rem 0 0; padding: 0; }
+.extension-note { border-left: 3px solid var(--accent); background: var(--queue); padding: 0.25rem 0.4rem; font-size: 12.5px; white-space: pre-wrap; }
+.extension-note[data-level="warning"] { border-left-color: var(--muted); }
+.extension-note[data-level="error"] { border-left-color: var(--error); }
+/* An extension's handler is parked while this is up, so Cancel is a real answer and not a way to close it. */
+.extension-dialog { margin: 0.35rem 0 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 0.4rem 0.5rem; }
+.extension-dialog .ask { margin: 0 0 0.35rem; font-size: 13px; white-space: pre-wrap; }
+.answers { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+.answer-input { display: flex; gap: 0.35rem; align-items: center; }
+/* The commands this conversation has, while the box holds a `/…`. Clicking completes the name; sending what
+   is typed is what runs it. */
+.commands { list-style: none; display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0.35rem 0 0; padding: 0; }
+.command { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 0.15rem 0.4rem; font-size: 12px; cursor: pointer; }
+.command .desc { color: var(--muted); margin-left: 0.3rem; }
+/* A pasted file waits here until you send it: an image is recognised by its thumbnail, a document by
+   its name. Removing it is the only action on the chip, so it stays quiet. */
+.attachments { list-style: none; display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0 0 0.35rem; padding: 0; }
+.attachment { display: flex; align-items: center; gap: 0.35rem; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); padding: 0.2rem 0.35rem; font-size: 12px; }
+.attachment .thumb { width: 1.5rem; height: 1.5rem; object-fit: cover; border-radius: 4px; flex: none; }
+.attachment .name { max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment .remove { border: 0; background: none; padding: 0 0.15rem; color: var(--muted); cursor: pointer; }
+.attachment .remove:hover { color: var(--error); }
+/* The image in the conversation is the one the model saw: readable, never wider than the chat. */
+.attachment-image { display: block; max-width: min(100%, 32rem); max-height: 24rem; margin: 0.35rem 0; border: 1px solid var(--line); border-radius: 6px; }
+.error { color: var(--error); }
+/* What a maintenance job did, and a turn a restart cut short, are information — not failures. */
+.muted { color: var(--muted); }
+.notice { color: var(--muted); border-left: 2px solid var(--line); padding: 0.15rem 0 0.15rem 0.5rem; }
+/* Model and thinking level sit with the prompt they apply to; the divider is the composer's. */
+.picker { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+.picker .field { flex: 1; margin-bottom: 0; }
+.composer { border-top: 1px solid var(--line); padding-top: 0.5rem; }
+.controls { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.35rem; }
+/* Stop sits next to Send while a turn runs, so it wears the same red the error states use — the one
+   button on that row that cancels work rather than starting it. */
+.controls .stop { border-color: var(--error); color: var(--error); }
+.offline { color: var(--muted); font-size: 12px; }
+/* Live metrics on the send row, pushed right of the buttons: a context-window ring, then the rates.
+   Muted on purpose — it is a readout, not something to act on. The row wraps, so a narrow panel puts
+   the readout on its own line rather than squeezing the buttons. */
+.metrics { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-left: auto; font-size: 11.5px; color: var(--muted); }
+.metrics b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.gauge { position: relative; width: 1.15rem; height: 1.15rem; flex: none; }
+.gauge svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+.gauge circle { fill: none; stroke-width: 3; }
+.gauge .track { stroke: var(--line); }
+.gauge .fill { stroke: var(--accent); stroke-linecap: round; transition: stroke-dasharray 0.3s; }
+.activity-panel h2 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 0 0 0.5rem; }
+.activity-panel h2 .count { font-weight: 400; }
+.activity-panel footer { border-top: 1px solid var(--line); padding-top: 0.5rem; }
+.activity { list-style: none; margin: 0; padding: 0; flex: 1; overflow: auto; }
+.activity li { border-bottom: 1px solid var(--line); padding: 0.3rem 0; }
+.activity li .tool-card { margin: 0; }
+.activity-empty { color: var(--muted); font-size: 12px; }
+/* A config view — the settings files (ui/SettingsPanel.svelte) or the vault (ui/SecretsPanel.svelte). It
+   replaces the chat and the activity column, so it takes both of their tracks (`grid-column: 3 / -1`) — the
+   sidebar's gutter still resizes it. What is on screen is a list; a row's name opens the one modal. */
+.settings-view { grid-column: 3 / -1; }
+.settings-view .panel-head h2 { flex: 1; margin: 0; font-size: 1rem; }
+.settings-view .cfg-note { color: var(--muted); font-size: 12px; margin: 0 0 0.5rem; }
+.settings-view .cfg-note code { font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* One list under the other — endpoints, then the servers below them. Side by side each became a narrow
+   column with a long note above it, and the two files are not read together. The cap keeps the notes to a
+   readable measure instead of the width of a wide window. */
+.cfg-stack { display: grid; gap: 1rem; max-width: 46rem; }
+.cfg-section { display: flex; align-items: center; gap: 0.5rem; margin: 0.9rem 0 0.25rem; }
+.cfg-section h3 { flex: 1; font-size: 13px; margin: 0; }
+/* One line per entry: the name (which opens the modal), what it points at, delete. */
+.cfg-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 6px; }
+.cfg-list li { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; padding: 0.3rem 0.4rem; border-bottom: 1px solid var(--line); }
+.cfg-list li:last-child { border-bottom: 0; }
+.cfg-list code { flex: 1; min-width: 8rem; color: var(--muted); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.cfg-list .cfg-name { padding: 0; background: none; border: 0; color: inherit; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+/* The row's two actions are icons with their name in the aria-label, in the sidebar's own `.icon` look: a
+   list of entries is the thing you read, not a column of the words "Edit" and "Delete". They never shrink,
+   and they stay quiet until you point at one — the delete keeps the destructive colour. */
+.cfg-list .icon { flex: none; opacity: 0.6; }
+.cfg-list .icon:hover { opacity: 1; }
+.cfg-list .icon:disabled { opacity: 0.2; cursor: default; }
+.cfg-list .remove { color: var(--error); }
+/* The row that is the default shows which of its models a new conversation starts on — a provider can
+   define several, so the model is a choice, not an assumption. It is the one control on a row that is not
+   an icon, because it is not a command: it names a value. */
+.cfg-default { display: flex; align-items: center; gap: 0.25rem; color: var(--accent); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.cfg-default select { font: inherit; font-weight: 400; padding: 0.1rem 0.2rem; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
+.cfg-list .cfg-off, .cfg-list .cfg-none { color: var(--muted); font-size: 11px; }
+/* A server's live state (ui/SettingsPanel.svelte): words first, colour only as a second signal, and the
+   failure itself in the row's own mono slot so a long server message wraps instead of overflowing. */
+.cfg-list .cfg-state { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.cfg-list .cfg-state.connected { color: var(--accent); }
+.cfg-list .cfg-state.failed, .cfg-list .cfg-state.needs-auth { color: var(--error); }
+.cfg-list .cfg-state-error { color: var(--error); }
+/* The tail of pi's MCP log, verbatim: what it logged is the point, so nothing here reformats it. */
+.cfg-log { margin: 0.4rem 0 0; max-height: 12rem; }
+/* An OAuth sign-in's URL and paste box sit inside the row they belong to, on their own line: the URL is
+   about one server, and a panel of its own would lose which row it came from (docs/architecture.md Phase 5). */
+.cfg-signin { flex: 1 0 100%; margin-top: 0.3rem; padding-top: 0.35rem; border-top: 1px solid var(--line); }
+.cfg-signin p { margin: 0.2rem 0; overflow-wrap: anywhere; font-size: 12px; }
+.cfg-signin-form { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: end; }
+.cfg-signin-form .field { flex: 1 1 18rem; margin: 0; }
+.cfg-signin-form input { width: 100%; margin-top: 0.15rem; font: 11px/1.4 ui-monospace, monospace; padding: 0.2rem 0.3rem; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
+/* The modal is a <dialog> (ui/SettingsPanel.svelte): the element gives it the top layer, Escape and an
+   inert page behind, so only its size and the backdrop are ours. */
+.cfg-modal { width: min(30rem, 92vw); margin: 12vh auto auto; padding: 0.9rem; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; }
+/* One entry now holds more fields than fit a screen (env, tool exceptions, OAuth), so the dialog scrolls:
+   a Save button pushed below the viewport is a form that cannot be submitted. */
+.cfg-modal { max-height: 78vh; overflow: auto; }
+.cfg-modal::backdrop { background: rgb(0 0 0 / 0.55); }
+.cfg-modal .cfg-section { margin-top: 0; }
+.cfg-modal .field { margin-bottom: 0.35rem; }
+.cfg-modal input, .cfg-modal select { width: 100%; margin-top: 0.15rem; font: inherit; padding: 0.2rem 0.3rem; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
+.cfg-modal input:disabled { color: var(--muted); }
+.cfg-inline { display: flex; gap: 0.5rem; align-items: end; }
+.cfg-inline .field:first-child { flex: 1; }
+.cfg-install { display: flex; gap: 0.5rem; align-items: end; margin-bottom: 0.4rem; }
+.cfg-install .field { flex: 1 1 18rem; margin: 0; }
+.cfg-install input { width: 100%; margin-top: 0.15rem; font: 11px/1.4 ui-monospace, monospace; padding: 0.2rem 0.3rem; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
+/* The maps (env, tool exceptions) are typed one entry per line, so they are monospace and resizable. */
+.cfg-modal textarea { width: 100%; margin-top: 0.15rem; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0.2rem 0.3rem; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; resize: vertical; }
+/* The raw editor holds a whole file of JSON, so the same monospace box outside the modal. */
+.cfg-raw { width: 100%; margin-top: 0.15rem; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0.2rem 0.3rem; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; resize: vertical; }
+.cfg-modal details { margin: 0.45rem 0; }
+.cfg-modal summary { color: var(--accent); font-size: 12px; cursor: pointer; }
+.cfg-modal details .cfg-note { margin: 0.35rem 0; }
+.cfg-modal .error { font-size: 12px; }
+/* The note is a note wherever the modal is, not only inside the settings view (ui/Chat.svelte). */
+.cfg-modal .cfg-note { color: var(--muted); font-size: 12px; margin: 0 0 0.6rem; }
+.cfg-enabled { display: flex; align-items: center; gap: 0.25rem; white-space: nowrap; }
+.cfg-enabled input { width: auto !important; margin: 0; }
+.cfg-actions { display: flex; gap: 0.4rem; }
+.cfg-actions .remove { color: var(--error); }
+.linklike { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; }
+.cfg-errors { list-style: none; margin: 0 0 0.5rem; padding: 0; font-size: 12px; max-width: 46rem; }

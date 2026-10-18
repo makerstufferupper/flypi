@@ -1,0 +1,11 @@
+{
+	"_comment": "The consolidation input (docs/testing.md): near-duplicates that the write gate let through, a contradiction the token rule cannot see, and something stale. Every row here is one that ends up `active` in the store, because that is the set a sweep is handed.",
+	"rows": [
+		{ "kind": "convention", "body": "we use pnpm, never npm", "tags": ["packages"], "origin_class": "owner" },
+		{ "kind": "convention", "body": "we use pnpm, never npm, for every install", "tags": ["packages"], "origin_class": "agent" },
+		{ "kind": "note", "body": "the deploy host is the small box", "tags": ["deploy"], "origin_class": "agent" },
+		{ "kind": "note", "body": "the api url is https://staging.example/api", "tags": ["deploy"], "origin_class": "agent", "age_days": 400 },
+		{ "kind": "note", "body": "we deploy with docker", "tags": ["deploy"], "origin_class": "agent" },
+		{ "kind": "note", "body": "we do not deploy with docker", "tags": ["deploy"], "origin_class": "owner" }
+	]
+}
