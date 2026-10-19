@@ -26,6 +26,26 @@ flypi stop
 The first start downloads two local models (~900 MB) for the memory store — an embedder and a
 contradiction judge. Skip them with `flypi start --embeddings none --judge none`.
 
+## Docker
+
+```bash
+docker build -t flypi .
+docker run -d --name flypi -p 127.0.0.1:8791:8791 -v flypi-data:/data flypi
+open http://localhost:8791/
+```
+
+No start command: the container starts the daemon and prints its URL in `docker logs`. `-v flypi-data:/data`
+is where `.flypi/` lives — conversations, the memory wiki, your config and the ~900 MB of models — so it
+survives the container being removed; without it the download and everything you wrote go with it. Bind
+`127.0.0.1:` unless you want the whole LAN to reach it: the page and `/healthz` are served without the token.
+
+`docker stop` shuts the daemon down properly (an in-flight turn is recorded as interrupted, never re-run).
+`docker exec flypi flypi status` and `... flypi logs -n 100` read the running daemon. `flypi update` does not
+work in a container — the package is read-only there; rebuild the image instead.
+
+The image installs the published package, so it is the same code `npm install -g` gives you;
+`docker build --build-arg FLYPI_VERSION=0.1.2` pins the version.
+
 ## Configure
 
 `.flypi/agent/models.json` names your providers and models, and `.flypi/agent/settings.json` picks

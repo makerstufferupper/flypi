@@ -1,0 +1,10 @@
+# The image installs the published package, so nothing here is copied in. This only keeps the build context
+# (node_modules and .git are hundreds of MB) off the wire.
+.git
+node_modules
+dist
+.flypi
+.scratch
+coverage
+*.tgz
+*.log
