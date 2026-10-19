@@ -4,6 +4,8 @@ A local, multi-model agent tool with a browser UI and a personal knowledge wiki,
 [pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) running in-process.
 Everything it reads or writes lives in `.flypi/` — never in `~/.pi`.
 
+![flypi in the browser: a session sidebar, the chat with its model and thinking selectors, and an activity panel](assets/screenshot.png)
+
 ## Install
 
 ```bash
