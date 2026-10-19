@@ -29,8 +29,7 @@ contradiction judge. Skip them with `flypi start --embeddings none --judge none`
 ## Docker
 
 ```bash
-docker build -t flypi .
-docker run -d --name flypi -p 127.0.0.1:8791:8791 -v flypi-data:/data flypi
+docker run -d --name flypi -p 127.0.0.1:8791:8791 -v flypi-data:/data makerstufferupper/flypi
 open http://localhost:8791/
 ```
 
@@ -43,8 +42,9 @@ survives the container being removed; without it the download and everything you
 `docker exec flypi flypi status` and `... flypi logs -n 100` read the running daemon. `flypi update` does not
 work in a container — the package is read-only there; rebuild the image instead.
 
-The image installs the published package, so it is the same code `npm install -g` gives you;
-`docker build --build-arg FLYPI_VERSION=0.1.2` pins the version.
+`makerstufferupper/flypi` is published for `linux/amd64` and `linux/arm64`, and installs the published npm
+package — the same code `npm install -g` gives you. Build it yourself with `docker build -t flypi .`;
+`--build-arg FLYPI_VERSION=0.1.3` pins the version.
 
 ## Configure
 
