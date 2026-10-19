@@ -16,6 +16,7 @@
 		"src",
 		"scripts",
 		"dist/ui",
+		"assets/screenshot.png",
 		"README.md"
 	],
 	"engines": {
