@@ -190,6 +190,40 @@ describe("the daemon CLI", () => {
 		}
 	}, 120_000);
 
+	it("start --foreground forwards a signal to the daemon, which is how a container stops it", async () => {
+		// `docker stop` signals PID 1 — the CLI in foreground mode — not the daemon. If the wrapper does not
+		// pass it on, the container is torn down around a daemon that never ran its own shutdown.
+		const root = tempRoot();
+		const port = await freePort();
+		const child = spawn(process.execPath, [cli, "start", "--foreground", "--port", String(port), "--host", "127.0.0.1"], {
+			cwd: root,
+			env: { ...process.env, FLYPI_ROOT: root },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		const out: string[] = [];
+		child.stdout.on("data", (chunk) => out.push(String(chunk)));
+		child.stderr.on("data", (chunk) => out.push(String(chunk)));
+		try {
+			const until = Date.now() + 60_000;
+			while (Date.now() < until && !(await fetch(`http://127.0.0.1:${port}/healthz`).then((r) => r.ok).catch(() => false))) {
+				await new Promise((done) => setTimeout(done, 200));
+			}
+			// Foreground output goes to the terminal (`docker logs`), not to .flypi/daemon.log.
+			expect(out.join(""), out.join("")).toContain("flypi: daemon pid");
+			child.kill("SIGTERM");
+			const [code] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
+			expect(code).toBe(0);
+			// The daemon removed its own pid file on the way out: the proof it got the signal rather than being
+			// killed with the container.
+			expect(() => readFileSync(join(root, DAEMON_FILE), "utf8")).toThrow();
+			await expect(fetch(`http://127.0.0.1:${port}/healthz`)).rejects.toThrow();
+		} finally {
+			child.kill("SIGKILL");
+			flypi(root, "stop");
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, 120_000);
+
 	it("restart keeps the port and interface the last start asked for", async () => {
 		// A bare `flypi restart` otherwise drops --port and --host, and in a container that moves the daemon
 		// off the published port: the URL in the browser stops working and nothing on screen says why.

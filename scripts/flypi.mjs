@@ -7,6 +7,7 @@
  * detached, wait until `/healthz` answers, and report the URL you would otherwise have to dig out of a log.
  *
  *   node scripts/flypi.mjs start [--foreground]   # or: npm run flypi -- start
+ *   node scripts/flypi.mjs start --foreground --port 8791 --host 0.0.0.0   # the container entry point
  *   node scripts/flypi.mjs status | stop | restart | logs [-n 50] [-f]
  *   node scripts/flypi.mjs update [--check]        # the newest published flypi (docs/architecture.md Phase 7)
  *
@@ -187,6 +188,12 @@ async function start({ foreground = false, previous } = {}) {
 	if (Object.keys(namedFlags).length > 0) writeFileSync(flagsPath, `${JSON.stringify({ ...readJson(flagsPath), ...namedFlags })}\n`);
 	if (foreground) {
 		const child = spawn(process.execPath, ["--import", "tsx", serveDaemon, "--root", root, ...flags], { cwd: checkout, stdio: "inherit" });
+		// Ctrl-C and `docker stop` reach this process, not the daemon. PID 1 in a pid namespace drops a signal it
+		// has no handler for, so without this the SIGTERM never arrives: docker waits out its grace period and
+		// SIGKILLs a daemon that never got to remove its pid file, close its sockets or record an interrupted
+		// turn. Installing the handler is what makes the signal be delivered; forwarding is what makes the
+		// daemon run its own shutdown, and the exit code comes from the daemon rather than from this wrapper.
+		for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
 		return new Promise((done) => child.on("exit", (code) => done(code ?? 0)));
 	}
 	// The log's directory is created above, not assumed.
