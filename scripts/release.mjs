@@ -14,7 +14,10 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
-const dryRun = argv.includes("--dry-run");
+// `npm run release patch --dry-run` hands `--dry-run` to npm, not to this script, but npm does export it as
+// config — so a "dry run" of the release really bumped the version, committed, tagged and pushed, and only the
+// publish was dry. Read both, so the flag means what it says whichever way it arrives.
+const dryRun = argv.includes("--dry-run") || process.env.npm_config_dry_run === "true";
 const kind = argv.find((a) => ["patch", "minor", "major", "preminor", "premajor"].includes(a)) ?? "patch";
 
 /** `remote: true` marks the two steps that leave this machine, so the dry-run output says which is which. */
