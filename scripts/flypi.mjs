@@ -10,13 +10,14 @@
  *   node scripts/flypi.mjs start --foreground --port 8791 --host 0.0.0.0   # the container entry point
  *   node scripts/flypi.mjs status | stop | restart | logs [-n 50] [-f]
  *   node scripts/flypi.mjs update [--check]        # the newest published flypi (docs/architecture.md Phase 7)
+ *   node scripts/flypi.mjs pi [list | available | use <v> | rollback | unpin]   # which pi it runs (docs/pi-upgrades.md Phase 8.3)
  *
  * `--root DIR` (or FLYPI_ROOT) picks which `.flypi/` the CLI owns; in a checkout it defaults to the cwd,
  * and the installed `bin/flypi.mjs` sets FLYPI_ROOT to the home directory before importing this.
  */
 import { mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const argv = process.argv.slice(2);
@@ -32,6 +33,7 @@ const checkout = resolve(fileURLToPath(import.meta.url), "..", "..");
 const serveDaemon = resolve(fileURLToPath(import.meta.url), "..", "serve-daemon.ts");
 const secretCli = resolve(fileURLToPath(import.meta.url), "..", "secret.ts");
 const updateCli = resolve(fileURLToPath(import.meta.url), "..", "update.ts");
+const piCli = resolve(fileURLToPath(import.meta.url), "..", "pi.ts");
 const infoPath = resolve(root, ".flypi", "daemon.json");
 const logPath = resolve(root, ".flypi", "daemon.log");
 /**
@@ -188,6 +190,13 @@ async function start({ foreground = false, previous } = {}) {
 	// sticky — and it merges, so naming just `--port` does not drop an `--host` that is still in force.
 	const namedFlags = { ...(flagValue("--port") ? { port: Number(flagValue("--port")) } : {}), ...(flagValue("--host") ? { host: flagValue("--host") } : {}) };
 	if (Object.keys(namedFlags).length > 0) writeFileSync(flagsPath, `${JSON.stringify({ ...readJson(flagsPath), ...namedFlags })}\n`);
+	// Which pi the daemon is about to resolve (src/daemon/pi.ts). A flypi upgrade can replace the package
+	// directory and take the pointer with it, so a pin whose tree exists is re-applied here — in this process,
+	// which has not imported pi, and before the daemon exists, because a daemon resolves its module graph at
+	// import and cannot re-pick its own pi.
+	const relink = spawnSync(process.execPath, ["--import", "tsx", piCli, "--root", root, "relink"], { cwd: checkout, encoding: "utf8" });
+	if (relink.stdout?.trim()) console.log(relink.stdout.trim());
+	if (relink.status !== 0) console.error(`flypi: the pi pin could not be applied: ${(relink.stderr ?? "").trim() || `it exited ${relink.status}`}`);
 	if (foreground) {
 		const child = spawn(process.execPath, ["--import", "tsx", serveDaemon, "--root", root, ...flags], { cwd: checkout, stdio: "inherit" });
 		// Ctrl-C and `docker stop` reach this process, not the daemon. PID 1 in a pid namespace drops a signal it
@@ -290,6 +299,12 @@ const flagNumber = (name) => {
 	const i = argv.indexOf(name);
 	return i === -1 ? undefined : Number(argv[i + 1]);
 };
+/** `flypi pi …` (docs/pi-upgrades.md Phase 8.3): which pi this flypi runs, and moving it. */
+async function pi(args) {
+	const child = spawn(process.execPath, ["--import", "tsx", piCli, "--root", root, ...args], { cwd: checkout, stdio: "inherit" });
+	return new Promise((done) => child.on("exit", (code) => done(code ?? 0)));
+}
+
 const result = await {
 	start: () => start({ foreground: argv.includes("--foreground") }),
 	stop,
@@ -304,9 +319,10 @@ const result = await {
 	logs: () => logs({ ...(flagNumber("-n") ? { lines: flagNumber("-n") } : {}), follow: argv.includes("-f") || argv.includes("--follow") }),
 	secret: () => secret(argv.slice(1)),
 	update: () => update(argv.slice(1)),
+	pi: () => pi(argv.slice(1)),
 }[command]?.();
 if (result === undefined) {
-	console.log("usage: flypi [--root DIR] start [--foreground] [--port N] [--host H] [--embeddings none] [--judge none] | stop | restart | status | logs [-n N] [-f] | update [--check] | secret …");
+	console.log("usage: flypi [--root DIR] start [--foreground] [--port N] [--host H] [--embeddings none] [--judge none] | stop | restart | status | logs [-n N] [-f] | update [--check] | pi [list | available | use <version> | rollback | unpin] | secret …");
 	process.exit(2);
 }
 process.exit(result);

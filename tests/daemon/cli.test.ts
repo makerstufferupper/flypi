@@ -100,6 +100,21 @@ describe("which .flypi/ a command owns", () => {
 });
 
 describe("the daemon CLI", () => {
+	it("says which pi it runs, and refuses to move pi in a checkout", () => {
+		const root = tempRoot();
+		try {
+			const listed = flypi(root, "pi", "list");
+			expect(listed.code).toBe(0);
+			expect(listed.out).toMatch(/pi \d+\.\d+\.\d+/);
+			// A checkout has no pointer to move: it changes pi with npm and the suite, not with a symlink.
+			const moved = flypi(root, "pi", "use", "9.9.9");
+			expect(moved.code).toBe(1);
+			expect(moved.out).toContain("not the npm global package");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("says what is not running, and why", () => {
 		const root = tempRoot();
 		try {
