@@ -24,6 +24,7 @@
 	},
 	"scripts": {
 		"probe": "tsx scripts/probe.ts",
+		"probe:pi": "tsx scripts/probe-pi.ts",
 		"probe:turn": "tsx scripts/probe-turn-boundary.ts",
 		"probe:boundary": "tsx scripts/turn-boundary.ts",
 		"start": "node scripts/start.mjs",
