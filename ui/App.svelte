@@ -96,7 +96,8 @@
 
 	async function askHealth(): Promise<void> {
 		try {
-			const health = (await (await fetch("/healthz")).json()) as { version?: string; startedAt?: string; updateAvailable?: string; updateReady?: string };
+			const health = (await (await fetch("/healthz")).json()) as { version?: string; startedAt?: string; updateAvailable?: string; updateReady?: string; pi?: { version: string; pinned: boolean; bundled?: string } };
+			if (health.pi) app.pi = health.pi;
 			update.available = health.updateAvailable ?? null;
 			update.ready = health.updateReady ?? null;
 			daemon = { version: health.version ?? null, startedAt: health.startedAt ?? null };

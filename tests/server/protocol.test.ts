@@ -145,6 +145,8 @@ describe("protocol: server frames are checked before they are sent", () => {
 
 	it("accepts hello, result and error frames", () => {
 		expect(checkServerFrame({ type: "hello", protocolVersion: PROTOCOL_VERSION, serverVersion: "dev" }).ok).toBe(true);
+		// `pi` is optional so an older server still parses, and present on every server from here on.
+		expect(checkServerFrame({ type: "hello", protocolVersion: PROTOCOL_VERSION, serverVersion: "dev", pi: { version: "1.4.0", pinned: true, bundled: "1.0.4" } }).ok).toBe(true);
 		expect(checkServerFrame({ type: "result", requestId: "r1", conversationId: "c1" }).ok).toBe(true);
 		expect(checkServerFrame({ type: "error", message: "boom", code: "replay_gap" }).ok).toBe(true);
 	});

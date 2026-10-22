@@ -116,6 +116,11 @@ export class FlypiAppState {
 	 */
 	extensionDialog = $state<ExtensionUiFrame | undefined>(undefined);
 	protocolMismatch = $state<string | undefined>(undefined);
+	/**
+	 * Which pi the server loaded (docs/pi-upgrades.md Phase 8.1) — the version it is really running, not the
+	 * range flypi's package.json declares. From `hello`, refreshed by the `/healthz` poll in App.svelte.
+	 */
+	pi = $state<{ version: string; pinned: boolean; bundled?: string } | undefined>(undefined);
 
 	#transport: Transport;
 	#lastSeq = 0;
@@ -463,6 +468,7 @@ export class FlypiAppState {
 		switch (frame.type) {
 			case "hello":
 				if (frame.protocolVersion !== 1) this.protocolMismatch = `server speaks protocol v${frame.protocolVersion}, this UI speaks v1`;
+				this.pi = frame.pi;
 				return;
 			case "event": {
 				// The only place a transcript changes: the same reducer a replay goes through.

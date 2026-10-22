@@ -19,6 +19,7 @@ import { SessionRegistry } from "../src/server/session-registry.ts";
 import { openRunStore } from "../src/server/run-store.ts";
 import { secretsApi } from "../src/server/secrets-api.ts";
 import { openSecretVault, type SecretStore } from "../src/secrets/vault.ts";
+import { loadedPi } from "../src/daemon/pi.ts";
 import { startFlypiServer } from "../src/server/index.ts";
 
 const argv = process.argv.slice(2);
@@ -63,6 +64,7 @@ const server = await startFlypiServer({
 	port: flagValue("--port") ? Number(flagValue("--port")) : undefined,
 	token: flagValue("--token") ?? process.env.FLYPI_TOKEN,
 	serverVersion: "dev",
+	pi: () => loadedPi(paths.root),
 	// An interrupted turn is a backend fact, so it is answered from the backend's store here too.
 	interruptedRun: (sessionFile) => runs.interruptedFor(sessionFile),
 	// Prod: the same server serves the built UI (docs/architecture.md: "Dev vs prod").

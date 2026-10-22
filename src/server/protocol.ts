@@ -579,10 +579,20 @@ export type ClientCommand = Static<typeof ClientCommandSchema>;
 /** A pi session event, passed through verbatim. Only the discriminator is checked here. */
 export const SessionEventFrameBody = Type.Object({ type: Type.String() }, { additionalProperties: true });
 
+/** Which pi answers (docs/pi-upgrades.md Phase 8.1): the version loaded, and what chose it. */
+export const PiInfoFrame = Type.Object({
+	version: Type.String(),
+	pinned: Type.Boolean(),
+	/** What the tree flypi was installed with holds, when that is not what is running. */
+	bundled: Type.Optional(Type.String()),
+});
+
 export const HelloFrame = Type.Object({
 	type: Type.Literal("hello"),
 	protocolVersion: Type.Integer(),
 	serverVersion: Type.String(),
+	/** Optional so an older server still parses; every flypi server from here on sends it. */
+	pi: Type.Optional(PiInfoFrame),
 });
 
 export const EventFrame = Type.Object({

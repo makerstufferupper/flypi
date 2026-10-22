@@ -14,6 +14,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES } from "../shared/attachments.ts";
 import { parsePath, VIEW_PATHS } from "../shared/views.ts";
 import { PROTOCOL_VERSION, encodeFrame, parseClientCommand, type InterruptedRun, type ResultFrame, type SchedulerSnapshot, type ServerFrame } from "./protocol.ts";
+import type { PiInfo } from "../daemon/pi.ts";
 import type { MemoryApi } from "./memory-api.ts";
 import type { SessionRegistry } from "./session-registry.ts";
 import type { SecretsApi } from "./secrets-api.ts";
@@ -25,6 +26,11 @@ export interface FlypiServerOptions {
 	port?: number;
 	host?: string;
 	serverVersion?: string;
+	/**
+	 * Which pi this process loaded (docs/pi-upgrades.md Phase 8.1). Sent in `hello` so a client knows what it
+	 * is talking to before it asks for anything; `/healthz` carries the same object for `flypi status`.
+	 */
+	pi?: () => PiInfo;
 	/** How often to sweep idle, unattached conversations. */
 	evictIntervalMs?: number;
 	/** Built UI to serve (`npm run build`). Omit and the server is headless, as in Phase 1. */
@@ -202,7 +208,7 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 			}
 		};
 
-		send({ type: "hello", protocolVersion: PROTOCOL_VERSION, serverVersion: options.serverVersion ?? "dev" });
+		send({ type: "hello", protocolVersion: PROTOCOL_VERSION, serverVersion: options.serverVersion ?? "dev", ...(options.pi ? { pi: options.pi() } : {}) });
 
 		const handle = async (raw: string): Promise<void> => {
 			const parsed = parseClientCommand(raw);

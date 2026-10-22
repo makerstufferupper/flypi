@@ -30,6 +30,7 @@ import { startFlypiServer, type FlypiServerHandle, type FlypiServerOptions } fro
 import { SessionRegistry, type CreateSession } from "../server/session-registry.ts";
 import type { RunStore } from "../server/run-store.ts";
 import { JobQueue, startJobLoop, type JobHandler } from "./jobs.ts";
+import { loadedPi } from "./pi.ts";
 import { IDLE_BEFORE_INSTALL_MS, checkForUpdate, clearUpdateCheck, downloadUpdate, dueForCheck, installArgs, isGlobalInstall, isNewer, keepDownload, packageDir, packageInfo, readUpdateCheck, stagedUpdate, updateAvailable, writeUpdateCheck } from "./update.ts";
 
 /** What `.flypi/daemon.json` holds: enough for `flypi status` to find a running daemon again. */
@@ -191,6 +192,7 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 				pid: process.pid,
 				startedAt: startedAt,
 				version,
+				pi: loadedPi(paths.root),
 				memoryPort: memory.port,
 				jobs: queue.queued(),
 				...(newer ? { updateAvailable: newer } : {}),
@@ -205,6 +207,8 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		interruptedRun: (sessionFile) => options.runs.interruptedFor(sessionFile),
 		// The page's "install now": the same path the idle rule takes, without the wait.
 		installUpdate: () => installStaged(),
+		// `hello` carries it too, so a client knows what pi it is talking to without a round trip to /healthz.
+		pi: () => loadedPi(paths.root),
 	};
 	let server: FlypiServerHandle;
 	// The same rule as the memory port above, and the reason the pid file is written after the bind rather

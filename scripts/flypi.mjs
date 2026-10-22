@@ -161,6 +161,8 @@ function report(info, status) {
 	console.log(`flypi: agent   http://${info.host}:${info.port}  (token ${info.token})`);
 	console.log(`flypi: memory  http://127.0.0.1:${info.memoryPort}/mcp`);
 	if (status) console.log(`flypi: started ${status.startedAt}, version ${status.version}, ${status.jobs} job(s) queued`);
+	// Which pi it loaded (src/daemon/pi.ts) — not the range package.json declares, which is the point.
+	if (status?.pi) console.log(`flypi: pi       ${status.pi.version}${status.pi.pinned ? " (pinned)" : ""}${status.pi.bundled ? ` — the installed tree holds ${status.pi.bundled}` : ""}`);
 	// The daemon's own daily answer (src/daemon/update.ts) — `status` does not reach the network itself.
 	if (status?.updateAvailable) console.log(`flypi: ${status.updateAvailable} is available — \`flypi update\` installs it`);
 	if (status?.updateReady) console.log(`flypi: ${status.updateReady} is downloaded — it installs once the daemon has been idle`);

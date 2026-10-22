@@ -131,6 +131,15 @@
 		{#if app.updateError}<p class="update error" data-role="update-error">{app.updateError}</p>{/if}
 	{/if}
 
+	<!-- Which pi answers (docs/pi-upgrades.md Phase 8.1): the version loaded, not the range flypi declares.
+		"pinned" means `flypi pi use` chose it; the other number is what the installed tree holds, and the two
+		disagreeing is the whole reason this line exists. -->
+	{#if app.pi}
+		<p class="update" data-role="pi-version">
+			{`pi ${app.pi.version}${app.pi.pinned ? " (pinned)" : ""}${app.pi.bundled ? ` · installed tree holds ${app.pi.bundled}` : ""}`}
+		</p>
+	{/if}
+
 	<!-- Every session flypi owns, listed as soon as there is a conversation: the list *is* the
 		navigation, so there is no Open button to press first. Rows are plain text that light up when
 		you point at one, keyed by path so a refresh cannot interrupt an inline rename, and the row you

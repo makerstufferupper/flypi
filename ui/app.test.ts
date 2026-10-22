@@ -1543,6 +1543,16 @@ describe("the update the daemon reports", () => {
 		await waitFor(() => expect(line()).toContain("flypi 0.2.0 is available"));
 	});
 
+	it("names the pi the daemon loaded, and says when a pin chose it (Phase 8.1)", async () => {
+		// The loaded version, not the range flypi's package.json declares — and the installed tree's version
+		// beside it, because the two disagreeing is what the line is for.
+		health({ version: "0.1.0", pi: { version: "1.4.0", pinned: true, bundled: "1.0.4" } });
+		await mount();
+		const line = () => document.querySelector("[data-role='pi-version']")?.textContent ?? "";
+		await waitFor(() => expect(line()).toContain("pi 1.4.0 (pinned)"));
+		expect(line()).toContain("installed tree holds 1.0.4");
+	});
+
 	it("says the downloaded one installs by itself, which is the state that matters to the reader", async () => {
 		health({ version: "0.1.0", updateAvailable: "0.2.0", updateReady: "0.2.0" });
 		await mount();

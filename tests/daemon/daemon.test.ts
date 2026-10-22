@@ -6,7 +6,7 @@
  * each other — including that the run record is written to the backend's own database, not the memory one.
  */
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -233,7 +233,15 @@ describe("the daemon", () => {
 		const d = await daemon();
 		try {
 			// Unauthenticated: this is what `flypi status` and a service manager ask.
-			expect(await healthAt(d.port)).toMatchObject({ ok: true, pid: process.pid, memoryPort: d.memoryPort, version: "dev" });
+			expect(await healthAt(d.port)).toMatchObject({
+				ok: true,
+				pid: process.pid,
+				memoryPort: d.memoryPort,
+				version: "dev",
+				// Which pi answers (docs/pi-upgrades.md Phase 8.1): the loaded module's version, read here by a
+				// route the server does not use, and unpinned because nothing pinned it.
+				pi: { version: (JSON.parse(readFileSync(resolve("node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8")) as { version: string }).version, pinned: false },
+			});
 
 			const info = readDaemonInfo(d.root);
 			expect(info).toMatchObject({ pid: process.pid, port: d.port, token: d.token, memoryPort: d.memoryPort, version: "dev" });
