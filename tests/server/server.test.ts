@@ -919,7 +919,7 @@ describe("the daemon's surface", () => {
 			const shown = await client.next((frame) => frame.type === "result" && frame.requestId === "r1");
 			expect(shown.type === "result" && shown.pi).toEqual(versions);
 			client.send({ type: "usePi", version: "1.5.0", requestId: "r2" });
-			const ack = await client.next((frame) => frame.requestId === "r2");
+			const ack = await client.next((frame) => (frame.type === "result" || frame.type === "error") && frame.requestId === "r2");
 			// The ack goes out before the restart, because the restart closes this socket: what the page learns
 			// afterwards is which version came back, not a promise about this one.
 			expect(ack.type).toBe("result");
