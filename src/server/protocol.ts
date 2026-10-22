@@ -332,6 +332,9 @@ export const PackageRow = Type.Object({
 	scope: Type.Union([Type.Literal("user"), Type.Literal("project")]),
 	installed: Type.Boolean(),
 	path: Type.String(),
+	/** The version the installed code's own `package.json` says. A source that names a version is pinned,
+	 *  and this is what tells the reader which version that is (docs/pi-upgrades.md). */
+	version: Type.Optional(Type.String()),
 	update: Type.Optional(Type.Boolean()),
 });
 
@@ -364,6 +367,51 @@ export const SavePackagesCommand = Type.Object({
 	install: Type.Optional(Type.Array(PackageSource, { maxItems: 10 })),
 	remove: Type.Optional(Type.Array(PackageSource, { maxItems: 10 })),
 	update: Type.Optional(Type.Array(PackageSource, { maxItems: 10 })),
+	requestId: Type.Optional(RequestId),
+});
+
+/**
+ * Which pi answers, what is on disk to move to, and what the daemon's daily registry answer said (Phase 8.4,
+ * docs/pi-upgrades.md). `latest`/`next` are absent until the daemon has asked — the request itself reaches no
+ * network, the same rule `packages` follows.
+ */
+export const PiVersions = Type.Object({
+	/** The version this process loaded. */
+	running: Type.String(),
+	pinned: Type.Boolean(),
+	/** What the tree flypi was installed with holds, when that is not what is running. */
+	bundled: Type.Optional(Type.String()),
+	/** The pi versions with a tree on disk — what "switch back" can offer. */
+	trees: Type.Array(Type.String()),
+	next: Type.Optional(Type.String()),
+	latest: Type.Optional(Type.String()),
+	checkedAt: Type.Optional(Type.String()),
+});
+
+export type PiVersions = Static<typeof PiVersions>;
+
+/** Ask what pi this flypi runs and what it could move to. Reaches no network. */
+export const PiVersionsCommand = Type.Object({
+	type: Type.Literal("piVersions"),
+	requestId: Type.Optional(RequestId),
+});
+
+/**
+ * Move to a published pi version. The daemon flips the pointer and hands the restart to the CLI — the same
+ * path `installUpdate` takes — and the ack goes out before the restart closes this socket. The switch is
+ * provisional: if the new process does not answer reporting that version, the pointer goes back on its own
+ * (docs/risks.md risk 13), so the page comes back and says which version it is on.
+ */
+export const UsePiCommand = Type.Object({
+	type: Type.Literal("usePi"),
+	version: Type.String({ minLength: 1 }),
+	requestId: Type.Optional(RequestId),
+});
+
+/** The same call with an older version — only offered for the trees still on disk. */
+export const RollbackPiCommand = Type.Object({
+	type: Type.Literal("rollbackPi"),
+	version: Type.String({ minLength: 1 }),
 	requestId: Type.Optional(RequestId),
 });
 
@@ -567,6 +615,9 @@ export const ClientCommandSchema = Type.Union([
 	McpRedirectCommand,
 	PackagesCommand,
 	SavePackagesCommand,
+	PiVersionsCommand,
+	UsePiCommand,
+	RollbackPiCommand,
 	SecretsCommand,
 	SaveSecretsCommand,
 	RevealSecretCommand,
@@ -827,6 +878,7 @@ export const ResultFrame = Type.Object({
 	mcpStatus: Type.Optional(McpStatusSnapshot),
 	config: Type.Optional(ConfigSnapshot),
 	packages: Type.Optional(PackagesSnapshot),
+	pi: Type.Optional(PiVersions),
 	scheduler: Type.Optional(SchedulerSnapshot),
 	secrets: Type.Optional(SecretsSnapshot),
 	revealed: Type.Optional(RevealedSecret),

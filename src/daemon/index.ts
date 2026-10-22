@@ -11,13 +11,13 @@
  * and so is the run store, which is a file either entrypoint can open in a millisecond. Everything that makes
  * it a *daemon* — the reconciliation, `/healthz`, `daemon.json`, the queue — lives here, and is tested here.
  */
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { FlypiPaths } from "../agent/paths.ts";
 import { applyConfigEdits, ensureAgentConfig, ensureMemoryEntry, memoryEndpoint } from "../agent/config-files.ts";
-import { applyPackageEdits, checkPackageUpdates, dueForPackageCheck, readPackageCheck, writePackageCheck } from "../agent/packages.ts";
+import { applyPackageEdits, autoExtensions, checkPackageUpdates, dueForPackageCheck, readPackageCheck, writePackageCheck } from "../agent/packages.ts";
 import { CONSOLIDATE_JOB, consolidate, sweepDue } from "../memory/consolidate.ts";
 import { startMemoryServer, type MemoryServerHandle } from "../memory/mcp.ts";
 import type { MemoryStore } from "../memory/store.ts";
@@ -30,7 +30,7 @@ import { startFlypiServer, type FlypiServerHandle, type FlypiServerOptions } fro
 import { SessionRegistry, type CreateSession } from "../server/session-registry.ts";
 import type { RunStore } from "../server/run-store.ts";
 import { JobQueue, startJobLoop, type JobHandler } from "./jobs.ts";
-import { loadedPi } from "./pi.ts";
+import { PI_PACKAGE, dueForPiCheck, loadedPi, piTrees, readPiCheck, writePiCheck } from "./pi.ts";
 import { IDLE_BEFORE_INSTALL_MS, checkForUpdate, clearUpdateCheck, downloadUpdate, dueForCheck, installArgs, isGlobalInstall, isNewer, keepDownload, packageDir, packageInfo, readUpdateCheck, stagedUpdate, updateAvailable, writeUpdateCheck } from "./update.ts";
 
 /** What `.flypi/daemon.json` holds: enough for `flypi status` to find a running daemon again. */
@@ -207,6 +207,35 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		interruptedRun: (sessionFile) => options.runs.interruptedFor(sessionFile),
 		// The page's "install now": the same path the idle rule takes, without the wait.
 		installUpdate: () => installStaged(),
+		// Which pi this is, what is on disk to move to, and the daily registry answer. No network here: the
+		// stamp is what the page shows (docs/pi-upgrades.md Phase 8.4).
+		piVersions: () => {
+			const pi = loadedPi(paths.root);
+			const stamp = readPiCheck(paths.root);
+			return {
+				running: pi.version,
+				pinned: pi.pinned,
+				...(pi.bundled ? { bundled: pi.bundled } : {}),
+				trees: piTrees(paths.root),
+				...(stamp?.next ? { next: stamp.next } : {}),
+				...(stamp?.latest ? { latest: stamp.latest } : {}),
+				...(stamp ? { checkedAt: stamp.checkedAt } : {}),
+			};
+		},
+		// Move pi and restart, through the same CLI path `flypi pi use` takes — the daemon cannot re-pick the
+		// module graph it already imported, and the child is the process that survives the restart to notice a
+		// failed start and put the pointer back (docs/risks.md risk 13).
+		usePi: async (version: string) => {
+			if (pkg.checkout || !isGlobalInstall()) {
+				return "this flypi is not the npm global package — in a checkout, `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`; in a container, rebuild the image";
+			}
+			const logFile = openSync(resolve(paths.root, ".flypi", "daemon.log"), "a");
+			const child = spawn(process.execPath, ["--import", "tsx", resolve(packageDir(), "scripts", "pi.ts"), "--root", paths.root, "use", version], { cwd: packageDir(), detached: true, stdio: ["ignore", logFile, logFile] });
+			child.on("error", (error) => log(`flypi: the pi switch could not start: ${error.message}`));
+			child.unref();
+			log(`flypi: moving to pi ${version} — the daemon restarts to run it, and goes back on its own if it does not come up`);
+			return null;
+		},
 		// `hello` carries it too, so a client knows what pi it is talking to without a round trip to /healthz.
 		pi: () => loadedPi(paths.root),
 	};
@@ -348,12 +377,23 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		if (check.error) log(`flypi: no extension update check: ${check.error}`);
 		else if (check.updates.length) log(`flypi: ${check.updates.length} extension package(s) have updates — ${check.updates.join(", ")}; they install the next time the daemon is idle`);
 	};
+	// The daily answer about published pi versions. It is only ever *shown*: moving pi restarts the process,
+	// so it never happens unattended (docs/pi-upgrades.md — the thing to recover from is exactly an unattended
+	// version change). The stamp is what the Versions section reads.
+	const checkPiVersions = async () => {
+		const check = await checkForUpdate({ current: loadedPi(paths.root).version, name: PI_PACKAGE });
+		writePiCheck(paths.root, { checkedAt: check.checkedAt, latest: check.latest, next: check.next, ...(check.error ? { error: check.error } : {}) });
+		if (check.next) log(`flypi: pi ${check.next} is available (running ${check.current}) — the Settings tab moves to it; nothing moves by itself`);
+		else if (check.error) log(`flypi: no pi version check: ${check.error}`);
+	};
+
 	const updatePass = (idle: boolean) => {
 		const stamp = readUpdateCheck(paths.root);
 		const pkgStamp = readPackageCheck(paths.root);
 		// A checkout is not an installed package, but the extensions it loads are: only flypi's own ladder is
 		// skipped there.
 		if (!pkg.checkout && dueForCheck(stamp)) void checkUpdates();
+		if (!pkg.checkout && dueForPiCheck(readPiCheck(paths.root))) void checkPiVersions();
 		if (dueForPackageCheck(pkgStamp)) void checkPackages();
 		const staged = pkg.checkout ? null : stagedUpdate(stamp, version);
 		const pending = pkgStamp?.updates ?? [];
@@ -364,12 +404,17 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		if (!idleSince) idleSince = Date.now();
 		if (Date.now() - idleSince < IDLE_BEFORE_INSTALL_MS) return;
 		// Packages first: they need no restart, and the flypi install below may take this process away.
-		if (pending.length) void updatePackages(pending);
+		// The choice is the user's (`updates.autoExtensions` in settings.json): an unattended extension
+		// update is how an incompatible one arrives.
+		if (pending.length && autoExtensions(paths)) void updatePackages(pending);
 		if (staged && stamp?.download?.file) installPackage(staged, stamp.download.file);
 		// Start the clock again either way: a failed install retries after another idle stretch, not every pass.
 		idleSince = 0;
 	};
-	if (!pkg.checkout) void checkUpdates();
+	if (!pkg.checkout) {
+		void checkUpdates();
+		void checkPiVersions();
+	}
 	if (dueForPackageCheck(readPackageCheck(paths.root))) void checkPackages();
 
 	const handlers: Record<string, JobHandler> = {

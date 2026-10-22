@@ -582,7 +582,7 @@ describe("the daemon", () => {
 			// The list the panel renders: the entry as the file holds it, its code on disk, and no `update` —
 			// nothing is newer than a path, and a badge is only ever the stamp's answer.
 			const listed = readPackages(paths);
-			expect(listed.packages).toEqual([{ source: dir, scope: "user", installed: true, path: dir }]);
+			expect(listed.packages).toEqual([{ source: dir, scope: "user", installed: true, path: dir, version: "1.0.0" }]);
 			expect(listed.errors).toEqual([]);
 			expect(Date.parse(listed.checkedAt ?? "")).not.toBeNaN();
 		} finally {

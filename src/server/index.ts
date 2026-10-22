@@ -13,7 +13,7 @@ import { extname, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES } from "../shared/attachments.ts";
 import { parsePath, VIEW_PATHS } from "../shared/views.ts";
-import { PROTOCOL_VERSION, encodeFrame, parseClientCommand, type InterruptedRun, type ResultFrame, type SchedulerSnapshot, type ServerFrame } from "./protocol.ts";
+import { PROTOCOL_VERSION, encodeFrame, parseClientCommand, type InterruptedRun, type PiVersions, type ResultFrame, type SchedulerSnapshot, type ServerFrame } from "./protocol.ts";
 import type { PiInfo } from "../daemon/pi.ts";
 import type { MemoryApi } from "./memory-api.ts";
 import type { SessionRegistry } from "./session-registry.ts";
@@ -46,6 +46,10 @@ export interface FlypiServerOptions {
 	 * it did not. Absent in a process that does not manage its own updates — a checkout, or `npm run serve`.
 	 */
 	installUpdate?: () => Promise<string | null>;
+	/** Which pi this process runs and what it could move to (docs/pi-upgrades.md Phase 8.4). */
+	piVersions?: () => PiVersions;
+	/** Move to a pi version and restart. Null when it started; a sentence when it refused. */
+	usePi?: (version: string) => Promise<string | null>;
 	/** The scheduler tab: what is queued, when it next runs, what the last runs changed. */
 	scheduler?: () => SchedulerSnapshot;
 	/**
@@ -312,6 +316,19 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 						// npm or git does the work, so this is the slow one of the settings commands; the page shows a
 						// busy state while it is open. The refreshed list comes back with the ack, as with saveConfig.
 						return reply(requestId, { packages: await registry.applyPackages(command) });
+					case "piVersions":
+						// Which pi answers, and what could be moved to. The daemon's daily stamp, never a live
+						// check — the same rule `packages` follows.
+						if (!options.piVersions) return fail("this flypi process does not manage pi versions — it is a checkout or a headless server", { requestId });
+						return reply(requestId, { pi: options.piVersions() });
+					case "usePi":
+					case "rollbackPi": {
+						// The pointer moves and the daemon restarts through the CLI, so the ack has to go out
+						// first: this socket is the one being replaced. What the page shows afterwards is the
+						// version the new process reports, not a promise about this one.
+						if (!options.usePi) return fail("this flypi process does not manage pi versions — in a checkout, `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`", { requestId });
+						return options.usePi(command.version).then((why) => (why ? fail(why, { requestId }) : reply(requestId)));
+					}
 					case "mcpStatus":
 						// Not config and not a conversation: the servers themselves are asked. Slow by nature (a
 						// stdio server has to start), which is why the panel asks once and shows a busy state

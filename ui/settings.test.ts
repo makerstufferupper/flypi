@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
 import { tick } from "svelte";
 import App from "./App.svelte";
-import type { ClientCommand, ConfigSnapshot, McpStatusSnapshot, PackagesSnapshot, ServerFrame } from "../src/server/protocol.ts";
+import type { ClientCommand, ConfigSnapshot, McpStatusSnapshot, PackagesSnapshot, PiVersions, ServerFrame } from "../src/server/protocol.ts";
 import type { Transport } from "./lib/client.ts";
 
 class FakeTransport implements Transport {
@@ -831,6 +831,65 @@ describe("the extension packages", () => {
  * it was loaded with as the guard against overwriting someone else's write, and an edit that has not been
  * saved survives a refresh. The write itself is covered in tests/agent/config-files.test.ts.
  */
+describe("the pi this flypi runs", () => {
+	const PI: PiVersions = { running: "1.3.0", pinned: true, bundled: "1.0.4", trees: ["1.3.0", "1.2.0"], next: "1.4.0", latest: "1.4.0", checkedAt: "2026-01-05T09:00:00.000Z" };
+
+	async function answeredPi(transport: FakeTransport, pi: PiVersions | undefined = PI): Promise<void> {
+		const requestId = (transport.sent.find((command) => command.type === "piVersions") as { requestId: string }).requestId;
+		transport.emit({ type: "result", requestId, ...(pi ? { pi } : {}) });
+		await tick();
+	}
+
+	it("asks when the view opens, and names the running version, the pin and the installed tree", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		expect(sent(transport, "piVersions")).toHaveLength(1);
+		await answeredPi(transport);
+		const line = document.querySelector('[data-role="pi-running"]')?.textContent ?? "";
+		expect(line).toContain("running pi 1.3.0");
+		expect(line).toContain("(pinned)");
+		// The disagreement is the point: the installed app and the loaded pi are two different things.
+		expect(line).toContain("the tree flypi was installed with holds 1.0.4");
+		expect(document.querySelector('[data-role="pi-checked"]')?.textContent).toContain("2026-01-05");
+	});
+
+	it("asks before it restarts the daemon, and only moves on the confirm", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answeredPi(transport);
+		fireEvent.click(document.querySelector('[data-role="pi-use"]') as HTMLButtonElement);
+		await tick();
+		expect(sent(transport, "usePi")).toHaveLength(0);
+		// The cost of the operation, said before it happens: this page goes down with the process.
+		expect(document.querySelector('[data-role="pi-confirm"]')?.textContent).toContain("this restarts the daemon");
+		fireEvent.click(document.querySelector('[data-role="pi-use-confirm"]') as HTMLButtonElement);
+		await tick();
+		const asked = transport.sent.filter((c) => c.type === "usePi") as { version: string }[];
+		expect(asked.map((c) => c.version)).toEqual(["1.4.0"]);
+	});
+
+	it("offers to go back only to a version whose tree is on disk, and never to the running one", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answeredPi(transport);
+		const rows = [...document.querySelectorAll('[data-role="pi-tree"]')].map((row) => row.textContent ?? "");
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toContain("pi 1.2.0");
+		expect(rows[0]).toContain("Switch back to 1.2.0");
+		expect(rows.join("")).not.toContain("pi 1.3.0");
+	});
+
+	it("says what a process that does not manage pi versions shows instead", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		// A checkout or a headless server: the answer is the sentence, not an empty list that reads as
+		// "nothing newer".
+		transport.emit({ type: "error", requestId: (transport.sent.find((c) => c.type === "piVersions") as { requestId: string }).requestId, message: "this flypi process does not manage pi versions" });
+		await tick();
+		expect(document.querySelector('[data-role="pi-none"]')?.textContent).toContain("npm install @earendil-works/pi-coding-agent@X");
+	});
+});
+
 describe("the raw file editor", () => {
 	const box = (name: "models" | "settings") => document.querySelector(`[data-role="raw-${name}"]`) as HTMLTextAreaElement;
 	const save = (name: "models" | "settings") => document.querySelector(`[data-role="raw-save-${name}"]`) as HTMLButtonElement;

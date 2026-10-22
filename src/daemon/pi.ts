@@ -26,10 +26,41 @@ import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, re
 import { join } from "node:path";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { checkPiCompat } from "../agent/pi-compat.ts";
-import { isGlobalInstall, packageDir } from "./update.ts";
+import { CHECK_INTERVAL_MS, isGlobalInstall, packageDir } from "./update.ts";
 
 /** The chosen pi, next to the trees it points at (`.flypi/pi/<version>/`). Written by `flypi pi use`. */
 export const PI_PIN_FILE = join(".flypi", "pi", "pin.json");
+/** The daemon's daily answer about published pi versions, next to the trees. The UI reads this stamp. */
+export const PI_CHECK_FILE = join(".flypi", "pi-check.json");
+
+/** What the daily check wrote. Shaped like flypi's own stamp (src/daemon/update.ts) on purpose. */
+export interface PiCheck {
+	checkedAt: string;
+	latest: string | null;
+	next: string | null;
+	error?: string;
+}
+
+export function readPiCheck(root: string): PiCheck | null {
+	try {
+		return JSON.parse(readFileSync(join(root, PI_CHECK_FILE), "utf8")) as PiCheck;
+	} catch {
+		return null;
+	}
+}
+
+export function writePiCheck(root: string, check: PiCheck): void {
+	mkdirSync(join(root, PI_DIR), { recursive: true });
+	writeFileSync(join(root, PI_CHECK_FILE), JSON.stringify(check, null, "	"));
+}
+
+/** Is the published answer stale? The daemon's day, the same rhythm as flypi's own and the extensions'. */
+export function dueForPiCheck(check: PiCheck | null, now = Date.now()): boolean {
+	if (!check?.checkedAt) return true;
+	const at = Date.parse(check.checkedAt);
+	return Number.isNaN(at) || now - at >= CHECK_INTERVAL_MS;
+}
+
 /** Where the trees live, and where the tree flypi shipped with goes when a pin takes over. */
 export const PI_DIR = join(".flypi", "pi");
 export const PI_BUNDLED = join(PI_DIR, "bundled");

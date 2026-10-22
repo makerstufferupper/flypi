@@ -8,8 +8,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyPackageEdits, dueForPackageCheck, readPackages, readPackageCheck, writePackageCheck } from "../../src/agent/packages.ts";
+import { applyPackageEdits, autoExtensions, dueForPackageCheck, readPackages, readPackageCheck, writePackageCheck } from "../../src/agent/packages.ts";
 import { FlypiConfigError, createFlypiSession, type FlypiSession } from "../../src/agent/runtime.ts";
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
@@ -50,11 +51,25 @@ function rootWithPackage(settings: Record<string, unknown> = { defaultProvider: 
 
 const settingsOf = (paths: FlypiPaths) => JSON.parse(readFileSync(paths.settingsPath, "utf8")) as Record<string, unknown>;
 
+describe("whether the daemon may update extensions by itself", () => {
+	// The default is the behaviour that predates the key; only `false` turns it off. pi itself never updates
+	// unattended, in either setting (docs/pi-upgrades.md).
+	it("is on unless settings.json says otherwise", () => {
+		// No settings.json at all: the defaults have to work.
+		expect(autoExtensions(flypiPaths(join(tmpdir(), "flypi-no-such-root")))).toBe(true);
+		const { paths } = rootWithPackage({ updates: { autoExtensions: false } });
+		expect(autoExtensions(paths)).toBe(false);
+		const { paths: other } = rootWithPackage({ updates: { autoExtensions: true } });
+		expect(autoExtensions(other)).toBe(true);
+	});
+});
+
 describe("the packages a flypi checkout declares", () => {
 	it("installs by source, records the declaration, and leaves the rest of settings.json alone", async () => {
 		const { paths, dir } = rootWithPackage({ defaultProvider: "lmstudio", defaultModel: "qwen3", permissions: { askBeforeUse: ["bash"] } });
 		const snapshot = await applyPackageEdits(paths, { install: [dir] });
-		expect(snapshot.packages).toEqual([{ source: expect.any(String), scope: "user", installed: true, path: dir }]);
+		// The version is the installed code's own, which is what a rollback has to name.
+		expect(snapshot.packages).toEqual([{ source: expect.any(String), scope: "user", installed: true, path: dir, version: "1.0.0" }]);
 		expect(snapshot.errors).toEqual([]);
 		// The entry is pi's own form — a path relative to the settings file that holds it — and the keys the
 		// settings panel owns are untouched (src/agent/config-files.ts writes the default pair into this file).

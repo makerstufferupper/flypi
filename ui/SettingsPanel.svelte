@@ -13,6 +13,7 @@
 		app.showConfig();
 		app.checkMcp();
 		app.showPackages();
+		app.showPiVersions();
 	});
 
 	const endpoints = $derived(app.config?.endpoints ?? []);
@@ -20,6 +21,8 @@
 	const packages = $derived(app.packages?.packages ?? []);
 	/** The source to install, typed in: `npm:…`, a git URL or a path. pi's own forms, unvalidated here. */
 	let newPackage = $state("");
+	/** The pi version whose switch has been asked for and not yet confirmed. */
+	let confirmingPi = $state<string | undefined>(undefined);
 
 	/**
 	 * The live answer for one row, or undefined when it has not been asked — or when the files were edited
@@ -449,6 +452,58 @@
 			{/if}
 		</section>
 
+		<!-- Which pi this flypi runs, and moving it (docs/pi-upgrades.md Phase 8.4). The restart is the whole
+			cost of the operation and it takes this page down with it, so the button asks first and says what it
+			will do; the automatic way back is not a button, it is what the CLI does when the new process never
+			answers (docs/risks.md risk 13). -->
+		<section>
+			<div class="cfg-section"><h3>pi</h3></div>
+			{#if app.piVersions}
+				<p class="cfg-note" data-role="pi-running">
+					{`running pi ${app.piVersions.running}${app.piVersions.pinned ? " (pinned)" : ""}${app.piVersions.bundled ? ` · the tree flypi was installed with holds ${app.piVersions.bundled}` : ""}`}
+				</p>
+				<ul class="cfg-list" data-role="pi-versions">
+					{#if app.piVersions.next && app.piVersions.next !== app.piVersions.running}
+						<li data-role="pi-next">
+							<code>{`pi ${app.piVersions.next}`}</code>
+							<span class="cfg-state">published — one rung at a time</span>
+							{#if confirmingPi === app.piVersions.next}
+								<span class="cfg-state" data-role="pi-confirm">
+									{`this restarts the daemon${app.sessions.length ? `; ${app.sessions.length} conversation(s) are listed` : ""}`}
+								</span>
+								<button type="button" data-role="pi-use-confirm" onclick={() => app.usePi(app.piVersions!.next!)} disabled={app.piBusy}>
+									{app.piBusy ? "Restarting…" : `Confirm — use ${app.piVersions.next}`}
+								</button>
+								<button type="button" class="icon remove" data-role="pi-use-cancel" onclick={() => (confirmingPi = undefined)} title="Do not switch">
+									{@render removeGlyph()}
+								</button>
+							{:else}
+								<button type="button" data-role="pi-use" onclick={() => (confirmingPi = app.piVersions!.next!)} disabled={app.piBusy}>Use this version</button>
+							{/if}
+						</li>
+					{/if}
+					{#each app.piVersions.trees.filter((version) => version !== app.piVersions!.running) as version (version)}
+						<li data-role="pi-tree">
+							<code>{`pi ${version}`}</code>
+							<span class="cfg-state">on disk</span>
+							<button type="button" data-role="pi-rollback" onclick={() => app.usePi(version)} disabled={app.piBusy}>
+								{app.piBusy ? "Restarting…" : `Switch back to ${version}`}
+							</button>
+						</li>
+					{/each}
+				</ul>
+				<p class="cfg-note" data-role="pi-checked">
+					{app.piVersions.checkedAt ? `last checked ${app.piVersions.checkedAt}` : "not checked for a newer pi yet"}
+					— a version that does not start is put back on its own; this button is for one that starts and is wrong in use.
+				</p>
+			{:else}
+				<p class="cfg-note" data-role="pi-none">
+					which pi this process runs is shown in the sidebar; moving it is a CLI thing here — in a checkout,
+					<code>npm install @earendil-works/pi-coding-agent@X &amp;&amp; npm test &amp;&amp; npm run smoke</code>.
+				</p>
+			{/if}
+		</section>
+
 		<section>
 			<div class="cfg-section">
 				<h3>Extensions</h3>
@@ -484,6 +539,7 @@
 				{#each packages as row (row.source)}
 					<li data-role="package">
 						<code>{row.source}</code>
+						{#if row.version}<span class="cfg-state" data-role="package-version">pi sees {row.version}</span>{/if}
 						<span class="cfg-state {row.installed ? "connected" : "failed"}" data-role="package-state">
 							{row.installed ? "installed" : "not installed"}
 						</span>

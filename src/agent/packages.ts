@@ -42,6 +42,8 @@ export interface PackageRow {
 	installed: boolean;
 	/** Where the code is: `.flypi/agent/npm/node_modules/<name>`, a checkout, or the local path. */
 	path: string;
+	/** The version its own `package.json` says it is — what a rollback has to name (docs/pi-upgrades.md). */
+	version?: string;
 	/** A newer release is published (npm) or the remote moved (git). Only from the daemon's stamp. */
 	update?: boolean;
 }
@@ -74,6 +76,30 @@ function packages(paths: FlypiPaths): { manager: DefaultPackageManager; settings
 	return { manager: new DefaultPackageManager({ cwd: paths.root, agentDir: paths.agentDir, settingsManager: settings }), settings };
 }
 
+/** The version an installed extension's own `package.json` claims. Null when it cannot be read. */
+function installedVersion(path: string): string | undefined {
+	try {
+		return (JSON.parse(readFileSync(join(path, "package.json"), "utf8")) as { version?: string }).version;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * `updates` in `.flypi/agent/settings.json`: may the daemon install an extension update by itself, on the
+ * same idle stretch it installs flypi with? Default true — the behaviour that predates the key. It is the
+ * path an incompatible change arrives by, so it is now something a user can turn off; pi itself has no
+ * equivalent and never updates unattended (docs/pi-upgrades.md).
+ */
+export function autoExtensions(paths: FlypiPaths): boolean {
+	try {
+		const settings = JSON.parse(readFileSync(paths.settingsPath, "utf8")) as { updates?: { autoExtensions?: unknown } };
+		return settings.updates?.autoExtensions !== false;
+	} catch {
+		return true;
+	}
+}
+
 /** What pi could not read or write, named by file — a settings.json it cannot parse is never silently "empty". */
 function settingsErrors(settings: SettingsManager): string[] {
 	return settings.drainErrors().map((failure) => `${failure.path ?? failure.scope}: ${failure.error.message}`);
@@ -89,6 +115,7 @@ export function readPackages(paths: FlypiPaths): PackageSnapshot {
 			scope: entry.scope,
 			installed: entry.installedPath !== undefined,
 			path: entry.installedPath ?? "",
+			...(entry.installedPath ? { version: installedVersion(entry.installedPath) } : {}),
 			...(check?.updates.includes(entry.source) ? { update: true } : {}),
 		})),
 		...(check ? { checkedAt: check.checkedAt } : {}),

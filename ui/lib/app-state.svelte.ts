@@ -10,7 +10,7 @@ import type { FlypiAttachment } from "../../src/shared/attachments.ts";
 import { emptyTranscript, applyEvent, type Transcript } from "../../src/shared/transcript.ts";
 import { applyPerfEvent, emptyPerf, hasMeasurement, type Perf } from "../../src/shared/metrics.ts";
 import { loadLastAnswer, forgetLastAnswer, modelName, saveLastAnswer } from "./last-answer.ts";
-import type { ClientCommand, ConfigFileEdit, ConfigSnapshot, DebugInfo, DefaultsEdit, EndpointEdit, ExtensionUiFrame, McpEdit, McpStatusSnapshot, MemoryEdit, MemorySnapshot, PackagesSnapshot, SchedulerSnapshot, SecretEdit, SecretsSnapshot, ServerFrame, SessionSummary } from "../../src/server/protocol.ts";
+import type { ClientCommand, ConfigFileEdit, ConfigSnapshot, DebugInfo, DefaultsEdit, EndpointEdit, ExtensionUiFrame, McpEdit, McpStatusSnapshot, MemoryEdit, MemorySnapshot, PackagesSnapshot, PiVersions as PiVersionsSnapshot, SchedulerSnapshot, SecretEdit, SecretsSnapshot, ServerFrame, SessionSummary } from "../../src/server/protocol.ts";
 import type { View } from "./route.ts";
 import type { FlypiThinkingLevel } from "../../src/agent/runtime.ts";
 import type { Transport } from "./client.ts";
@@ -121,6 +121,13 @@ export class FlypiAppState {
 	 * range flypi's package.json declares. From `hello`, refreshed by the `/healthz` poll in App.svelte.
 	 */
 	pi = $state<{ version: string; pinned: boolean; bundled?: string } | undefined>(undefined);
+	/**
+	 * What pi this flypi runs, what is on disk to move to, and the daemon's daily answer about what is
+	 * published (docs/pi-upgrades.md Phase 8.4). Asked when the settings view opens, never polled.
+	 */
+	piVersions = $state<PiVersionsSnapshot | undefined>(undefined);
+	/** A pi switch is in flight: the daemon is about to restart, and this page goes down with it. */
+	piBusy = $state(false);
 
 	#transport: Transport;
 	#lastSeq = 0;
@@ -372,6 +379,22 @@ export class FlypiAppState {
 		void this.request({ type: "savePackages", ...edits, requestId: this.#configRequest() });
 	}
 
+	/** Which pi the server runs, and what it could move to. Reaches no network: the daemon's stamp answers. */
+	showPiVersions(): void {
+		void this.request({ type: "piVersions", requestId: this.#configRequest() });
+	}
+
+	/**
+	 * Move to a pi version. The daemon flips the pointer and restarts through the CLI, so this page loses its
+	 * socket: what it learns afterwards is which version came back, from `/healthz` — not a promise that the
+	 * switch worked. If the new process does not answer reporting that version, the pointer goes back on its
+	 * own (docs/risks.md risk 13).
+	 */
+	usePi(version: string): void {
+		this.piBusy = true;
+		void this.request({ type: "usePi", version, requestId: this.#configRequest() });
+	}
+
 	/**
 	 * Ask the servers. Its request id is a config one on purpose: a probe that fails is a settings-view
 	 * problem, and `configError` is the line that panel already has for those (see the error case).
@@ -604,6 +627,11 @@ export class FlypiAppState {
 					this.mcpSignIn = undefined;
 					this.mcpSigningIn = false;
 				}
+				if (frame.pi) {
+					if (frame.requestId) this.#configRequests.delete(frame.requestId);
+					this.piVersions = frame.pi;
+					this.piBusy = false;
+				}
 				if (frame.packages) {
 					if (frame.requestId) this.#configRequests.delete(frame.requestId);
 					this.packages = frame.packages;
@@ -637,8 +665,9 @@ export class FlypiAppState {
 					this.mcpSignIn = undefined;
 					this.mcpSigningIn = false;
 					// And an install the server refused (a source it could not fetch) leaves the list as it was:
-					// the button goes back to being pressable.
+					// the button goes back to being pressable. Same for a pi version the server would not move to.
 					this.packagesBusy = false;
+					this.piBusy = false;
 					return;
 				}
 				if (frame.requestId && this.#secretsRequests.delete(frame.requestId)) {

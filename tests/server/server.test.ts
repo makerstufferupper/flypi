@@ -844,7 +844,7 @@ describe("flypi server", () => {
 				if (installed.type !== "result" || !installed.packages) throw new Error("no packages after installing");
 				// The refreshed list, as `.flypi/agent/settings.json` now holds it — pi's own relative form, and
 				// where the code is (src/agent/packages.ts).
-				expect(installed.packages.packages).toEqual([{ source: expect.any(String), scope: "user", installed: true, path: dir }]);
+				expect(installed.packages.packages).toEqual([{ source: expect.any(String), scope: "user", installed: true, path: dir, version: "1.0.0" }]);
 				expect(JSON.parse(readFileSync(join(h.root, ".flypi", "agent", "settings.json"), "utf8")).packages).toHaveLength(1);
 
 				// The chat on screen is the point: the registry reloaded it, so the tool the page just installed is
@@ -904,6 +904,37 @@ describe("the daemon's surface", () => {
 			expect(await response.json()).toEqual({ ok: true, pid: 4242, startedAt: "2026-10-11T09:00:00.000Z", jobs: 2 });
 			await handle.close();
 		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("says which pi it runs, and refuses to move pi where there is no pointer", async () => {
+		const h = await harness(toolTurn());
+		const versions = { running: "1.4.0", pinned: true, bundled: "1.0.4", trees: ["1.4.0", "1.3.0"], next: "1.5.0" };
+		const manages = await startFlypiServer({ registry: h.registry, piVersions: () => versions, usePi: async () => null });
+		const headless = await startFlypiServer({ registry: h.registry });
+		const client = await connect(manages.url, manages.token);
+		try {
+			client.send({ type: "piVersions", requestId: "r1" });
+			const shown = await client.next((frame) => frame.type === "result" && frame.requestId === "r1");
+			expect(shown.type === "result" && shown.pi).toEqual(versions);
+			client.send({ type: "usePi", version: "1.5.0", requestId: "r2" });
+			const ack = await client.next((frame) => frame.requestId === "r2");
+			// The ack goes out before the restart, because the restart closes this socket: what the page learns
+			// afterwards is which version came back, not a promise about this one.
+			expect(ack.type).toBe("result");
+		} finally {
+			await client.close();
+		}
+		const client2 = await connect(headless.url, headless.token);
+		try {
+			client2.send({ type: "piVersions", requestId: "r3" });
+			const refused = await client2.next((frame) => frame.type === "error" && frame.requestId === "r3");
+			expect(refused.type === "error" && refused.message).toMatch(/does not manage pi versions/);
+		} finally {
+			await client2.close();
+			await manages.close();
+			await headless.close();
 			h.cleanup();
 		}
 	});
