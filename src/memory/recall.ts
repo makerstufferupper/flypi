@@ -173,11 +173,20 @@ export function createMemoryRecallExtension(
 			failures = 0;
 			seen.clear();
 			reported.clear();
-			prompt = event.prompt;
 			tools.length = 0;
 			modelWroteMemory = false;
 			logged = false;
-			const outcome = await search(server, event.prompt);
+			// pi 1.0.4 gave every run a `prompt`; 1.4.0 split the event in two — a submitted prompt carries
+			// `prompt`, an idle `pi.sendMessage(…, { triggerTurn: true })` carries the custom message instead.
+			// Retrieval asks with the user's own words, so a custom trigger clears the turn and searches nothing;
+			// a *user* turn with empty text still searches, because the refusal is what tells the model recall
+			// ran (risk 8). flypi sends no custom trigger-turn messages today.
+			if (event.messageType === "custom") {
+				prompt = "";
+				return;
+			}
+			prompt = event.prompt;
+			const outcome = await search(server, prompt);
 			for (const row of outcome.rows) seen.add(row.id);
 			onInjected?.(renderBlock(outcome));
 			// A search that could not do all it was asked says so. When it brought rows with it the reason goes in

@@ -89,7 +89,16 @@ async function recallHandlers(entry: ReturnType<typeof entryFor>, onInjected?: (
 		 * back because this conversation already holds those memories — which is what C2 is for.
 		 */
 		start: async (prompt: string): Promise<string | null> => {
-			const result = (await handlers.get("before_agent_start")?.({ type: "before_agent_start", prompt } as never, session.ctx as never)) as
+			const result = (await handlers.get("before_agent_start")?.({ type: "before_agent_start", messageType: "user", prompt } as never, session.ctx as never)) as
+				{ message?: Record<string, unknown> } | undefined;
+			if (!result?.message) return null;
+			session.append(result.message);
+			return String(result.message.content ?? "");
+		},
+		/** A run started by an idle `pi.sendMessage(…, { triggerTurn: true })` — pi 1.4.0's other half of the
+		 *  same event, which carries a custom message and no prompt to ask the store with. */
+		startCustom: async (): Promise<string | null> => {
+			const result = (await handlers.get("before_agent_start")?.({ type: "before_agent_start", messageType: "custom", message: { customType: "flypi-says", content: "an idle message" } } as never, session.ctx as never)) as
 				{ message?: Record<string, unknown> } | undefined;
 			if (!result?.message) return null;
 			session.append(result.message);
@@ -470,6 +479,17 @@ describe("per-turn recall", () => {
 		const block = noteOf(extension);
 		expect(block).toContain("<relevant_memories>");
 		expect(block).toContain("Memory search:");
+	});
+
+	it("injects nothing for a run an extension started, and keeps the turn that had a prompt intact", async () => {
+		const extension = await recallHandlers(entryFor(httpEntry(handle.url)));
+		await extension.start("which package manager do we use?");
+		const before = extension.blocks().length;
+		expect(before).toBeGreaterThan(0);
+		// pi 1.4.0's `messageType: "custom"` half of `before_agent_start` has no prompt to retrieve with, so it
+		// must not get a block built from the previous turn's words.
+		expect(await extension.startCustom()).toBeNull();
+		expect(extension.blocks()).toHaveLength(before);
 	});
 
 	it("carries the reason through when the results are keyword-only", async () => {

@@ -46,7 +46,7 @@
 		"release": "node scripts/release.mjs"
 	},
 	"dependencies": {
-		"@earendil-works/pi-coding-agent": "^1.0.4",
+		"@earendil-works/pi-coding-agent": "^1.4.0",
 		"@huggingface/transformers": "^4.3.1",
 		"@makerstufferupper/flypi": "^0.1.3",
 		"@modelcontextprotocol/sdk": "^1.32.1",
@@ -57,7 +57,7 @@
 		"yaml": "^2.9.0"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-ai": "^1.0.4",
+		"@earendil-works/pi-ai": "^1.4.0",
 		"@modelcontextprotocol/server-filesystem": "^1.0.0",
 		"@sveltejs/vite-plugin-svelte": "^7.3.1",
 		"@testing-library/svelte": "^5.4.2",
