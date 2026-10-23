@@ -48,6 +48,8 @@ export interface FlypiServerOptions {
 	installUpdate?: () => Promise<string | null>;
 	/** Which pi this process runs and what it could move to (docs/pi-upgrades.md Phase 8.4). */
 	piVersions?: () => PiVersions;
+	/** The registry asked now, with the answer written to the stamp. Absent where `piVersions` is. */
+	piCheck?: () => Promise<PiVersions>;
 	/** Move to a pi version and restart. Null when it started; a sentence when it refused. */
 	usePi?: (version: string) => Promise<string | null>;
 	/** The scheduler tab: what is queued, when it next runs, what the last runs changed. */
@@ -321,6 +323,11 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 						// check — the same rule `packages` follows.
 						if (!options.piVersions) return fail("this flypi process does not manage pi versions — it is a checkout or a headless server", { requestId });
 						return reply(requestId, { pi: options.piVersions() });
+					case "piCheck":
+						// The daily stamp, refreshed on request. Slow by nature (one registry call), and the fresh
+						// answer comes back as the same `pi` frame the `piVersions` command sends.
+						if (!options.piCheck) return fail("this flypi process does not manage pi versions — it is a checkout or a headless server", { requestId });
+						return options.piCheck().then((pi) => reply(requestId, { pi }));
 					case "usePi":
 					case "rollbackPi": {
 						// The pointer moves and the daemon restarts through the CLI, so the ack has to go out

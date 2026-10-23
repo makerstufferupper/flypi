@@ -19,6 +19,12 @@
 	const endpoints = $derived(app.config?.endpoints ?? []);
 	const servers = $derived(app.config?.mcpServers ?? []);
 	const packages = $derived(app.packages?.packages ?? []);
+	/**
+	 * One stamp for both checks. The daemon writes `pi-check.json` and `package-check.json` in the same daily
+	 * pass (src/daemon/index.ts `updatePass`), so they are the same moment; either one alone answers when the
+	 * other was never asked.
+	 */
+	const lastChecked = $derived(app.piVersions?.checkedAt ?? app.packages?.checkedAt);
 	/** The source to install, typed in: `npm:…`, a git URL or a path. pi's own forms, unvalidated here. */
 	let newPackage = $state("");
 	/** The pi version whose switch has been asked for and not yet confirmed. */
@@ -472,13 +478,13 @@
 			<div class="cfg-section"><h3>pi</h3></div>
 			{#if app.piVersions}
 				<p class="cfg-note" data-role="pi-running">
-					{`running pi ${app.piVersions.running}${app.piVersions.pinned ? " (pinned)" : ""}${app.piVersions.bundled ? ` · the tree flypi was installed with holds ${app.piVersions.bundled}` : ""}`}
+					{`running pi ${app.piVersions.running}${app.piVersions.pinned ? " (pinned)" : ""}`}
 				</p>
 				<ul class="cfg-list" data-role="pi-versions">
 					{#if app.piVersions.next && app.piVersions.next !== app.piVersions.running}
 						<li data-role="pi-next">
 							<code>{`pi ${app.piVersions.next}`}</code>
-							<span class="cfg-state">published — one rung at a time</span>
+							<span class="cfg-state">published</span>
 							{#if confirmingPi === app.piVersions.next}
 								<span class="cfg-state" data-role="pi-confirm">
 									{`this restarts the daemon${app.sessions.length ? `; ${app.sessions.length} conversation(s) are listed` : ""}`}
@@ -504,16 +510,15 @@
 						</li>
 					{/each}
 				</ul>
-				<p class="cfg-note" data-role="pi-checked">
-					{app.piVersions.checkedAt ? `last checked ${app.piVersions.checkedAt}` : "not checked for a newer pi yet"}
-					— a version that does not start is put back on its own; this button is for one that starts and is wrong in use.
-				</p>
 			{:else}
-				<p class="cfg-note" data-role="pi-none">
-					which pi this process runs is shown in the sidebar; moving it is a CLI thing here — in a checkout,
-					<code>npm install @earendil-works/pi-coding-agent@X &amp;&amp; npm test &amp;&amp; npm run smoke</code>.
-				</p>
+				<p class="cfg-note" data-role="pi-none">which pi this process runs is shown in the sidebar; moving it is a CLI thing in a checkout.</p>
 			{/if}
+			<p class="cfg-note" data-role="pi-checked">
+				{lastChecked ? `last checked ${lastChecked}` : "not checked yet"}
+				{#if app.piVersions}
+					<button type="button" data-role="pi-check" onclick={() => app.checkPi()}>Check for pi updates</button>
+				{/if}
+			</p>
 		</section>
 
 		<section>
@@ -522,10 +527,7 @@
 			</div>
 			<p class="cfg-note">
 				<code>packages</code> in <code>.flypi/agent/settings.json</code> — <code>npm:…</code>, a git URL or a
-				path. An extension runs as flypi runs, with your files and your keys: install what you have read.
-				The daemon checks for newer releases daily and installs them when it is idle; a source that names a
-				version stays on that version. "Install" on a row writes that pin, which is also how a version goes
-				back — turning the daily check off is the settings key <code>updates.autoExtensions</code>.
+				path. An extension runs as flypi runs, with your files and your keys.
 			</p>
 			<form
 				class="cfg-install"
@@ -590,7 +592,7 @@
 							</button>
 						{/if}
 						{#if row.name && row.source !== `npm:${row.name}`}
-							<span class="cfg-state" data-role="package-pinned">pinned — the daily check leaves it here</span>
+							<span class="cfg-state" data-role="package-pinned">pinned</span>
 						{/if}
 						<button type="button" class="icon remove" data-role="package-remove" aria-label="Remove {row.source}" title="Remove this package" onclick={() => app.savePackages({ remove: [row.source] })}>
 							{@render removeGlyph()}
@@ -600,10 +602,6 @@
 					<li class="cfg-none">none installed</li>
 				{/each}
 			</ul>
-			<p class="cfg-note" data-role="package-checked">
-				{app.packages?.checkedAt ? `last checked ${app.packages.checkedAt}` : "not checked for updates yet"}
-				— an open conversation picks up what is installed now; one that is mid-turn keeps what it started with.
-			</p>
 		</section>
 
 		<section data-role="raw-files">

@@ -911,7 +911,12 @@ describe("the daemon's surface", () => {
 	it("says which pi it runs, and refuses to move pi where there is no pointer", async () => {
 		const h = await harness(toolTurn());
 		const versions = { running: "1.4.0", pinned: true, bundled: "1.0.4", trees: ["1.4.0", "1.3.0"], next: "1.5.0" };
-		const manages = await startFlypiServer({ registry: h.registry, piVersions: () => versions, usePi: async () => null });
+		const manages = await startFlypiServer({
+			registry: h.registry,
+			piVersions: () => versions,
+			piCheck: async () => ({ ...versions, checkedAt: "2026-10-23T00:00:00.000Z" }),
+			usePi: async () => null,
+		});
 		const headless = await startFlypiServer({ registry: h.registry });
 		const client = await connect(manages.url, manages.token);
 		try {
@@ -923,6 +928,10 @@ describe("the daemon's surface", () => {
 			// The ack goes out before the restart, because the restart closes this socket: what the page learns
 			// afterwards is which version came back, not a promise about this one.
 			expect(ack.type).toBe("result");
+			// "Check now": the registry asked again, and the fresh stamp arrives as the same `pi` frame.
+			client.send({ type: "piCheck", requestId: "r4" });
+			const checked = await client.next((frame) => frame.type === "result" && frame.requestId === "r4");
+			expect(checked.type === "result" && checked.pi?.checkedAt).toBe("2026-10-23T00:00:00.000Z");
 		} finally {
 			await client.close();
 		}
@@ -931,6 +940,9 @@ describe("the daemon's surface", () => {
 			client2.send({ type: "piVersions", requestId: "r3" });
 			const refused = await client2.next((frame) => frame.type === "error" && frame.requestId === "r3");
 			expect(refused.type === "error" && refused.message).toMatch(/does not manage pi versions/);
+			client2.send({ type: "piCheck", requestId: "r5" });
+			const refusedCheck = await client2.next((frame) => frame.type === "error" && frame.requestId === "r5");
+			expect(refusedCheck.type === "error" && refusedCheck.message).toMatch(/does not manage pi versions/);
 		} finally {
 			await client2.close();
 			await manages.close();

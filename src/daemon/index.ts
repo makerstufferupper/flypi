@@ -222,6 +222,11 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 				...(stamp ? { checkedAt: stamp.checkedAt } : {}),
 			};
 		},
+		// "Check now": the daily registry answer asked again on request, then read back through the same shape.
+		piCheck: async () => {
+			await checkPiVersions();
+			return serverOptions.piVersions!();
+		},
 		// Move pi and restart, through the same CLI path `flypi pi use` takes — the daemon cannot re-pick the
 		// module graph it already imported, and the child is the process that survives the restart to notice a
 		// failed start and put the pointer back (docs/risks.md risk 13).

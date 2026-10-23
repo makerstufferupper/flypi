@@ -404,6 +404,15 @@ export const PiVersionsCommand = Type.Object({
 });
 
 /**
+ * Ask the registry for pi now instead of on the daemon's daily rhythm. The reply is a fresh `piVersions`, so
+ * the page needs no new frame; nothing moves by itself either way.
+ */
+export const PiCheckCommand = Type.Object({
+	type: Type.Literal("piCheck"),
+	requestId: Type.Optional(RequestId),
+});
+
+/**
  * Move to a published pi version. The daemon flips the pointer and hands the restart to the CLI — the same
  * path `installUpdate` takes — and the ack goes out before the restart closes this socket. The switch is
  * provisional: if the new process does not answer reporting that version, the pointer goes back on its own
@@ -623,6 +632,7 @@ export const ClientCommandSchema = Type.Union([
 	PackagesCommand,
 	SavePackagesCommand,
 	PiVersionsCommand,
+	PiCheckCommand,
 	UsePiCommand,
 	RollbackPiCommand,
 	SecretsCommand,

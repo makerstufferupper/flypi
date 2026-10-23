@@ -753,8 +753,9 @@ describe("the extension packages", () => {
 		expect(packageRow(0).querySelector('[data-role="package-state"]')?.textContent).toContain("installed");
 		expect(packageRow(0).querySelector('[data-role="package-update"]')?.textContent).toContain("update available");
 		expect(packageRow(1).querySelector('[data-role="package-state"]')?.textContent).toContain("not installed");
-		// The daemon's answer, not a fresh check: the page never reaches a registry by itself.
-		expect(document.querySelector('[data-role="package-checked"]')?.textContent).toContain("2026-01-05");
+		// The daemon's answer, not a fresh check: the page never reaches a registry by itself. One stamp covers
+		// both checks — the daemon writes the pi and extension stamps in the same daily pass.
+		expect(document.querySelector('[data-role="pi-checked"]')?.textContent).toContain("2026-01-05");
 	});
 
 	it("says so when nothing is installed and nothing has been checked", async () => {
@@ -762,7 +763,7 @@ describe("the extension packages", () => {
 		await openSettings(transport);
 		await answered(transport, { packages: [], errors: [] });
 		expect(document.querySelector('[data-role="packages"] .cfg-none')?.textContent).toContain("none installed");
-		expect(document.querySelector('[data-role="package-checked"]')?.textContent).toContain("not checked");
+		expect(document.querySelector('[data-role="pi-checked"]')?.textContent).toContain("not checked");
 	});
 
 	it("installs the source that was typed, one per submit", async () => {
@@ -909,8 +910,6 @@ describe("the pi this flypi runs", () => {
 		const line = document.querySelector('[data-role="pi-running"]')?.textContent ?? "";
 		expect(line).toContain("running pi 1.3.0");
 		expect(line).toContain("(pinned)");
-		// The disagreement is the point: the installed app and the loaded pi are two different things.
-		expect(line).toContain("the tree flypi was installed with holds 1.0.4");
 		expect(document.querySelector('[data-role="pi-checked"]')?.textContent).toContain("2026-01-05");
 	});
 
@@ -947,7 +946,22 @@ describe("the pi this flypi runs", () => {
 		// "nothing newer".
 		transport.emit({ type: "error", requestId: (transport.sent.find((c) => c.type === "piVersions") as { requestId: string }).requestId, message: "this flypi process does not manage pi versions" });
 		await tick();
-		expect(document.querySelector('[data-role="pi-none"]')?.textContent).toContain("npm install @earendil-works/pi-coding-agent@X");
+		expect(document.querySelector('[data-role="pi-none"]')?.textContent).toContain("a CLI thing in a checkout");
+		// A process that cannot check has nothing to ask, so the button is not offered.
+		expect(document.querySelector('[data-role="pi-check"]')).toBeNull();
+	});
+
+	it("asks the registry again when the check button is clicked, and moves the stamp", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answeredPi(transport);
+		fireEvent.click(document.querySelector('[data-role="pi-check"]') as HTMLButtonElement);
+		await tick();
+		const requestId = (transport.sent.find((c) => c.type === "piCheck") as { requestId: string }).requestId;
+		transport.emit({ type: "result", requestId, pi: { ...PI, next: undefined, checkedAt: "2026-01-06T10:00:00.000Z" } });
+		await tick();
+		expect(document.querySelector('[data-role="pi-checked"]')?.textContent).toContain("2026-01-06");
+		expect(document.querySelector('[data-role="pi-next"]')).toBeNull();
 	});
 });
 

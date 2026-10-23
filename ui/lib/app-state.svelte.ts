@@ -384,6 +384,11 @@ export class FlypiAppState {
 		void this.request({ type: "piVersions", requestId: this.#configRequest() });
 	}
 
+	/** Ask the registry for a newer pi now. The answer arrives as the same `pi` frame, so the stamp line moves. */
+	checkPi(): void {
+		void this.request({ type: "piCheck", requestId: this.#configRequest() });
+	}
+
 	/**
 	 * Move to a pi version. The daemon flips the pointer and restarts through the CLI, so this page loses its
 	 * socket: what it learns afterwards is which version came back, from `/healthz` — not a promise that the
