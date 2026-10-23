@@ -473,7 +473,8 @@
 		<!-- Which pi this flypi runs, and moving it (docs/pi-upgrades.md Phase 8.4). The restart is the whole
 			cost of the operation and it takes this page down with it, so the button asks first and says what it
 			will do; the automatic way back is not a button, it is what the CLI does when the new process never
-			answers (docs/risks.md risk 13). -->
+			answers (docs/risks.md risk 13). Extensions is a sub-section here: same question — which code this
+			agent loads — and one stamp covers both checks. -->
 		<section>
 			<div class="cfg-section"><h3>pi</h3></div>
 			{#if app.piVersions}
@@ -513,18 +514,14 @@
 			{:else}
 				<p class="cfg-note" data-role="pi-none">which pi this process runs is shown in the sidebar; moving it is a CLI thing in a checkout.</p>
 			{/if}
-			<p class="cfg-note" data-role="pi-checked">
+			<p class="cfg-note cfg-checked" data-role="pi-checked">
 				{lastChecked ? `last checked ${lastChecked}` : "not checked yet"}
 				{#if app.piVersions}
 					<button type="button" data-role="pi-check" onclick={() => app.checkPi()}>Check for pi updates</button>
 				{/if}
 			</p>
-		</section>
 
-		<section>
-			<div class="cfg-section">
-				<h3>Extensions</h3>
-			</div>
+			<div class="cfg-section cfg-sub"><h4>Extensions</h4></div>
 			<p class="cfg-note">
 				<code>packages</code> in <code>.flypi/agent/settings.json</code> — <code>npm:…</code>, a git URL or a
 				path. An extension runs as flypi runs, with your files and your keys.

@@ -182,6 +182,13 @@ details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px
 .cfg-stack { display: grid; gap: 1rem; max-width: 46rem; }
 .cfg-section { display: flex; align-items: center; gap: 0.5rem; margin: 0.9rem 0 0.25rem; }
 .cfg-section h3 { flex: 1; font-size: 13px; margin: 0; }
+/* A heading inside a section rather than one of its own — Extensions sits under pi, because both are the
+   same question (which code this agent loads) and one stamp covers both checks. */
+.cfg-section.cfg-sub { margin-left: 0.9rem; }
+.cfg-section.cfg-sub h4 { flex: 1; font-size: 12px; margin: 0; }
+/* The stamp line: the timestamp reads from the left, and the one action on it sits at the right edge. */
+.cfg-checked { display: flex; align-items: center; gap: 0.5rem; }
+.cfg-checked button { margin-left: auto; }
 /* One line per entry: the name (which opens the modal), what it points at, delete. */
 .cfg-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 6px; }
 .cfg-list li { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; padding: 0.3rem 0.4rem; border-bottom: 1px solid var(--line); }
