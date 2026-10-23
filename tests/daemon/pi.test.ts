@@ -2,7 +2,7 @@
  * Which pi a process reports as running (docs/pi-upgrades.md Phase 8.1). The point of the field is that the
  * loaded version and the declared/pinned one can disagree, so every case here is some way of disagreeing.
  */
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -24,6 +24,9 @@ import {
 
 /** Read the version off disk by a route the implementation does not use, so the comparison is not a tautology. */
 const onDisk = JSON.parse(readFileSync(resolve("node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8")) as { version: string };
+
+/** A read-only directory stops a non-root user and means nothing to root, so the two cases below are skipped there. */
+const asRoot = typeof process.getuid === "function" && process.getuid() === 0;
 
 function rootWithPin(pin: PiPin | null): string {
 	const root = mkdtempSync(join(tmpdir(), "flypi-pi-"));
@@ -125,6 +128,22 @@ describe("moving pi", () => {
 		}
 	});
 
+	it.skipIf(asRoot)("refuses a package directory it cannot write, and copies nothing on the way to saying so", () => {
+		const { root, scope } = fakeFlypi("1.3.0", ["1.4.0"]);
+		const pkgModules = join(scope, "..");
+		chmodSync(pkgModules, 0o555);
+		try {
+			const result = linkPiScope(root, "1.4.0", scope);
+			expect(result.ok).toBe(false);
+			expect(result.message).toContain("is not writable by this user");
+			expect(lstatSync(scope).isSymbolicLink()).toBe(false);
+			expect(bundledPiVersion(root)).toBeNull();
+		} finally {
+			chmodSync(pkgModules, 0o755);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("re-applies a pin whose link an upgrade dropped, and says so", () => {
 		const { root, scope } = fakeFlypi("1.3.0", ["1.4.0"]);
 		try {
@@ -169,6 +188,29 @@ describe("moving pi", () => {
 			expect(result.message).toContain("npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke");
 			expect(result.message).toContain("rebuild the image");
 		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it.skipIf(asRoot)("refuses an unwritable package dir before downloading a tree for it", async () => {
+		const { root, scope } = fakeFlypi("1.3.0", []);
+		const pkgModules = join(scope, "..");
+		let installed = 0;
+		chmodSync(pkgModules, 0o555);
+		try {
+			const result = await switches(root, scope, {
+				install: (where, version) => {
+					installed++;
+					scopeAt(join(piTreeDir(where, version), "node_modules", "@earendil-works"), version);
+					return { ok: true };
+				},
+			});
+			expect(result.ok).toBe(false);
+			expect(result.message).toContain("rebuild the image");
+			expect(installed).toBe(0);
+			expect(readPiPin(root)).toBeNull();
+		} finally {
+			chmodSync(pkgModules, 0o755);
 			rmSync(root, { recursive: true, force: true });
 		}
 	});

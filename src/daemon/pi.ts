@@ -22,7 +22,7 @@
  * (docs/risks.md risk 13) — so the automatic half lives here, in the CLI restart path.
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { checkPiCompat } from "../agent/pi-compat.ts";
@@ -199,6 +199,8 @@ export function gcPiTrees(root: string, keep: string[]): string[] {
 export function linkPiScope(root: string, version: string, scope: string): { ok: boolean; message: string } {
 	const target = scopeOf(piTreeDir(root, version));
 	if (treeVersion(piTreeDir(root, version)) !== version) return { ok: false, message: `there is no pi ${version} tree on disk` };
+	const unwritable = unwritableScope(scope);
+	if (unwritable) return { ok: false, message: unwritable };
 	const link = lstatSync(scope, { throwIfNoEntry: false })?.isSymbolicLink();
 	if (link && realpathSync(scope) === realpathSync(target)) return { ok: true, message: `pi already resolves to ${version}` };
 
@@ -263,6 +265,22 @@ export function relinkFromPin(root: string, scope: string): string | null {
 	return link.ok ? `pi re-pointed at the pinned ${pin.version}` : `the pi pin could not be applied: ${link.message}`;
 }
 
+/**
+ * Whether the pointer can be moved at all. A container runs the app as a user the image's `node_modules` is
+ * not writable by, and `.flypi/` sits on a different filesystem from the package dir, so the aside-move goes
+ * down the EXDEV path — copy, then delete — and the delete throws. Say so first, in one sentence, rather than
+ * half-copying a pi into the volume and taking the stack trace with it (docs/pi-upgrades.md 8.3).
+ */
+function unwritableScope(scope: string): string | null {
+	const dir = join(scope, "..");
+	try {
+		accessSync(dir, constants.W_OK);
+		return null;
+	} catch {
+		return `${dir} is not writable by this user, so there is no pointer to move — in a container the image is the pi, so rebuild the image rather than pinning one`;
+	}
+}
+
 /** What moving pi needs from the caller: the restart, the answer, and the log for when it does not come back. */
 export interface PiSwitchDeps {
 	root: string;
@@ -299,6 +317,11 @@ export async function switchPiVersion(version: string, deps: PiSwitchDeps): Prom
 			message: "this flypi is not the npm global package, so there is no pointer to move — in a checkout run `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`; in a container the package dir is read-only, so rebuild the image",
 		};
 	}
+
+	// Before the tree install: an image the app user cannot write needs a new image, and finding that out
+	// after fetching a 23 MB tree leaves the download and a pin nothing confirmed.
+	const unwritable = unwritableScope(deps.scope);
+	if (unwritable) return { ok: false, message: unwritable };
 
 	const tree = piTreeDir(deps.root, version);
 	if (treeVersion(tree) !== version) {
