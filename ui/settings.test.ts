@@ -817,6 +817,67 @@ describe("the extension packages", () => {
 		expect((packageRow(0).querySelector('[data-role="package-update-now"]') as HTMLButtonElement).disabled).toBe(false);
 	});
 
+	it("offers the published versions of an npm extension, and installs one as a pin", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		const PINS: PackagesSnapshot = {
+			...PACKAGES,
+			packages: [
+				{
+					source: "npm:pi-web-access",
+					scope: "user",
+					installed: true,
+					path: "/repo/.flypi/agent/npm/node_modules/pi-web-access",
+					version: "1.1.0",
+					update: true,
+					name: "pi-web-access",
+					versions: ["1.0.0", "1.1.0", "2.0.0"],
+					available: "2.0.0",
+				},
+				{
+					source: "npm:pi-subagents@0.4.0",
+					scope: "user",
+					installed: true,
+					path: "/repo/.flypi/agent/npm/node_modules/pi-subagents",
+					version: "0.4.0",
+					name: "pi-subagents",
+					versions: ["0.4.0", "0.5.0"],
+				},
+			],
+		};
+		await answered(transport, PINS);
+
+		// Installed over published — and a source already on the newest release is told so, not offered a step.
+		expect(packageRow(0).querySelector('[data-role="package-available"]')?.textContent).toContain("newest published 2.0.0");
+		expect(packageRow(1).querySelector('[data-role="package-available"]')?.textContent).toContain("nothing newer published");
+		// The picker is newest first, and marks the one that is installed, so the reader knows what they are leaving.
+		const options = (packageRow(1).querySelector('[data-role="package-version-pick"]') as HTMLSelectElement).options;
+		expect(Array.from(options).map((option) => option.value)).toEqual(["0.5.0", "0.4.0"]);
+		expect(options[1]?.textContent).toContain("installed");
+		// A source that names a version is pinned, and the daily check leaves it where it is: that is the way back.
+		expect(packageRow(1).querySelector('[data-role="package-pinned"]')?.textContent).toContain("pinned");
+		expect(packageRow(0).querySelector('[data-role="package-pinned"]')).toBeNull();
+
+		// Untouched picker: the newest release it shows. Touched: what the reader picked. The page is busy until
+		// the server answers an install, so each one has to finish before the next row's button is clickable.
+		const finishSave = (transport: FakeTransport) => {
+			const requestId = (transport.sent.filter((command) => command.type === "savePackages").at(-1) as { requestId: string }).requestId;
+			transport.emit({ type: "result", requestId, packages: PINS });
+		};
+		fireEvent.click(packageRow(0).querySelector('[data-role="package-pin"]') as HTMLButtonElement);
+		finishSave(transport);
+		await tick();
+		const select = packageRow(1).querySelector('[data-role="package-version-pick"]') as HTMLSelectElement;
+		fireEvent.change(select, { target: { value: "0.4.0" } });
+		await tick();
+		// The button says which version it is about to write, before the reader commits to it.
+		expect((packageRow(1).querySelector('[data-role="package-pin"]') as HTMLButtonElement).textContent).toContain("Install 0.4.0");
+		fireEvent.click(packageRow(1).querySelector('[data-role="package-pin"]') as HTMLButtonElement);
+		await tick();
+		// pi's own pin form through the existing install — it replaces the row's entry rather than adding one.
+		expect(sentPackages(transport, "install")).toEqual(["npm:pi-web-access@2.0.0", "npm:pi-subagents@0.4.0"]);
+	});
+
 	it("says which file pi could not read, instead of an empty list", async () => {
 		const transport = await mount();
 		await openSettings(transport);

@@ -24,6 +24,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { isNewer, published } from "../daemon/update.ts";
 import { FlypiConfigError } from "./runtime.ts";
 import type { FlypiPaths } from "./paths.ts";
 
@@ -31,6 +32,8 @@ import type { FlypiPaths } from "./paths.ts";
 export const PACKAGE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** The answer, next to flypi's own update stamp, so the panel reports it without reaching the network. */
 export const PACKAGE_CHECK_FILE = join(".flypi", "package-check.json");
+/** shortcut: the picker offers the 30 newest releases; going further back means editing the source by hand. */
+export const PUBLISHED_LIST_MAX = 30;
 
 /** One `packages` entry, as the panel shows it. */
 export interface PackageRow {
@@ -46,6 +49,12 @@ export interface PackageRow {
 	version?: string;
 	/** A newer release is published (npm) or the remote moved (git). Only from the daemon's stamp. */
 	update?: boolean;
+	/** The npm package an `npm:` source names, version stripped — what a pin is written onto. Absent for a git URL or a path. */
+	name?: string;
+	/** The published releases the daemon's stamp knows, oldest first — what "install this version" offers. */
+	versions?: string[];
+	/** The newest of those that is newer than what is installed. Absent when nothing newer is published. */
+	available?: string;
 }
 
 export interface PackageSnapshot {
@@ -67,7 +76,21 @@ export interface PackageCheck {
 	checkedAt: string;
 	/** The `packages` entries, exactly as settings.json holds them. */
 	updates: string[];
+	/** Published releases per npm source, oldest first — the rollback list the panel offers (docs/pi-upgrades.md). */
+	versions?: Record<string, string[]>;
 	error?: string;
+}
+
+/**
+ * The npm package an `npm:` source names, with any version or range it pins stripped: `npm:foo@^1.2` and
+ * `npm:foo` are both `foo`, and `npm:@scope/foo@1.0.0` is `@scope/foo`. Undefined for a git URL or a path,
+ * which have no registry to ask. This is also what tells a reader the source is pinned — a source that names
+ * a version is not `npm:<name>` any more.
+ */
+export function npmName(source: string): string | undefined {
+	if (!source.startsWith("npm:")) return undefined;
+	const name = source.slice("npm:".length).trim().replace(/@[^/@]*$/, "");
+	return name || undefined;
 }
 
 /** pi's package manager, on flypi's own agent dir, plus the settings file it writes through. */
@@ -110,14 +133,23 @@ export function readPackages(paths: FlypiPaths): PackageSnapshot {
 	const { manager, settings } = packages(paths);
 	const check = readPackageCheck(paths.root);
 	return {
-		packages: manager.listConfiguredPackages().map((entry) => ({
-			source: entry.source,
-			scope: entry.scope,
-			installed: entry.installedPath !== undefined,
-			path: entry.installedPath ?? "",
-			...(entry.installedPath ? { version: installedVersion(entry.installedPath) } : {}),
-			...(check?.updates.includes(entry.source) ? { update: true } : {}),
-		})),
+		packages: manager.listConfiguredPackages().map((entry) => {
+			const name = npmName(entry.source);
+			const version = entry.installedPath ? installedVersion(entry.installedPath) : undefined;
+			const versions = check?.versions?.[entry.source];
+			const available = versions?.filter((v) => !version || isNewer(version, v)).at(-1);
+			return {
+				source: entry.source,
+				scope: entry.scope,
+				installed: entry.installedPath !== undefined,
+				path: entry.installedPath ?? "",
+				...(version ? { version } : {}),
+				...(check?.updates.includes(entry.source) ? { update: true } : {}),
+				...(name ? { name } : {}),
+				...(versions?.length ? { versions } : {}),
+				...(available ? { available } : {}),
+			};
+		}),
 		...(check ? { checkedAt: check.checkedAt } : {}),
 		errors: settingsErrors(settings),
 	};
@@ -144,13 +176,47 @@ export async function applyPackageEdits(paths: FlypiPaths, edits: PackageEdits):
 }
 
 /**
- * Ask the registries and remotes which configured sources have something newer. An unreachable registry is
- * the answer, not a crash — the daemon asks this on a machine that may be offline.
+ * The published releases of each npm source, for the panel's "install this version" — the way back for an
+ * extension is pi's own pin form, and a pin has to name a version to name (docs/pi-upgrades.md). One
+ * registry document per npm source per day, on the same rhythm as the update check below.
+ *
+ * A source with nothing to offer is simply absent from the answer: a package the registry has never heard of
+ * (404), an offline box, and a git URL or a path all leave the row with no list rather than failing the check.
  */
-export async function checkPackageUpdates(paths: FlypiPaths): Promise<PackageCheck> {
+export async function publishedVersions(paths: FlypiPaths, fetchImpl?: typeof fetch): Promise<Record<string, string[]>> {
+	const out: Record<string, string[]> = {};
+	for (const entry of packages(paths).manager.listConfiguredPackages()) {
+		const name = npmName(entry.source);
+		if (!name) continue;
+		try {
+			// The scoped form is `@scope%2Fname`; an unscoped name needs no escaping at all.
+			const response = await (fetchImpl ?? fetch)(`https://registry.npmjs.org/${name.replace("/", "%2F")}`, {
+				signal: AbortSignal.timeout(5_000),
+				headers: { accept: "application/json" },
+			});
+			if (!response.ok) continue;
+			const doc = (await response.json()) as { versions?: Record<string, unknown> };
+			// Released only, oldest first — the same rule flypi's own version ladder reads.
+			const list = published(doc.versions ?? {}).slice(-PUBLISHED_LIST_MAX);
+			if (list.length > 0) out[entry.source] = list;
+		} catch {
+			// Nothing to say: the row offers no version until a later check reaches the registry.
+		}
+	}
+	return out;
+}
+
+/**
+ * Ask the registries and remotes which configured sources have something newer, and what each npm source has
+ * ever published. An unreachable registry is the answer, not a crash — the daemon asks this on a machine that
+ * may be offline.
+ */
+export async function checkPackageUpdates(paths: FlypiPaths, fetchImpl?: typeof fetch): Promise<PackageCheck> {
 	const { manager } = packages(paths);
 	try {
-		return { checkedAt: new Date().toISOString(), updates: (await manager.checkForAvailableUpdates()).map((entry) => entry.source) };
+		const updates = (await manager.checkForAvailableUpdates()).map((entry) => entry.source);
+		const versions = await publishedVersions(paths, fetchImpl);
+		return { checkedAt: new Date().toISOString(), updates, ...(Object.keys(versions).length > 0 ? { versions } : {}) };
 	} catch (error) {
 		return { checkedAt: new Date().toISOString(), updates: [], error: (error as Error).message };
 	}

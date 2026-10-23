@@ -336,6 +336,13 @@ export const PackageRow = Type.Object({
 	 *  and this is what tells the reader which version that is (docs/pi-upgrades.md). */
 	version: Type.Optional(Type.String()),
 	update: Type.Optional(Type.Boolean()),
+	/** The npm package an `npm:` source names, version stripped. Absent for a git URL or a path, and its
+	 *  presence next to a source that is not `npm:<name>` is what reads as pinned. */
+	name: Type.Optional(Type.String()),
+	/** Published releases, oldest first, from the same daily stamp — what "install this version" offers. */
+	versions: Type.Optional(Type.Array(Type.String())),
+	/** The newest published release newer than what is installed. */
+	available: Type.Optional(Type.String()),
 });
 
 export const PackagesSnapshot = Type.Object({

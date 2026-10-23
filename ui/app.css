@@ -188,6 +188,9 @@ details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px
 .cfg-list li:last-child { border-bottom: 0; }
 .cfg-list code { flex: 1; min-width: 8rem; color: var(--muted); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .cfg-list .cfg-name { padding: 0; background: none; border: 0; color: inherit; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+/* A picker inside a row — the extension version list — takes the width of what it holds, not the whole line. */
+.cfg-list .field { flex: none; margin: 0; }
+.cfg-list .field select { width: auto; margin-top: 0; }
 /* The row's two actions are icons with their name in the aria-label, in the sidebar's own `.icon` look: a
    list of entries is the thing you read, not a column of the words "Edit" and "Delete". They never shrink,
    and they stay quiet until you point at one — the delete keeps the destructive colour. */

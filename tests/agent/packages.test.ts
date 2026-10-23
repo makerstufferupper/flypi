@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyPackageEdits, autoExtensions, dueForPackageCheck, readPackages, readPackageCheck, writePackageCheck } from "../../src/agent/packages.ts";
+import { applyPackageEdits, autoExtensions, dueForPackageCheck, npmName, publishedVersions, readPackages, readPackageCheck, writePackageCheck } from "../../src/agent/packages.ts";
 import { FlypiConfigError, createFlypiSession, type FlypiSession } from "../../src/agent/runtime.ts";
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
@@ -94,7 +94,8 @@ describe("the packages a flypi checkout declares", () => {
 		const { paths } = rootWithPackage();
 		writeFileSync(paths.settingsPath, JSON.stringify({ packages: ["npm:pi-web-access"] }, null, 2));
 		// A session would install it on start; the panel's job is to say it is not there (docs/protocol.md).
-		expect(readPackages(paths).packages).toEqual([{ source: "npm:pi-web-access", scope: "user", installed: false, path: "" }]);
+		// `name` is the package the source names, with any pin stripped — what a pin is written back onto.
+		expect(readPackages(paths).packages).toEqual([{ source: "npm:pi-web-access", scope: "user", installed: false, path: "", name: "pi-web-access" }]);
 	});
 
 	it("refuses to edit through a settings.json pi cannot read, rather than installing code that is never recorded", async () => {
@@ -116,6 +117,71 @@ describe("the packages a flypi checkout declares", () => {
 		writeFileSync(paths.settingsPath, JSON.stringify({ packages: ["npm:pi-web-access"] }, null, 2));
 		// The badge comes from the stamp: reading the list reaches no registry.
 		expect(readPackages(paths).packages[0]).toMatchObject({ source: "npm:pi-web-access", installed: false, update: true });
+	});
+});
+
+/**
+ * The published versions an extension can be pinned to (docs/pi-upgrades.md 8.4). Going back is not a second
+ * mechanism: pi's own package manager refuses to move a source that names a version, so the way back is
+ * `npm:<name>@<version>` written through the same install path — which needs the list, and the list is what
+ * the daemon's daily stamp holds.
+ */
+describe("the published versions an extension can be pinned to", () => {
+	/** The registry document, in the shape the npm registry answers it — prereleases included. */
+	const packument = (versions: string[]) =>
+		new Response(JSON.stringify({ versions: Object.fromEntries(versions.map((v) => [v, {}])) }), { headers: { "content-type": "application/json" } });
+
+	it("names the package an npm source pins, and none for a git URL or a path", () => {
+		expect(npmName("npm:pi-web-access")).toBe("pi-web-access");
+		expect(npmName("npm:pi-subagents@0.4.0")).toBe("pi-subagents");
+		expect(npmName("npm:foo@^1.2")).toBe("foo");
+		expect(npmName("npm:@scope/pi-x@1.0.0")).toBe("@scope/pi-x");
+		expect(npmName("https://github.com/owner/repo")).toBeUndefined();
+		expect(npmName("/local/extension-dir")).toBeUndefined();
+	});
+
+	it("asks the registry once per npm source, released versions only, oldest first", async () => {
+		const { paths } = rootWithPackage();
+		writeFileSync(paths.settingsPath, JSON.stringify({ packages: ["npm:pi-web-access", "npm:@scope/pi-x", "/local/dir"] }, null, 2));
+		const asked: string[] = [];
+		const fetchImpl = (async (url: string) => {
+			asked.push(String(url));
+			return url.endsWith("%2Fpi-x") ? packument(["0.9.0", "1.0.0", "1.1.0-beta.1"]) : packument(["2.0.0", "2.1.0"]);
+		}) as unknown as typeof fetch;
+		// A scoped name is asked as `@scope%2Fname`; a path source has no registry to ask, and a prerelease is
+		// not a release anyone should be asked to install.
+		expect(await publishedVersions(paths, fetchImpl)).toEqual({ "npm:pi-web-access": ["2.0.0", "2.1.0"], "npm:@scope/pi-x": ["0.9.0", "1.0.0"] });
+		expect(asked).toEqual(["https://registry.npmjs.org/pi-web-access", "https://registry.npmjs.org/@scope%2Fpi-x"]);
+	});
+
+	it("leaves a row with no list when the registry has never heard of it, rather than failing the check", async () => {
+		const { paths } = rootWithPackage();
+		writeFileSync(paths.settingsPath, JSON.stringify({ packages: ["npm:not-a-package"] }, null, 2));
+		const fetchImpl = (async () => new Response("not found", { status: 404 })) as unknown as typeof fetch;
+		expect(await publishedVersions(paths, fetchImpl)).toEqual({});
+	});
+
+	it("shows installed over published, and offers nothing newer for a source pinned to the newest release", async () => {
+		const { root, paths } = rootWithPackage();
+		writeFileSync(paths.settingsPath, JSON.stringify({ packages: ["npm:pi-web-access", "npm:pi-subagents@1.1.0"] }, null, 2));
+		// The code pi sees, at the version its own package.json claims.
+		for (const [name, version] of [["pi-web-access", "2.0.0"], ["pi-subagents", "1.1.0"]] as [string, string][]) {
+			const dir = join(paths.agentDir, "npm", "node_modules", name);
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version }));
+		}
+		writePackageCheck(root, {
+			checkedAt: new Date().toISOString(),
+			updates: ["npm:pi-web-access"],
+			versions: { "npm:pi-web-access": ["2.0.0", "2.1.0", "2.2.0"], "npm:pi-subagents": ["1.0.0", "1.1.0"] },
+		});
+		const rows = readPackages(paths).packages;
+		expect(rows[0]).toMatchObject({ version: "2.0.0", name: "pi-web-access", available: "2.2.0", versions: ["2.0.0", "2.1.0", "2.2.0"] });
+		// Already on the newest published release: no `available`, so the page cannot offer a step up that is not one.
+		expect(rows[1]).toMatchObject({ version: "1.1.0", name: "pi-subagents" });
+		expect(rows[1]?.available).toBeUndefined();
+		// The pin reads off the source itself — it is no longer `npm:<name>`.
+		expect(rows[1]?.source).not.toBe(`npm:${rows[1]?.name}`);
 	});
 });
 

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from "svelte";
 	import type { FlypiAppState } from "./lib/app-state.svelte.ts";
-	import type { EndpointEdit, EndpointRow, McpEdit, McpExposure, McpRow, McpStatusRow } from "../src/server/protocol.ts";
+	import type { EndpointEdit, EndpointRow, McpEdit, McpExposure, McpRow, McpStatusRow, PackageRow } from "../src/server/protocol.ts";
 
 	let { app }: { app: FlypiAppState } = $props();
 
@@ -23,6 +23,18 @@
 	let newPackage = $state("");
 	/** The pi version whose switch has been asked for and not yet confirmed. */
 	let confirmingPi = $state<string | undefined>(undefined);
+	/** The version chosen in each extension row's picker, per source; unset means the newest it shows. */
+	const pick = $state<Record<string, string>>({});
+
+	/**
+	 * The source that installs `version` of this npm extension: pi's own pin form. Sending it as an install
+	 * replaces the row's entry rather than adding a second one — pi matches an npm source by its package name,
+	 * so `npm:foo@1.2.3` overwrites `npm:foo` and the code moves to that version with it (docs/pi-upgrades.md).
+	 * A pinned source is then left where it is by the daily update, which is the way back.
+	 */
+	const pinSource = (row: PackageRow, version: string): string => `npm:${row.name}@${version}`;
+	/** What the picker would install if it was never touched: the newest release it shows. */
+	const pickedVersion = (row: PackageRow): string => pick[row.source] ?? row.versions?.at(-1) ?? "";
 
 	/**
 	 * The live answer for one row, or undefined when it has not been asked — or when the files were edited
@@ -512,7 +524,8 @@
 				<code>packages</code> in <code>.flypi/agent/settings.json</code> — <code>npm:…</code>, a git URL or a
 				path. An extension runs as flypi runs, with your files and your keys: install what you have read.
 				The daemon checks for newer releases daily and installs them when it is idle; a source that names a
-				version stays on that version.
+				version stays on that version. "Install" on a row writes that pin, which is also how a version goes
+				back — turning the daily check off is the settings key <code>updates.autoExtensions</code>.
 			</p>
 			<form
 				class="cfg-install"
@@ -548,6 +561,36 @@
 							<button type="button" data-role="package-update-now" aria-label="Update {row.source}" onclick={() => app.savePackages({ update: [row.source] })} disabled={app.packagesBusy}>
 								Update
 							</button>
+						{/if}
+						<!-- Installed → published, and the published list: going back is a pin, not an update, because
+							the only thing that stops the daily check moving a source is the source naming a version. -->
+						{#if row.name && row.versions?.length}
+							<span class="cfg-state" data-role="package-available">
+								{row.available ? `newest published ${row.available}` : "nothing newer published"}
+							</span>
+							<label class="field">Version
+								<select data-role="package-version-pick" aria-label={`Version of ${row.source}`} onchange={(event) => (pick[row.source] = event.currentTarget.value)}>
+									{#each row.versions.slice().reverse() as version (version)}
+										<option value={version}>{version === row.version ? `${version} — installed` : version}</option>
+									{/each}
+								</select>
+							</label>
+							<button
+								type="button"
+								data-role="package-pin"
+								aria-label="Install {pickedVersion(row)} of {row.source}"
+								onclick={() => {
+									const version = pickedVersion(row);
+									if (!version) return;
+									app.savePackages({ install: [pinSource(row, version)] });
+								}}
+								disabled={app.packagesBusy}
+							>
+								{app.packagesBusy ? "Working…" : `Install ${pickedVersion(row)}`}
+							</button>
+						{/if}
+						{#if row.name && row.source !== `npm:${row.name}`}
+							<span class="cfg-state" data-role="package-pinned">pinned — the daily check leaves it here</span>
 						{/if}
 						<button type="button" class="icon remove" data-role="package-remove" aria-label="Remove {row.source}" title="Remove this package" onclick={() => app.savePackages({ remove: [row.source] })}>
 							{@render removeGlyph()}
