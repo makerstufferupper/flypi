@@ -5,7 +5,7 @@
 #   open http://localhost:8791/
 #
 # The image installs the published npm package, so an image and `npm install -g @makerstufferupper/flypi`
-# cannot drift. `--build-arg FLYPI_VERSION=0.1.2` pins it.
+# cannot drift. `--build-arg FLYPI_VERSION=<version>` pins it.
 
 # 24, not the 22.19 floor in package.json: flypi uses the built-in node:sqlite.
 FROM node:24-slim

@@ -44,7 +44,7 @@ are what the first command downloads on its first run.
 
 ## Tags
 
-`latest` and `<version>` (currently `0.1.3`), each built for `linux/amd64` and `linux/arm64`. The image
+`latest` and `<version>`, each built for `linux/amd64` and `linux/arm64`. The image
 installs the published npm package,
 [@makerstufferupper/flypi](https://www.npmjs.com/package/@makerstufferupper/flypi), so it is the same code
 `npm install -g` gives you.

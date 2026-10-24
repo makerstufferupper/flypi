@@ -44,7 +44,7 @@ work in a container — the package is read-only there; rebuild the image instea
 
 `makerstufferupper/flypi` is published for `linux/amd64` and `linux/arm64`, and installs the published npm
 package — the same code `npm install -g` gives you. Build it yourself with `docker build -t flypi .`;
-`--build-arg FLYPI_VERSION=0.1.3` pins the version.
+`--build-arg FLYPI_VERSION=<version>` pins the version.
 
 ## Configure
 
