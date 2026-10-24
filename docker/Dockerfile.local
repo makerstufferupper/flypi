@@ -1,0 +1,28 @@
+# The repo Dockerfile, but installing a local `npm pack` tarball instead of the published package — this is
+# how an unpublished branch, or a package that is packed but not yet published, gets deployed and tested.
+#
+# The build context is the directory holding the tarball, never the repo: the repo's `.dockerignore` excludes
+# `*.tgz`, and this way the repo gains no build file. `scripts/release-check.mjs` copies this file next to the
+# tarball and builds from there.
+#
+#   npm run build && npm pack --pack-destination /tmp/flypi-pack
+#   cp docker/Dockerfile.local /tmp/flypi-pack/Dockerfile
+#   docker build --build-arg FLYPI_TGZ=makerstufferupper-flypi-<version>.tgz -t flypi:local-<sha> /tmp/flypi-pack
+
+FROM node:24-slim
+
+ARG FLYPI_TGZ
+RUN test -n "$FLYPI_TGZ" || (echo "build-arg FLYPI_TGZ=<name>.tgz is required" && exit 1)
+COPY ${FLYPI_TGZ} /tmp/flypi.tgz
+RUN npm install -g --no-audit --no-fund /tmp/flypi.tgz && rm /tmp/flypi.tgz
+
+# Same runtime shape as the published image: a non-root user, /data as the state root, the daemon under PID 1.
+RUN groupadd --gid 10001 flypi \
+	&& useradd --uid 10001 --gid 10001 --create-home flypi \
+	&& mkdir -p /data \
+	&& chown flypi:flypi /data
+USER flypi
+ENV FLYPI_ROOT=/data
+
+EXPOSE 8791
+CMD ["flypi", "start", "--foreground", "--port", "8791", "--host", "0.0.0.0"]

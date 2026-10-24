@@ -60,6 +60,11 @@ UI comes up normally and the model turn says out loud that no default is set.
 - A daemon with a scheduler, a tool permission gate, and an encrypted secrets vault.
 - Any endpoint pi supports, including local OpenAI-compatible servers.
 
+## Releasing
+
+Maintainers: the runbook is [docs/release.md](docs/release.md) and the rehearsal it starts with is
+[docs/release-checks.md](docs/release-checks.md) — `npm run release:check`.
+
 ## License
 
 MIT

@@ -44,7 +44,8 @@
 		"serve": "tsx scripts/serve.ts",
 		"daemon": "tsx scripts/serve-daemon.ts",
 		"flypi": "node scripts/flypi.mjs",
-		"release": "node scripts/release.mjs"
+		"release": "node scripts/release.mjs",
+		"release:check": "node scripts/release-check.mjs"
 	},
 	"dependencies": {
 		"@earendil-works/pi-coding-agent": "^1.4.0",
