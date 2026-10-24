@@ -25,6 +25,12 @@
 	 * other was never asked.
 	 */
 	const lastChecked = $derived(app.piVersions?.checkedAt ?? app.packages?.checkedAt);
+	/** Whether the pi list has anything to show: an empty one is a box with two lines and nothing in it. */
+	const piHasRows = $derived(
+		!!app.piVersions &&
+			((app.piVersions.next !== undefined && app.piVersions.next !== app.piVersions.running) ||
+				app.piVersions.trees.some((version) => version !== app.piVersions!.running)),
+	);
 	/** The source to install, typed in: `npm:…`, a git URL or a path. pi's own forms, unvalidated here. */
 	let newPackage = $state("");
 	/** The pi version whose switch has been asked for and not yet confirmed. */
@@ -473,15 +479,21 @@
 		<!-- Which pi this flypi runs, and moving it (docs/pi-upgrades.md Phase 8.4). The restart is the whole
 			cost of the operation and it takes this page down with it, so the button asks first and says what it
 			will do; the automatic way back is not a button, it is what the CLI does when the new process never
-			answers (docs/risks.md risk 13). Extensions is a sub-section here: same question — which code this
-			agent loads — and one stamp covers both checks. -->
+			answers (docs/risks.md risk 13). The stamp line is the one the Extensions section has no line of —
+			the daemon writes both stamps in the same daily pass. -->
 		<section>
-			<div class="cfg-section"><h3>pi</h3></div>
+			<div class="cfg-section">
+				<h3>pi</h3>
+				{#if app.piVersions}
+					<button type="button" data-role="pi-check" onclick={() => app.checkPi()}>Check for updates</button>
+				{/if}
+			</div>
 			{#if app.piVersions}
 				<p class="cfg-note" data-role="pi-running">
 					{`running pi ${app.piVersions.running}${app.piVersions.pinned ? " (pinned)" : ""}`}
 				</p>
-				<ul class="cfg-list" data-role="pi-versions">
+				{#if piHasRows}
+					<ul class="cfg-list cfg-plain" data-role="pi-versions">
 					{#if app.piVersions.next && app.piVersions.next !== app.piVersions.running}
 						<li data-role="pi-next">
 							<code>{`pi ${app.piVersions.next}`}</code>
@@ -510,18 +522,16 @@
 							</button>
 						</li>
 					{/each}
-				</ul>
+					</ul>
+				{/if}
 			{:else}
 				<p class="cfg-note" data-role="pi-none">which pi this process runs is shown in the sidebar; moving it is a CLI thing in a checkout.</p>
 			{/if}
-			<p class="cfg-note cfg-checked" data-role="pi-checked">
-				{lastChecked ? `last checked ${lastChecked}` : "not checked yet"}
-				{#if app.piVersions}
-					<button type="button" data-role="pi-check" onclick={() => app.checkPi()}>Check for pi updates</button>
-				{/if}
-			</p>
+			<p class="cfg-note" data-role="pi-checked">{lastChecked ? `last checked ${lastChecked}` : "not checked yet"}</p>
+		</section>
 
-			<div class="cfg-section cfg-sub"><h4>Extensions</h4></div>
+		<section>
+			<div class="cfg-section"><h3>Extensions</h3></div>
 			<p class="cfg-note">
 				<code>packages</code> in <code>.flypi/agent/settings.json</code> — <code>npm:…</code>, a git URL or a
 				path. An extension runs as flypi runs, with your files and your keys.

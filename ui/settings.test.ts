@@ -939,6 +939,15 @@ describe("the pi this flypi runs", () => {
 		expect(rows.join("")).not.toContain("pi 1.3.0");
 	});
 
+	it("shows no list at all when there is nothing to move to", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answeredPi(transport, { ...PI, next: PI.running, latest: PI.running, trees: [PI.running] });
+		// An empty list is a box with two horizontal lines and nothing between them.
+		expect(document.querySelector('[data-role="pi-versions"]')).toBeNull();
+		expect(document.querySelector('[data-role="pi-running"]')?.textContent).toContain("running pi 1.3.0");
+	});
+
 	it("says what a process that does not manage pi versions shows instead", async () => {
 		const transport = await mount();
 		await openSettings(transport);
