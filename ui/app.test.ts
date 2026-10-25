@@ -117,6 +117,7 @@ afterEach(() => {
 	localStorage.removeItem("flypi.sidebarWidth");
 	localStorage.removeItem("flypi.activityWidth");
 	localStorage.removeItem("flypi.lastAnswers");
+	localStorage.removeItem("flypi.notifications");
 	history.replaceState(null, "", "/");
 });
 
@@ -812,6 +813,28 @@ describe("the address bar", () => {
 	});
 });
 
+/** A fake Notification API: records what the page tried to show, and answers for permission. */
+function stubNotifications(permission: NotificationPermission = "granted") {
+	const shown: { title: string; body?: string }[] = [];
+	class FakeNotification {
+		static permission: NotificationPermission = permission;
+		static requestPermission = async (): Promise<NotificationPermission> => {
+			FakeNotification.permission = "granted";
+			return "granted";
+		};
+		onclick: (() => void) | null = null;
+		closed = false;
+		constructor(title: string, options: NotificationOptions = {}) {
+			shown.push({ title, body: options.body });
+		}
+		close(): void {
+			this.closed = true;
+		}
+	}
+	vi.stubGlobal("Notification", FakeNotification);
+	return { shown, FakeNotification };
+}
+
 describe("the sidebar", () => {
 	it("shows a chat in the list only once its first message has been sent", async () => {
 		const transport = await mount();
@@ -915,21 +938,8 @@ describe("the sidebar", () => {
 		expect(rowFor("s.jsonl")?.classList.contains("unread")).toBe(false);
 	});
 
-	it("notifies the desktop when a background turn finishes, and lets the bell turn it off", async () => {
-		const shown: { title: string; body?: string }[] = [];
-		class FakeNotification {
-			static permission: NotificationPermission = "granted";
-			static requestPermission = async (): Promise<NotificationPermission> => "granted";
-			onclick: (() => void) | null = null;
-			closed = false;
-			constructor(title: string, options: NotificationOptions = {}) {
-				shown.push({ title, body: options.body });
-			}
-			close(): void {
-				this.closed = true;
-			}
-		}
-		vi.stubGlobal("Notification", FakeNotification);
+	it("notifies the desktop when a turn finishes, whichever chat it was, and lets the bell turn it off", async () => {
+		const { shown } = stubNotifications("granted");
 		const transport = await mount();
 		await bind(transport);
 
@@ -937,12 +947,14 @@ describe("the sidebar", () => {
 		const bell = screen.getByRole("button", { name: /desktop notifications/i });
 		expect(bell.getAttribute("aria-pressed")).toBe("true");
 
-		// A turn that finishes in the chat on screen is not a notification: you watched it.
+		// A turn that finishes in the chat on screen notifies too: knowing a long turn is over is the point.
 		transport.emit({ type: "event", conversationId: "c1", seq: 9, event: { type: "agent_settled" } as AgentSessionEvent });
 		await tick();
-		expect(shown).toHaveLength(0);
+		expect(shown).toHaveLength(1);
+		expect(shown[0]!.title).toContain("s.jsonl");
+		expect(shown[0]!.body).toBe("Finished its turn.");
 
-		// One that finishes in the chat you left is, and it says which session and what it said.
+		// One that finishes in the chat you left says which session and what it said.
 		transport.emit({ type: "result", requestId: "bind-b", conversationId: "c2", sessionPath: "/tmp/b.jsonl" });
 		await tick();
 		transport.emit({
@@ -953,15 +965,36 @@ describe("the sidebar", () => {
 		});
 		transport.emit({ type: "event", conversationId: "c1", seq: 11, event: { type: "agent_settled" } as AgentSessionEvent });
 		await tick();
-		expect(shown).toHaveLength(1);
-		expect(shown[0]!.title).toContain("s.jsonl");
-		expect(shown[0]!.body).toBe("the sort is fixed");
+		expect(shown).toHaveLength(2);
+		expect(shown[1]!.title).toContain("s.jsonl");
+		expect(shown[1]!.body).toBe("the sort is fixed");
 
 		// The bell turns them off, and the preference outlives the page.
 		fireEvent.click(bell);
 		await tick();
 		expect(bell.getAttribute("aria-pressed")).toBe("false");
+		expect(document.querySelector('[data-role="notifications-note"]')?.textContent).toContain("off");
 		expect(localStorage.getItem("flypi.notifications")).toBe("off");
+	});
+
+	// The browser will only be asked from a click, and a permission dialog that grants nothing visible is
+	// indistinguishable from a bug — so granting shows one immediately and says so in the page.
+	it("asks for permission from the bell, and proves it with a notification", async () => {
+		const { shown } = stubNotifications("default");
+		const transport = await mount();
+		await bind(transport);
+		const bell = screen.getByRole("button", { name: /desktop notifications/i });
+		expect(bell.getAttribute("aria-pressed")).toBe("false");
+
+		fireEvent.click(bell);
+		await tick();
+		await tick();
+
+		expect(bell.getAttribute("aria-pressed")).toBe("true");
+		expect(localStorage.getItem("flypi.notifications")).toBe("on");
+		expect(shown).toHaveLength(1);
+		expect(shown[0]!.title).toBe("flypi — notifications on");
+		expect(document.querySelector('[data-role="notifications-note"]')?.textContent).toContain("on");
 	});
 
 	it("deletes a session row, and starts a new conversation when you delete the one you are in", async () => {

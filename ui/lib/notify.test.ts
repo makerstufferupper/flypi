@@ -86,6 +86,21 @@ describe("desktop notifications", () => {
 		expect(FakeNotification.requestPermission).toHaveBeenCalledOnce();
 	});
 
+	it("says so in the console when a platform refuses to construct one, instead of failing the turn", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		class Refusing {
+			static permission: NotificationPermission = "granted";
+			static requestPermission = async (): Promise<NotificationPermission> => "granted";
+			constructor() {
+				throw new Error("no notification daemon");
+			}
+		}
+		vi.stubGlobal("Notification", Refusing);
+		expect(notifyTurnDone({ title: "t", body: "b", tag: "x" })).toBeUndefined();
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("no notification daemon"));
+		warn.mockRestore();
+	});
+
 	it("is unsupported where the API is missing, without throwing", async () => {
 		vi.stubGlobal("Notification", undefined);
 		expect(notificationsSupported()).toBe(false);

@@ -15,11 +15,12 @@
 	// svelte-ignore state_referenced_locally — the transport is fixed for the life of the page.
 	const app = new FlypiAppState(transport, {
 		/**
-		 * A turn finished. Say so in a desktop notification only when it is news: a chat on screen with the
-		 * window in front is its own notification, and the row's unread marker covers the rest.
+		 * A turn finished: say so. `notifyTurnDone` is what decides whether anything can be shown — the
+		 * browser's permission, the page's preference — so there is no second guess here about whether the
+		 * chat was on screen: a notification at the end of a turn is the point, and the row's unread marker
+		 * is what remains if the desktop will not show one.
 		 */
 		onTurnSettled: (turn) => {
-			if (turn.active && !document.hidden && document.hasFocus()) return;
 			notifyTurnDone({
 				title: `flypi — ${turn.title}`,
 				body: turn.preview,

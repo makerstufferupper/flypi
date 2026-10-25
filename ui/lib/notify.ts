@@ -50,6 +50,12 @@ export async function requestNotifications(): Promise<NotificationState> {
 	}
 }
 
+/**
+ * The last notice this page put up. Some browsers drop a notification whose JS object is collected before
+ * it is read, so the page keeps one alive; the next replaces it (the OS keeps the one already shown).
+ */
+let lastShown: Notification | undefined;
+
 export interface TurnNotice {
 	title: string;
 	body: string;
@@ -66,13 +72,17 @@ export function notifyTurnDone(notice: TurnNotice): Notification | undefined {
 	if (!notificationsSupported() || Notification.permission !== "granted" || !wantsNotifications()) return undefined;
 	try {
 		const shown = new Notification(notice.title, { body: notice.body, tag: notice.tag });
+		lastShown = shown;
 		shown.onclick = () => {
 			window.focus();
 			notice.onClick?.();
 			shown.close();
 		};
 		return shown;
-	} catch {
+	} catch (error) {
+		// A platform that refuses to construct one (no notification daemon, a browser policy). Say so in the
+		// dev console rather than failing silently, because "nothing appeared" is otherwise undiagnosable.
+		console.warn(`flypi: desktop notification failed: ${(error as Error).message}`);
 		return undefined;
 	}
 }

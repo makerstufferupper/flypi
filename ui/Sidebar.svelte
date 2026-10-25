@@ -2,7 +2,7 @@
 	import type { FlypiAppState } from "./lib/app-state.svelte.ts";
 	import type { SessionSummary } from "../src/server/protocol.ts";
 	import { currentTheme, setTheme, type Theme } from "./lib/theme.ts";
-	import { notificationState, notificationsSupported, requestNotifications, setWantsNotifications, wantsNotifications, type NotificationState } from "./lib/notify.ts";
+	import { notificationState, notificationsSupported, notifyTurnDone, requestNotifications, setWantsNotifications, wantsNotifications, type NotificationState } from "./lib/notify.ts";
 
 	let { app, update }: { app: FlypiAppState; update?: { version: string; ready: boolean } | null } = $props();
 
@@ -63,16 +63,41 @@
 						: "Desktop notifications off — click to turn on",
 	);
 
+	/**
+	 * A confirmation in the page itself, for the one thing a desktop notification cannot report: whether the
+	 * app sent one. If nothing appears at the OS but this line does, the browser or the system is holding it
+	 * back, which is a different problem from the page not trying.
+	 */
+	let note = $state<string | undefined>(undefined);
+	let noteTimer: ReturnType<typeof setTimeout> | undefined;
+	function flash(text: string): void {
+		clearTimeout(noteTimer);
+		note = text;
+		noteTimer = setTimeout(() => (note = undefined), 8_000);
+	}
+	$effect(() => () => clearTimeout(noteTimer));
+
 	async function toggleNotifications() {
 		if (permission === "unsupported" || permission === "denied") return;
 		if (permission === "default") {
 			permission = await requestNotifications();
-			if (permission !== "granted") return;
+			if (permission !== "granted") {
+				flash("the browser did not allow notifications");
+				return;
+			}
 			wanted = true;
 		} else {
 			wanted = !wanted;
 		}
 		setWantsNotifications(wanted);
+		if (!wanted) {
+			flash("desktop notifications are off");
+			return;
+		}
+		// One immediately, as proof: it is the same call a finished turn makes, so if this appears the page
+		// is doing its part, and anything missing later is the browser or the OS.
+		notifyTurnDone({ title: "flypi — notifications on", body: "This is what the end of a turn looks like.", tag: "flypi-notifications" });
+		flash("desktop notifications are on");
 	}
 </script>
 
@@ -165,6 +190,10 @@
 			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /><circle cx="9" cy="7" r="2" fill="currentColor" /><circle cx="15" cy="12" r="2" fill="currentColor" /><circle cx="11" cy="17" r="2" fill="currentColor" /></svg>
 		</button>
 	</div>
+
+	{#if note}
+		<p class="update" data-role="notifications-note" role="status">{note}</p>
+	{/if}
 
 	<!-- The daemon's own answer about updates (its `/healthz`, read by App.svelte): what it found, and whether
 		the package is already on this machine. It installs itself during a stretch of nothing happening; the
