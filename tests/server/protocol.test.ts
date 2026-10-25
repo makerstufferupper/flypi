@@ -19,11 +19,14 @@ const commands: ClientCommand[] = [
 	{ type: "abort", conversationId: "c1", requestId: "r3" },
 	{ type: "newSession", requestId: "r4" },
 	{ type: "newSession", cwd: "/tmp/somewhere" },
-	{ type: "switchSession", conversationId: "c1", sessionPath: "/x/.flypi/sessions/a.jsonl" },
+	{ type: "switchSession", sessionPath: "/x/.flypi/sessions/a.jsonl" },
 	{ type: "fork", conversationId: "c1", messageSeq: 4 },
 	{ type: "setModel", conversationId: "c1", provider: "lmstudio", modelId: "qwen3" },
 	{ type: "setThinkingLevel", conversationId: "c1", level: "high" },
 	{ type: "resume", conversationId: "c1", afterSeq: 12 },
+	// Letting go of one conversation's stream while others stay attached: the frame is conversation-scoped, so
+	// a page with several open chats can stop following an idle one without touching the rest.
+	{ type: "unsubscribe", conversationId: "c1" },
 	{ type: "listSessions", requestId: "r11" },
 	{ type: "renameSession", conversationId: "c1", name: "afternoon session" },
 	{ type: "deleteSession", sessionPath: "/x/.flypi/sessions/a.jsonl", requestId: "r13" },

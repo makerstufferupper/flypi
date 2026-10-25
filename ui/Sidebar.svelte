@@ -36,6 +36,13 @@
 	function remove(session: SessionSummary) {
 		app.deleteSession(session.path);
 	}
+
+	/**
+	 * The sessions with a turn running right now. A session keeps answering when you leave it, so the row is
+	 * the only place that turn is visible — and the row on screen says it from its own transcript, since the
+	 * daemon's list is only as fresh as the last fetch.
+	 */
+	const running = $derived(new Set(app.sessions.filter((session) => app.isRunning(session.path)).map((session) => session.path)));
 </script>
 
 <aside class="sidebar">
@@ -147,7 +154,12 @@
 		list is keyed by path, and so is the delete. -->
 	<ul class="sessions">
 		{#each app.sessions as session (session.path)}
-			<li>
+			<!-- A session with a turn still running gets its dot: leaving a chat does not stop it, and this is
+				 where you can see that without opening it. -->
+			<li class:running={running.has(session.path)}>
+				{#if running.has(session.path)}
+					<span class="run-dot" role="img" aria-label="Running" title="A turn is running in this session"></span>
+				{/if}
 				{#if session.path === app.sessionPath}
 					<!-- Only the name and the first-message hint, never the path: a new session reads as
 						an empty field that says what it is. -->

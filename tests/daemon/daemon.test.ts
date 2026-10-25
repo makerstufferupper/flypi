@@ -323,21 +323,22 @@ describe("the daemon", () => {
 			client2.send({ type: "newSession", requestId: "r1" });
 			const fresh = await client2.next((frame) => frame.type === "result" && frame.requestId === "r1");
 			if (fresh.type !== "result" || !fresh.conversationId) throw new Error("no conversation");
-			client2.send({ type: "switchSession", conversationId: fresh.conversationId, sessionPath, requestId: "r2" });
+			client2.send({ type: "switchSession", sessionPath, requestId: "r2" });
 			const openedChat = await client2.next((frame) => frame.type === "result" && frame.requestId === "r2");
+			if (openedChat.type !== "result" || !openedChat.conversationId) throw new Error("no reopened conversation");
 			// The half-finished answer arrives with the reason it is half-finished.
-			expect(openedChat.type === "result" && openedChat.interrupted).toEqual({ at: expect.any(String) });
+			expect(openedChat.interrupted).toEqual({ at: expect.any(String) });
 
 			// What that chat can actually show, read the way the page reads it: the prompt is there, and the
 			// answer that was streaming when the process died is not. The notice is what makes the gap
 			// explainable — this is the assertion that stops the design docs promising a half answer.
-			client2.send({ type: "resume", conversationId: fresh.conversationId, afterSeq: 0 });
+			client2.send({ type: "resume", conversationId: openedChat.conversationId, afterSeq: 0 });
 			expect(await client2.next(messageEnd("user"), 5_000)).toBeTruthy();
 			await expect(client2.next(messageEnd("assistant"), 1_000)).rejects.toThrow(/no frame matched/);
 
 			// Asked again while that turn is still the last thing that happened to the chat, it is said again:
 			// the notice belongs to the chat until a later turn supersedes it (see run-store.test.ts).
-			client2.send({ type: "switchSession", conversationId: fresh.conversationId, sessionPath, requestId: "r3" });
+			client2.send({ type: "switchSession", sessionPath, requestId: "r3" });
 			const reopened = await client2.next((frame) => frame.type === "result" && frame.requestId === "r3");
 			expect(reopened.type === "result" && reopened.interrupted).toEqual({ at: expect.any(String) });
 		} finally {

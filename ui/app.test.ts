@@ -59,7 +59,12 @@ async function replay(transport: FakeTransport) {
 	await frames(transport, recordedEvents);
 }
 
-/** The real startup: the socket connects, the app asks for a conversation, the server gives one. */
+/**
+ * The real startup: the socket connects, the app asks for a conversation, the server gives one.
+ *
+ * `frames()` addresses the transcript's events to `c1`, so binding is what makes a stream visible — the page
+ * renders the chat its conversation belongs to, and only that one.
+ */
 async function bind(transport: FakeTransport) {
 	transport.emit({ type: "connected" });
 	await tick();
@@ -78,6 +83,19 @@ function sessionInUrl(): string | null {
 
 function submit(selector: string) {
 	fireEvent.submit(document.querySelector(selector) as Element);
+}
+
+/**
+ * Click the sidebar row for a session the page already holds. Its path is what rows are keyed by, and the
+ * row's label is whatever the session was called — so the path is what the lookup uses.
+ */
+function openRowByPath(path: string): void {
+	const name = path.split("/").pop()!;
+	// A session that has never been named or given a first message is listed by its path, and the row you are
+	// in is the rename field rather than a button — so only the others can be clicked.
+	const button = [...document.querySelectorAll(".sessions button.session")].find((candidate) => (candidate.textContent ?? "").includes(name));
+	if (!button) throw new Error(`no clickable sidebar row for ${path}`);
+	fireEvent.click(button);
 }
 
 /**
@@ -111,8 +129,9 @@ function emit(transport: FakeTransport, event: AgentSessionEvent): void {
 
 describe("the chat", () => {
 	it("renders the recorded multi-tool turn as the final DOM", async () => {
-		await mount();
-		await replay(current);
+		const transport = await mount();
+		await bind(transport);
+		await replay(transport);
 
 		// The user's own prompt, from the stream — the UI never appends it twice.
 		expect(screen.getByText("fix the failing test in this repo")).toBeTruthy();
@@ -129,6 +148,7 @@ describe("the chat", () => {
 
 	it("shows a partial assistant message while it streams, then removes it", async () => {
 		const transport = await mount();
+		await bind(transport);
 		const assistant = (text: string) => ({ role: "assistant", content: [{ type: "text", text }], usage: { input: 1, output: 1, cost: { total: 0 } } });
 		await frames(transport, [
 			{ type: "agent_start" },
@@ -165,6 +185,7 @@ describe("the chat", () => {
 
 	it("keeps thinking expanded in the activity panel", async () => {
 		const transport = await mount();
+		await bind(transport);
 		await frames(transport, [
 			{
 				type: "message_end",
@@ -179,6 +200,7 @@ describe("the chat", () => {
 
 	it("renders a tool result that arrived with no matching card", async () => {
 		const transport = await mount();
+		await bind(transport);
 		await frames(transport, [
 			{
 				type: "message_end",
@@ -190,6 +212,7 @@ describe("the chat", () => {
 
 	it("keeps the newest message on screen until you scroll up to read an older one", async () => {
 		const transport = await mount();
+		await bind(transport);
 		const say = (text: string) =>
 			({
 				type: "message_end",
@@ -210,6 +233,7 @@ describe("the chat", () => {
 describe("tool cards", () => {
 	it("goes running → done with live output and a duration", async () => {
 		const transport = await mount();
+		await bind(transport);
 		const call = { type: "toolCall", id: "c1", name: "bash", arguments: { command: "node --test" } };
 		await frames(transport, [
 			{ type: "message_end", message: { role: "assistant", content: [call], usage: {} } } as unknown as AgentSessionEvent,
@@ -230,6 +254,7 @@ describe("tool cards", () => {
 
 	it("shows a failed call as an error", async () => {
 		const transport = await mount();
+		await bind(transport);
 		await frames(transport, [
 			{ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "nope" } }], usage: {} } } as unknown as AgentSessionEvent,
 			{ type: "tool_execution_start", toolCallId: "c1", toolName: "read", args: { path: "nope" } } as AgentSessionEvent,
@@ -242,6 +267,7 @@ describe("tool cards", () => {
 describe("which panel shows what", () => {
 	it("keeps the conversation in the middle and the thinking and tool output on the right", async () => {
 		const transport = await mount();
+		await bind(transport);
 		await frames(transport, [
 			{
 				type: "message_end",
@@ -264,6 +290,7 @@ describe("which panel shows what", () => {
 
 	it("keeps the newest entry on screen until you scroll up to read an older one", async () => {
 		const transport = await mount();
+		await bind(transport);
 		const thinking = (text: string) =>
 			({
 				type: "message_end",
@@ -313,12 +340,15 @@ describe("the conversation the page is on", () => {
 		// The abandoned turn's agent_start must not put a Stop button on this conversation either.
 		expect(document.querySelector(".stop")).toBeNull();
 
-		// And the seq of a conversation the page left is not this conversation's resume cursor: a reconnect
-		// asks for what this one last saw, not for after the highest seq that ever arrived.
+		// The conversation the page left is still followed — a turn in flight in it must not be cut short — so
+		// a reconnect resumes both, each from its own cursor, and neither one's seq is the other's.
 		transport.emit({ type: "disconnected" });
 		transport.emit({ type: "connected" });
 		await tick();
 		expect(sent(transport, "resume").at(-1)).toEqual(expect.objectContaining({ conversationId: "c2", afterSeq: 1 }));
+		// Its cursor is the last event *it* was sent (900 was a gap-carrying seq the stream skipped), so coming
+		// back to it asks for what it actually missed rather than for a number it never saw.
+		expect(sent(transport, "resume")).toContainEqual(expect.objectContaining({ conversationId: "c1", afterSeq: 902 }));
 	});
 
 	// A row click rebinds the conversation on screen, and rebinding disposes the session behind it — so a turn
@@ -344,8 +374,8 @@ describe("the conversation the page is on", () => {
 		await tick();
 		// Whether that means reusing the conversation already answering the session or opening one of its own is
 		// the server's call — this page only asks, mid-turn or not.
-		const asked = sent(transport, "switchSession").at(-1) as { conversationId: string; sessionPath: string; requestId: string };
-		expect(asked).toMatchObject({ conversationId: "c1", sessionPath: "/tmp/a.jsonl" });
+		const asked = sent(transport, "switchSession").at(-1) as { sessionPath: string; requestId: string };
+		expect(asked).toMatchObject({ sessionPath: "/tmp/a.jsonl" });
 
 		// The conversation the server names is the one this page is on from then on: its log is what arrives next.
 		transport.emit({ type: "result", requestId: asked.requestId, conversationId: "c2", sessionPath: "/tmp/a.jsonl" });
@@ -363,6 +393,101 @@ describe("the conversation the page is on", () => {
 		await tick();
 		expect(document.body.textContent).not.toContain("a note from the session you left");
 		expect(document.body.textContent).not.toContain("Pick one");
+
+		// And going back to the first conversation shows the note where it was said: extension output belongs to
+		// the conversation that produced it, so it was kept rather than dropped — and so was the question the
+		// extension is still parked on, which is the one thing here that must not be lost.
+		transport.emit({
+			type: "result",
+			requestId: "r9",
+			sessions: [
+				{ path: "/tmp/s.jsonl", name: "s.jsonl", modified: "2026-01-01T00:00:00.000Z", messageCount: 2, firstMessage: "" },
+				{ path: "/tmp/b.jsonl", name: "b.jsonl", modified: "2026-01-01T00:00:00.000Z", messageCount: 1, firstMessage: "" },
+			],
+		});
+		await tick();
+		openRowByPath("/tmp/s.jsonl");
+		await tick();
+		expect(document.body.textContent).toContain("a note from the session you left");
+		// Including the question it was waiting on: it was never answered, so it is still the chat's to answer.
+		expect(document.body.textContent).toContain("Pick one");
+	});
+
+	// The four symptoms of one design: a chat and a pi session are one thing, so an answer can only land
+	// where it was asked for, leaving a chat cannot stop it, and what you typed stays where you typed it.
+	it("keeps a background turn running, and its answer, in the session that started it", async () => {
+		const transport = await mount();
+		await bind(transport);
+		const said = (text: string) =>
+			({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], usage: {} } }) as unknown as AgentSessionEvent;
+
+		// The first session starts a turn, and the page leaves it for a new one before the answer lands.
+		await frames(transport, [{ type: "agent_start" } as AgentSessionEvent]);
+		transport.emit({ type: "result", requestId: "r7", conversationId: "c2", sessionPath: "/tmp/b.jsonl" });
+		await tick();
+		expect(sent(transport, "unsubscribe")).toEqual([]); // the turn is still running: it is not detached
+
+		// The answer arrives while the page is looking at the other chat. It must not be printed here...
+		transport.emit({ type: "event", conversationId: "c1", seq: 700, event: said("the first session's answer") });
+		await tick();
+		expect(document.body.textContent).not.toContain("the first session's answer");
+
+		// ...and the session it belongs to is marked as running in the sidebar, so a turn with nobody looking
+		// at it is still visible.
+		const at = "2026-01-01T00:00:00.000Z";
+		transport.emit({
+			type: "result",
+			requestId: "r8",
+			sessions: [
+				{ path: "/tmp/s.jsonl", name: "s.jsonl", modified: at, messageCount: 2, firstMessage: "", running: true },
+				{ path: "/tmp/b.jsonl", name: "b.jsonl", modified: at, messageCount: 1, firstMessage: "" },
+			],
+		});
+		await tick();
+		const rows = [...document.querySelectorAll(".sessions li")];
+		expect(rows[0]?.querySelector(".run-dot")).toBeTruthy();
+		expect(rows[1]?.querySelector(".run-dot")).toBeNull();
+
+		// Going back shows it: the answer is in the chat that asked for it, and nowhere else. The chat was
+		// already held, so nothing is asked of the server — and what it holds is its own transcript.
+		openRowByPath("/tmp/s.jsonl");
+		await tick();
+		expect(document.body.textContent).toContain("the first session's answer");
+		expect(sent(transport, "switchSession")).toEqual([]);
+	});
+
+	it("keeps what is typed in the session it was typed in", async () => {
+		const transport = await mount();
+		await bind(transport);
+		const box = () => screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+
+		fireEvent.input(box(), { target: { value: "half a thought" } });
+		await tick();
+		// Open another session: the box is that session's, so this draft is not on screen — and neither is
+		// anything else the first chat was holding.
+		transport.emit({ type: "result", requestId: "r7", conversationId: "c2", sessionPath: "/tmp/b.jsonl" });
+		await tick();
+		expect(box().value).toBe("");
+		fireEvent.input(box(), { target: { value: "a second thought" } });
+		await tick();
+
+		// And coming back brings it back — it was never thrown away, only put down, and the other chat's draft
+		// did not follow it here.
+		transport.emit({
+			type: "result",
+			requestId: "r9",
+			sessions: [
+				{ path: "/tmp/s.jsonl", name: "s.jsonl", modified: "2026-01-01T00:00:00.000Z", messageCount: 2, firstMessage: "" },
+				{ path: "/tmp/b.jsonl", name: "b.jsonl", modified: "2026-01-01T00:00:00.000Z", messageCount: 1, firstMessage: "" },
+			],
+		});
+		await tick();
+		openRowByPath("/tmp/s.jsonl");
+		await tick();
+		expect(box().value).toBe("half a thought");
+		openRowByPath("/tmp/b.jsonl");
+		await tick();
+		expect(box().value).toBe("a second thought");
 	});
 });
 
@@ -491,6 +616,7 @@ describe("steering, queueing and stopping", () => {
 
 	it("shows a pasted image in the conversation it was sent from", async () => {
 		const transport = await mount();
+		await bind(transport);
 		await frames(transport, [
 			{
 				type: "message_end",
@@ -516,6 +642,7 @@ describe("steering, queueing and stopping", () => {
 
 	it("shows what the user queued while the turn was running", async () => {
 		const transport = await mount();
+		await bind(transport);
 		await frames(transport, [{ type: "queue_update", steering: ["use pnpm"], followUp: ["then run the tests"] } as AgentSessionEvent]);
 		expect([...document.querySelectorAll(".queued")].map((item) => item.textContent)).toEqual(["use pnpm", "then run the tests"]);
 	});
@@ -533,20 +660,29 @@ describe("steering, queueing and stopping", () => {
 	// reported and nothing else. A restart is not news — "unknown conversation <uuid>" is not something a
 	// user can act on, and it stayed on screen for the rest of the page's life — so the recovery is silent
 	// and the chat carries the explanation (the reopened session names the turn the restart cut short).
-	it("replaces a conversation the server has forgotten, and opens the session it was showing", async () => {
+	it("reopens the session a forgotten conversation was showing, as a conversation of its own", async () => {
 		const transport = await mount();
 		await bind(transport);
+		await frames(transport, [{ type: "agent_start" } as AgentSessionEvent]);
+		const said = { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "half an answer" }], usage: {} } } as unknown as AgentSessionEvent;
+		await frames(transport, [said]);
+		expect(document.querySelectorAll("section.chat .msg")).toHaveLength(1); // control: it was on screen, so the reopen is what keeps it there
 		transport.emit({ type: "error", message: "unknown conversation c1", code: "unknownConversation", conversationId: "c1" });
 		await tick();
+		// Nothing to act on, so nothing is said: the page recovers by itself.
 		expect(screen.queryByRole("alert")).toBeNull();
-		const created = sent(transport, "newSession");
-		// One from connecting, one from the recovery.
-		expect(created).toHaveLength(2);
-		transport.emit({ type: "result", requestId: (created[1] as { requestId: string }).requestId, conversationId: "c2", sessionPath: "/tmp/new.jsonl" });
+		// No second conversation is created — the session is reopened, so the chat keeps its transcript.
+		expect(sent(transport, "newSession")).toHaveLength(1);
+		const reopened = sent(transport, "switchSession").at(-1) as { sessionPath: string; requestId: string };
+		expect(reopened).toMatchObject({ sessionPath: "/tmp/s.jsonl" });
+		// The server opens that file as a conversation of its own; the page lands on it and re-reads its log.
+		transport.emit({ type: "result", requestId: reopened.requestId, conversationId: "c2", sessionPath: "/tmp/s.jsonl" });
 		await tick();
-		expect(sent(transport, "switchSession")).toEqual([
-			expect.objectContaining({ type: "switchSession", conversationId: "c2", sessionPath: "/tmp/s.jsonl" }),
-		]);
+		expect(sent(transport, "resume").at(-1)).toMatchObject({ conversationId: "c2", afterSeq: 0 });
+		// The same chat is still on screen — it was reopened, not replaced — and its transcript is rebuilt from
+		// the replay the resume asks for, which is why the cursor goes back to zero.
+		expect(screen.getByRole("region", { name: "Chat" })).toBeTruthy();
+	
 	});
 
 	it("does not replace the conversation for a failure that is not about it", async () => {
@@ -601,13 +737,14 @@ describe("the address bar", () => {
 		// conversation the socket hands out, then replaces it instead of leaving an empty chat on screen.
 		transport.emit({ type: "result", requestId: "r1", conversationId: "c1", sessionPath: "/tmp/fresh.jsonl" });
 		await tick();
-		// The address names the session by its file name; the server resolves it inside .flypi/sessions.
-		expect(sent(transport, "switchSession")).toEqual([expect.objectContaining({ conversationId: "c1", sessionPath: "a.jsonl" })]);
+		// The address names the session by its file name; the server resolves it inside .flypi/sessions, and
+		// answers with the conversation that file has — a new one, since nothing was answering it.
+		expect(sent(transport, "switchSession")).toEqual([expect.objectContaining({ sessionPath: "a.jsonl" })]);
 		// The address bar is the page's own record of what it was showing, so a reload names that session.
 		// That is a starting point, not a pin: once the page has landed there, another row has to stick.
 		// Watching the URL instead of applying it once made every click snap back to the session named in it.
 		const opened = sent(transport, "switchSession")[0] as { requestId: string };
-		transport.emit({ type: "result", requestId: opened.requestId, conversationId: "c1", sessionPath: "/tmp/a.jsonl" });
+		transport.emit({ type: "result", requestId: opened.requestId, conversationId: "c2", sessionPath: "/tmp/a.jsonl" });
 		await tick();
 		const at = "2026-01-01T00:00:00.000Z";
 		transport.emit({
@@ -622,7 +759,7 @@ describe("the address bar", () => {
 		screen.getByText("Somewhere else").click();
 		await tick();
 		const moved = sent(transport, "switchSession")[1] as { requestId: string };
-		transport.emit({ type: "result", requestId: moved.requestId, conversationId: "c1", sessionPath: "/tmp/s.jsonl" });
+		transport.emit({ type: "result", requestId: moved.requestId, conversationId: "c3", sessionPath: "/tmp/s.jsonl" });
 		await tick();
 		// Two switches, and no third one back to /tmp/a.jsonl.
 		expect(sent(transport, "switchSession")).toHaveLength(2);
@@ -680,7 +817,7 @@ describe("the sidebar", () => {
 		expect(document.body.textContent).not.toContain("msgs");
 		screen.getByText("Fix the sort").click();
 		await tick();
-		expect(sent(transport, "switchSession")).toEqual([expect.objectContaining({ conversationId: "c1", sessionPath: "/tmp/a.jsonl" })]);
+		expect(sent(transport, "switchSession")).toEqual([expect.objectContaining({ sessionPath: "/tmp/a.jsonl" })]);
 		// The + on the title row is what starts a session; there is no New button.
 		expect(screen.queryByText("New")).toBeNull();
 		fireEvent.click(screen.getByRole("button", { name: "New session" }));
@@ -800,6 +937,7 @@ describe("the sidebar", () => {
 
 	it("shows usage and cost on the turn that earned them, and no totals in the sidebar", async () => {
 		const transport = await mount();
+		await bind(transport);
 		await replay(transport);
 		const lines = [...document.querySelectorAll('.msg [data-role="usage"]')].map((node) => node.textContent ?? "");
 		expect(lines.some((line) => line.includes("in /") && line.includes("$"))).toBe(true);
@@ -984,10 +1122,10 @@ describe("the edges", () => {
 		expect(screen.queryByRole("textbox", { name: "Session name" })).toBeNull();
 		fireEvent.input(screen.getByRole("textbox", { name: "Prompt" }), { target: { value: "hello" } });
 		submit("form.composer");
-		// Answers are on screen, so their fork buttons are — with no conversation id they send nothing.
-		await frames(transport, recordedEvents);
-		(screen.getAllByRole("button", { name: "Fork from this answer" })[0] as HTMLButtonElement).click();
 		await tick();
+		// The socket asked for a conversation on connecting and has not been given one: there is nothing to
+		// send a prompt to, and no fork button because no transcript is on screen.
+		expect(screen.queryByRole("button", { name: "Fork from this answer" })).toBeNull();
 		expect(transport.sent.filter((command) => command.type === "fork" || command.type === "prompt")).toEqual([]);
 	});
 
@@ -1251,15 +1389,34 @@ describe("the live metrics on the send row", () => {
 		};
 	}
 
-	/** Binds another chat, optionally naming the model it is on (and the two it could be on) the way the
-	 * debug snapshot does. */
+	/**
+	 * Opens another session the way the page does — clicking its row — and lets the server answer with the
+	 * conversation that answers that file. Each session gets its own conversation, which is what makes the
+	 * numbers on the strip this chat's own.
+	 */
+	let opened = 0;
+	const known = ["/tmp/s.jsonl"];
 	async function open(transport: FakeTransport, sessionPath: string, model?: string): Promise<void> {
-		transport.emit({ type: "result", requestId: "r7", conversationId: "c1", sessionPath });
-		await tick();
-		if (model) {
-			transport.emit({ type: "result", requestId: "r8", debug: snapshot(model) });
+		if (!known.includes(sessionPath)) known.push(sessionPath);
+		// A chat the page already holds is shown by its row; one it has never seen asks the server for a
+		// conversation — and the server answers with one of its own, not the one on screen.
+		if (sessionInUrl() !== sessionPath.replace(/^.*\//, "")) {
+			const at = "2026-01-01T00:00:00.000Z";
+			transport.emit({ type: "result", requestId: `rows-${opened}`, sessions: known.map((path) => ({ path, modified: at, messageCount: 1, firstMessage: path })) });
+			await tick();
+			screen.getByText(sessionPath).click();
+			await tick();
+			const asked = sent(transport, "switchSession").at(-1) as { requestId: string };
+			transport.emit({ type: "result", requestId: asked.requestId, conversationId: `c-${sessionPath}`, sessionPath });
 			await tick();
 		}
+		if (model) {
+			// The snapshot answers the debug request the page just made for the chat it opened.
+			const askedFor = sent(transport, "debug").at(-1) as { requestId: string };
+			transport.emit({ type: "result", requestId: askedFor.requestId, debug: snapshot(model) });
+			await tick();
+		}
+		opened += 1;
 	}
 
 	const stored = () => JSON.parse(localStorage.getItem("flypi.lastAnswers") ?? "{}") as Record<string, unknown>;

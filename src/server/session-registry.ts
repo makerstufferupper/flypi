@@ -63,8 +63,8 @@ export interface Conversation {
 	memory: { block: string | null };
 	/**
 	 * The conversation's extension UI bridge: `ctx.ui.notify/select/confirm/input` reach the page through it,
-	 * and it holds the dialogs still waiting for an answer. It outlives the session — `switchSession` binds a
-	 * new session to the same bridge, so a dialog survives the chat being reopened.
+	 * and it holds the dialogs still waiting for an answer. It belongs to the conversation and to nothing
+	 * else — one per conversation, for the whole life of the session it answers.
 	 */
 	extensionUi: ReturnType<typeof createExtensionUiBridge>;
 	/** Sockets watching this conversation's extension output. Detached with the socket, like event listeners. */
@@ -127,45 +127,29 @@ export class SessionRegistry {
 	}
 
 	/**
-	 * Open an existing session for a client: the conversation already answering it when there is one, and
-	 * otherwise this conversation moved onto it — or a new one, if this conversation is mid-turn.
+	 * The conversation answering a session file, opened if there is none. **One session file, one
+	 * conversation** — this is the whole mapping, and it is what makes a client's chr(c) safe to leave: a
+	 * conversation is never moved onto another file and never taken away because someone looked at something
+	 * else.
+	 *
+	 * Two readers of the same file would be two writers on it, so a file another conversation is already
+	 * answering hands *that* conversation back — including a mid-turn one, whose answer is on its way to a
+	 * page that may or may not be looking at it. Nothing is disposed here: a background turn keeps running
+	 * and its events keep landing in its own log, which is what a client that comes back resumes.
 	 */
-	async switchSession(conversationId: string, sessionPath: string): Promise<Conversation> {
-		const conversation = this.get(conversationId);
+	async switchSession(sessionPath: string): Promise<Conversation> {
 		const target = this.sessionFileIn(sessionPath);
-		// Already answering it: opening the file a second time would put a second writer on it, so the
-		// conversation the page is already on stays where it is. An idle one is reopened as asked — that is
-		// how a client reloads a session's history from disk.
-		if (conversation.session.sessionFile === target && !conversation.session.isIdle) return conversation;
-		// A session another conversation is already answering **is** that conversation, not a copy of it. Opening
-		// the file a second time would put a second writer on it and freeze the transcript at the moment of the
-		// switch, so the answer on its way would never reach the page that just asked for that session.
-		const live = [...this.conversations.values()].find((other) => other.id !== conversationId && other.session.sessionFile === target);
+		const live = this.findByFile(target);
 		if (live) return live;
-		// Rebinding disposes the session this conversation is answering in, and a turn still running would be cut
-		// short: its answer would reach neither the page nor the session file. So a session with no conversation
-		// of its own is opened as one, and this conversation is left alone to finish (it stays in the map, and
-		// switching back to it returns it from the lookup above, log and all).
-		if (!conversation.session.isIdle) return this.bind(SessionManager.open(target, this.paths.sessionsDir));
-		this.teardown(conversation);
-		// The conversation lives on with a new session, so it is not disposed any more. Without this the
-		// exactly-once guard below stays set and the *new* session is never unsubscribed or disposed — it
-		// keeps streaming into this conversation's log (and its listeners) after the page moved on, keeps
-		// the conversation unevictable, and writes back any session file it is deleted out from under.
-		conversation.disposed = false;
-		conversation.session = await this.createSession({
-			sessionManager: SessionManager.open(target, this.paths.sessionsDir),
-			conversationId,
-			onMemoryBlock: (block) => (conversation.memory.block = block),
-			extensionUi: conversation.extensionUi.uiContext,
-		});
-		conversation.memory.block = null;
-		this.watch(conversation);
-		// The transcript a client is looking at becomes the opened session's, from the start — so the
-		// log restarts and the seed above is the whole of it. The client re-reads it with `resume`.
-		conversation.log.reset();
-		this.seedHistory(conversation);
-		return conversation;
+		return this.bind(SessionManager.open(target, this.paths.sessionsDir));
+	}
+
+	/** The conversation answering a session file, or undefined. There is at most one, by construction. */
+	findByFile(sessionFile: string): Conversation | undefined {
+		for (const conversation of this.conversations.values()) {
+			if (conversation.session.sessionFile === sessionFile) return conversation;
+		}
+		return undefined;
 	}
 
 	/**
@@ -261,6 +245,11 @@ export class SessionRegistry {
 	 * The session files flypi owns, for the sidebar's list. pi's own list, so flypi keeps no second index
 	 * of conversations (docs/decisions.md: one source of truth) — which is also why a chat you have only
 	 * started, with nothing written, has no row: pi creates the file on its first entry.
+	 *
+	 * `running` is the one thing pi's list cannot know: whether a conversation in *this* process is
+	 * mid-turn on that file. A turn keeps running with nobody looking at it, and that flag is the only
+	 * sign of it on screen. It says nothing about a turn a previous process was cut short on — that is
+	 * the daemon's `runs` record, reported when the session is opened.
 	 */
 	async listSessions(): Promise<SessionSummary[]> {
 		const sessions = await SessionManager.list(this.paths.root, this.paths.sessionsDir);
@@ -270,6 +259,7 @@ export class SessionRegistry {
 			modified: session.modified.toISOString(),
 			messageCount: session.messageCount,
 			firstMessage: session.firstMessage,
+			running: this.findByFile(session.path)?.session.isIdle === false,
 		}));
 	}
 
@@ -282,16 +272,14 @@ export class SessionRegistry {
 	 * Delete a session file for good. Anything that was showing it goes first: pi appends lazily, so a
 	 * live session bound to a deleted file would write it back and the row would come straight back.
 	 * A turn still running is refused rather than cut short — that work would be lost silently.
-	 * ponytail: one user, one browser. Another tab holding the same session loses its conversation id
-	 * when this runs; if tabs ever share the server, tell them over the socket instead.
 	 */
 	async deleteSession(sessionPath: string): Promise<void> {
 		const target = this.sessionFileIn(sessionPath);
-		for (const conversation of this.conversations.values()) {
-			if (conversation.session.sessionFile !== target) continue;
-			if (!conversation.session.isIdle) throw new Error(`session ${target} is mid-turn; abort it first`);
-			this.teardown(conversation);
-			this.conversations.delete(conversation.id);
+		const holder = this.findByFile(target);
+		if (holder) {
+			if (!holder.session.isIdle) throw new Error(`session ${target} is mid-turn; abort it first`);
+			this.teardown(holder);
+			this.conversations.delete(holder.id);
 		}
 		rmSync(target); // no force: a file that is not there is an error frame, not a silent success
 	}

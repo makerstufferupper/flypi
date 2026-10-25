@@ -181,18 +181,15 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 			if (requestId) send({ type: "result", requestId, ...extra });
 		};
 
-		/** Start (or keep) this socket's subscription to a conversation; `afterSeq` replays what it missed. */
+		/**
+		 * Start (or keep) this socket's subscription to a conversation; `afterSeq` replays what it missed.
+		 *
+		 * Subscriptions are additive: one socket may follow several conversations, because a page holds every
+		 * session it has opened — the one on screen and any background turn still running. Nothing is detached
+		 * here; a client that is finished with an idle conversation says so with `unsubscribe`, which is what
+		 * lets `evictIdle` release it.
+		 */
 		const subscribe = (conversationId: string, afterSeq?: number) => {
-			// A page holds one conversation, so a socket follows one conversation. Everything it watched
-			// before is detached here: a turn started in the chat you left would otherwise keep streaming,
-			// and its frames would be folded into the transcript of the chat that replaced it. It also keeps
-			// the abandoned conversation attached forever, so `evictIdle` never sees it as idle.
-			for (const [watched, previous] of [...subscriptions]) {
-				if (watched === conversationId) continue;
-				previous.detach();
-				previous.detachUi();
-				subscriptions.delete(watched);
-			}
 			let subscription = subscriptions.get(conversationId);
 			if (!subscription) {
 				const state: Subscription = { lastSent: 0, detach: () => {}, detachUi: () => {} };
@@ -224,6 +221,15 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 			}
 		};
 
+		/** Stop following one conversation. The pi session behind it is untouched: only this socket lets go. */
+		const unsubscribe = (conversationId: string) => {
+			const subscription = subscriptions.get(conversationId);
+			if (!subscription) return;
+			subscription.detach();
+			subscription.detachUi();
+			subscriptions.delete(conversationId);
+		};
+
 		send({ type: "hello", protocolVersion: PROTOCOL_VERSION, serverVersion: options.serverVersion ?? "dev", ...(options.pi ? { pi: options.pi() } : {}) });
 
 		const handle = async (raw: string): Promise<void> => {
@@ -249,6 +255,9 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 					case "resume":
 						subscribe(command.conversationId, command.afterSeq);
 						return;
+					case "unsubscribe":
+						unsubscribe(command.conversationId);
+						return reply(requestId, { conversationId });
 					case "extensionReply":
 						// The answer to an extension's question. Nothing waiting on that id means it timed out or
 						// another tab answered it, and the page has to stop showing the dialog either way.
@@ -267,10 +276,13 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 						await registry.abort(command.conversationId);
 						return reply(requestId, { conversationId });
 					case "switchSession": {
-						const switched = await registry.switchSession(command.conversationId, command.sessionPath);
+						const switched = await registry.switchSession(command.sessionPath);
 						// A turn the last process left half-done is reported with the session it belongs to — the
 						// client is about to render that chat, and nothing else tells it why the last answer stops short.
 						const interrupted = options.interruptedRun?.(switched.session.sessionFile ?? "");
+						// Opened but not followed: the client is handed the conversation id and decides what to
+						// watch. Following it here would make every session ever clicked a live subscription, and
+						// an unattached idle conversation is what `evictIdle` exists to release.
 						return reply(requestId, {
 							conversationId: switched.id,
 							sessionPath: switched.session.sessionFile,

@@ -142,11 +142,11 @@ describe("memory across a session fork and a reopen (Phase 6 interop)", () => {
 			const written = blocksInFront(source.session);
 			expect(written, "the first turn left no memory entry in the file").toHaveLength(1);
 
-			// The process that wrote the file goes away. Only the file is left to reopen.
+			// The process that wrote the file goes away. Only the file is left to reopen, and opening it is
+			// what a new process does with a session it has never had a conversation for.
 			h.registry.dispose();
 
-			const again = await reopened.create();
-			await reopened.switchSession(again.id, sessionFile!);
+			const again = await reopened.switchSession(sessionFile!);
 			// The entry came out of the file, so this is the state the gate has to work from.
 			expect(blocksInFront(reopened.get(again.id).session), "the reopened session loaded no memory entry").toHaveLength(1);
 

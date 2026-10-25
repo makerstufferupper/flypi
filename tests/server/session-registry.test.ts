@@ -256,19 +256,23 @@ describe("session registry", () => {
 });
 
 describe("session registry: sessions, switching and forks", () => {
-	it("switchSession rebinds the same conversation id to another session file", async () => {
+	// One session file, one conversation — the mapping the whole UI rests on. A client asking for a session
+	// nobody is answering gets a conversation bound to it, and the caller's own conversation is not the price.
+	it("opens a session as its own conversation and leaves the one that asked alone", async () => {
 		const h = await harness(toolTurn(), { idleTtlMs: 0 });
 		try {
 			const first = await h.registry.create();
 			const target = first.session.sessionFile!;
-			// Rebinding is for a session nobody is answering: with the file's own conversation swept, the
-			// conversation the page is holding is the one that moves onto it.
+			// Rebinding is for a session nobody is answering: with the file's own conversation swept, a new
+			// conversation is opened for it.
 			h.registry.evictIdle();
 			const second = await h.registry.create();
-			const switched = await h.registry.switchSession(second.id, target);
+			const opened = await h.registry.switchSession(target);
 
-			expect(switched.id).toBe(second.id);
-			expect(switched.session.sessionFile).toBe(target);
+			expect(opened.id).not.toBe(second.id);
+			expect(opened.session.sessionFile).toBe(target);
+			// And the conversation that asked is still there, untouched, with the session it had.
+			expect(h.registry.get(second.id).session.sessionFile).toBe(second.session.sessionFile);
 		} finally {
 			h.registry.dispose();
 			h.cleanup();
@@ -285,10 +289,12 @@ describe("session registry: sessions, switching and forks", () => {
 			void h.registry.prompt(answering.id, "a question");
 			const other = await h.registry.create();
 
-			const switched = await h.registry.switchSession(other.id, answering.session.sessionFile!);
-			expect(switched.id).toBe(answering.id);
+			const opened = await h.registry.switchSession(answering.session.sessionFile!);
+			expect(opened.id).toBe(answering.id);
 			expect(answering.session.isIdle).toBe(false); // still mid-turn
 			expect(h.disposeCount()).toBe(0); // and nothing was torn down to say so
+			// The other conversation is not the one that got disposed either: it keeps its own session.
+			expect(h.registry.get(other.id).session.sessionFile).toBe(other.session.sessionFile);
 
 			// Its answer lands in its own log, which is what the page resumes and renders.
 			await settled(answering.id, h.registry);
@@ -299,29 +305,39 @@ describe("session registry: sessions, switching and forks", () => {
 		}
 	});
 
-	// `teardown` is exactly-once, and a rebound conversation is not gone. Leaving it marked disposed made
-	// the guard skip the session the switch started: it kept streaming into a conversation nobody watched,
-	// was never evicted, and wrote back a session file it had been deleted out from under.
-	it("disposes a conversation that switchSession rebound", async () => {
-		const h = await harness(toolTurn(), { idleTtlMs: 0 });
+	// Opening the same file twice must not make a second conversation for it: two would be two writers on one
+	// transcript, which is exactly what the exclusive mapping exists to prevent.
+	it("opens a session once, however many times it is asked for", async () => {
+		const h = await harness(toolTurn());
 		try {
-			// Two sessions nobody is answering — that is what a switch rebinds onto.
-			const source = await h.registry.create();
-			const third = await h.registry.create();
-			const files = [source.session.sessionFile!, third.session.sessionFile!];
-			h.registry.evictIdle();
 			const conversation = await h.registry.create();
-			await h.registry.switchSession(conversation.id, files[0]!);
-			expect(h.disposeCount()).toBe(3); // the two swept sessions, plus the one the switch replaced
+			const target = conversation.session.sessionFile!;
+			expect((await h.registry.switchSession(target)).id).toBe(conversation.id);
+			expect((await h.registry.switchSession(target)).id).toBe(conversation.id);
+			expect(h.registry.size).toBe(1);
+		} finally {
+			h.registry.dispose();
+			h.cleanup();
+		}
+	});
 
-			// A second switch is the one that leaked: `disposed` still read true, so nothing was unbound.
-			await h.registry.switchSession(conversation.id, files[1]!);
-			expect(h.disposeCount()).toBe(4);
-			expect(conversation.listeners.size).toBe(0);
+	// A turn keeps running with nobody looking, and the sidebar is where that has to be visible: pi's own list
+	// cannot say it, so `listSessions` adds the one fact this process knows — whether a conversation here is
+	// mid-turn on that file. The stub answers too fast to hold a turn open deterministically, so the live
+	// session's own `isIdle` is what is pinned: the mapping from that to the row is the thing under test.
+	it("tells the sidebar which sessions have a turn running", async () => {
+		const h = await harness(toolTurn());
+		try {
+			const conversation = await h.registry.create();
+			void h.registry.prompt(conversation.id, "go");
+			await settled(conversation.id, h.registry);
+			const file = conversation.session.sessionFile!;
 
-			h.registry.evictIdle();
-			expect(h.registry.size).toBe(0);
-			expect(h.disposeCount()).toBe(5); // and every conversation's live session went with them
+			Object.defineProperty(conversation.session, "isIdle", { value: false, configurable: true });
+			expect((await h.registry.listSessions()).find((session) => session.path === file)?.running).toBe(true);
+
+			Object.defineProperty(conversation.session, "isIdle", { value: true, configurable: true });
+			expect((await h.registry.listSessions()).find((session) => session.path === file)?.running).toBe(false);
 		} finally {
 			h.registry.dispose();
 			h.cleanup();
@@ -335,8 +351,8 @@ describe("session registry: sessions, switching and forks", () => {
 		try {
 			const conversation = await h.registry.create();
 			const file = conversation.session.sessionFile!;
-			expect((await h.registry.switchSession(conversation.id, file.split("/").pop()!)).session.sessionFile).toBe(file);
-			await expect(h.registry.switchSession(conversation.id, "../elsewhere.jsonl")).rejects.toThrow(/not inside/);
+			expect((await h.registry.switchSession(file.split("/").pop()!)).session.sessionFile).toBe(file);
+			await expect(h.registry.switchSession("../elsewhere.jsonl")).rejects.toThrow(/not inside/);
 		} finally {
 			h.registry.dispose();
 			h.cleanup();
@@ -346,8 +362,7 @@ describe("session registry: sessions, switching and forks", () => {
 	it("refuses a session path outside .flypi/sessions", async () => {
 		const h = await harness(toolTurn());
 		try {
-			const conversation = await h.registry.create();
-			await expect(h.registry.switchSession(conversation.id, join(h.root, "elsewhere.jsonl"))).rejects.toThrow(/not inside/);
+			await expect(h.registry.switchSession(join(h.root, "elsewhere.jsonl"))).rejects.toThrow(/not inside/);
 			await expect(h.registry.deleteSession(join(h.root, "elsewhere.jsonl"))).rejects.toThrow(/not inside/);
 		} finally {
 			h.registry.dispose();
@@ -588,18 +603,20 @@ describe("session registry: sessions, switching and forks", () => {
 				details: { digest: setDigest([1]) },
 			});
 
-			// Opening another session is a different conversation: no leftover block from the one before. The
-			// file has no conversation over it, so this is the rebound path — which must not quietly disarm
-			// recall either: the new session's extension reports again, and the panel fills up with the block
-			// this turn really injected.
-			await h.registry.switchSession(conversation.id, join(h.root, ".flypi", "sessions", "nobody-holds-this.jsonl"));
-			expect((await h.registry.debugInfo(conversation.id)).memoryBlock).toBeNull();
+			// Opening another session is a different conversation: no leftover block from the one before, and
+			// the conversation that produced the first block keeps its own. The new session's extension must
+			// not quietly disarm recall either: the panel fills up with the block this turn really injected.
+			const other = await h.registry.switchSession(join(h.root, ".flypi", "sessions", "nobody-holds-this.jsonl"));
+			expect(other.id).not.toBe(conversation.id);
+			expect((await h.registry.debugInfo(other.id)).memoryBlock).toBeNull();
+			// And the first conversation is untouched by the second being opened.
+			expect((await h.registry.debugInfo(conversation.id)).memoryBlock).toContain("<relevant_memories>");
 
 			// Rebinding the session must not quietly disarm recall: the new session's extension reports
 			// again, and the panel fills up with the block this turn really injected.
-			void h.registry.prompt(conversation.id, "which package manager do we use?");
-			await settled(conversation.id, h.registry);
-			expect((await h.registry.debugInfo(conversation.id)).memoryBlock).toContain("<relevant_memories>");
+			void h.registry.prompt(other.id, "which package manager do we use?");
+			await settled(other.id, h.registry);
+			expect((await h.registry.debugInfo(other.id)).memoryBlock).toContain("<relevant_memories>");
 		} finally {
 			h.registry.dispose();
 			h.cleanup();

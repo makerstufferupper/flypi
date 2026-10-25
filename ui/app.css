@@ -70,7 +70,13 @@ body { margin: 0; background: var(--bg); color: var(--ink); }
 /* A row is its label plus the one destructive action on it. The label takes the width and can shrink;
    the icon never does. The delete stays visible rather than hover-only — a touch screen has no hover. */
 .sessions li { display: flex; align-items: center; gap: 0.15rem; }
-.sessions li > :first-child { flex: 1; min-width: 0; }
+/* The label takes the width and can shrink; the running dot and the delete icon never do. */
+.sessions .session, .sessions input.name { flex: 1; min-width: 0; }
+/* A session still answering when you left it. The dot is the only sign of a turn running in the background,
+   and it pulses so it reads as live rather than as a status colour. */
+.sessions .run-dot { flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--accent, #3b82f6); animation: run-pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .sessions .run-dot { animation: none; } }
+@keyframes run-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .sessions .remove { opacity: 0.6; }
 .sessions .remove:hover { opacity: 1; }
 /* Rows are plain text: no chrome around each item, and a row lights up when you point at it. The row

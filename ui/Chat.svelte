@@ -1,14 +1,18 @@
 <script lang="ts">
 	import type { FlypiAppState } from "./lib/app-state.svelte.ts";
 	import type { FlypiThinkingLevel } from "../src/agent/runtime.ts";
-	import { base64Of, isImage, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type FlypiAttachment } from "../src/shared/attachments.ts";
+	import { base64Of, isImage, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS } from "../src/shared/attachments.ts";
 	import { renderMarkdown } from "../src/shared/markdown.ts";
 	import { compact, formatUsage, type RenderedBlock, type RenderedMessage } from "../src/shared/transcript.ts";
 	import { formatRate, speedsOf } from "../src/shared/metrics.ts";
 
 	let { app }: { app: FlypiAppState } = $props();
 
-	let draft = $state("");
+	// The draft, the attachments and the follow-up switch belong to the session, not to the page: switching
+	// chats shows that chat's typed-but-unsent text, and switching back brings this one's with it. They live in
+	// the app state (per chat) rather than in this component, which is torn down and rebuilt per session.
+	const draft = $derived(app.draft);
+	const attachments = $derived(app.attachments);
 	let followUp = $state(false);
 	const queued = $derived([...app.transcript.queue.steering, ...app.transcript.queue.followUp]);
 
@@ -32,14 +36,13 @@
 		// While a turn is running the same box steers it (or queues a follow-up if you asked for
 		// one); pi's own queue does the rest, and `queue_update` is what shows it back to us.
 		app.prompt(text, app.transcript.running ? (followUp ? "followUp" : "steer") : "steer", attachments);
-		draft = "";
-		attachments = [];
+		app.draft = "";
+		app.attachments = [];
 	}
 
 	// A pasted file is attached, never typed into the box: an image goes to the model as an image, and any
 	// other file is saved by the server and named by path, so the agent opens it with its own tools.
 	// Both cross the wire as base64 inside the prompt command (src/shared/attachments.ts).
-	let attachments = $state<FlypiAttachment[]>([]);
 	let attachmentError = $state("");
 
 	// pi-ai is the one that decides whether an image reaches the provider, and it decides from the model's
@@ -63,7 +66,7 @@
 				attachmentError = `${file.name}: ${app.debug?.model?.modelId ?? "this model"} has no image input`;
 				continue;
 			}
-			attachments.push({ name: file.name || "pasted", mimeType: file.type || "application/octet-stream", data: base64Of(await file.arrayBuffer()) });
+			app.attachments = [...app.attachments, { name: file.name || "pasted", mimeType: file.type || "application/octet-stream", data: base64Of(await file.arrayBuffer()) }];
 		}
 	}
 
@@ -300,19 +303,24 @@
 							<img class="thumb" src={`data:${attachment.mimeType};base64,${attachment.data}`} alt="" />
 						{/if}
 						<span class="name">{attachment.name}</span>
-						<button type="button" class="remove" aria-label={`Remove ${attachment.name}`} onclick={() => attachments.splice(index, 1)}>✕</button>
+						<button
+							type="button"
+							class="remove"
+							aria-label={`Remove ${attachment.name}`}
+							onclick={() => (app.attachments = attachments.filter((_, at) => at !== index))}
+						>✕</button>
 					</li>
 				{/each}
 			</ul>
 		{/if}
 		{#if attachmentError}<p class="error" role="alert" data-role="attachment">{attachmentError}</p>{/if}
-		<textarea bind:value={draft} rows="3" onkeydown={onKeydown} onpaste={onPaste} placeholder={app.transcript.running ? "steer the running turn…" : "what should flypi do?"} aria-label="Prompt"></textarea>
+		<textarea value={draft} oninput={(event) => (app.draft = (event.currentTarget as HTMLTextAreaElement).value)} rows="3" onkeydown={onKeydown} onpaste={onPaste} placeholder={app.transcript.running ? "steer the running turn…" : "what should flypi do?"} aria-label="Prompt"></textarea>
 		{#if commandHints.length}
 			<!-- Clicking only completes the name: what runs is what gets sent, and pi answers the command. -->
 			<ul class="commands" aria-label="Slash commands" data-role="commands">
 				{#each commandHints as command}
 					<li>
-						<button type="button" class="command" data-role="command" title={command.source} onclick={() => (draft = `/${command.name} `)}>
+						<button type="button" class="command" data-role="command" title={command.source} onclick={() => (app.draft = `/${command.name} `)}>
 							/{command.name}
 							{#if command.description}<span class="desc">{command.description}</span>{/if}
 						</button>

@@ -33,7 +33,12 @@ const registry = new SessionRegistry({
 	createSession: stubCreateSession(root, () => {
 		turns += 1;
 		return toolTurn(`answer number ${turns} ${"word ".repeat(40)}`)();
-	}, { tokensPerSecond: 20 }),
+	}, {
+		tokensPerSecond: 20,
+		// The same isolation `harness()` gives its sessions: without it the stub runtime reads the developer's
+		// own `~/.pi/agent/auth.json` (and writes its lock), so a UI test would depend on whose machine ran it.
+		authPath: join(root, ".flypi", "agent", "auth.json"),
+	}),
 });
 const server = await startFlypiServer({ registry, port });
 console.log(`READY ${server.port} ${server.token} ${root}`);

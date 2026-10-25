@@ -349,9 +349,9 @@ describe("flypi server", () => {
 				const refused = await client.next((frame) => frame.type === "error" && frame.requestId === "r4");
 				expect(refused.type === "error" && refused.message).toContain("no message at seq 9999");
 
-				// Switching back to the source hands back the conversation that holds that session — the fork
-				// rebinding onto a file another conversation is answering would be a second writer on it.
-				client.send({ type: "switchSession", conversationId: forked.conversationId, sessionPath: sourcePath, requestId: "r5" });
+				// Opening the source's session hands back the conversation that holds it — a second conversation
+				// on that file would be a second writer on it.
+				client.send({ type: "switchSession", sessionPath: sourcePath, requestId: "r5" });
 				const switched = await client.next((frame) => frame.type === "result" && frame.requestId === "r5");
 				if (switched.type !== "result") throw new Error("switch failed");
 				expect(switched.sessionPath).toBe(sourcePath);
@@ -365,8 +365,8 @@ describe("flypi server", () => {
 		}
 	});
 
-	it("streams a conversation only while the socket is on it — a turn started before the page moved on stays off screen", async () => {
-		// Slow enough that the first turn is still streaming when the second conversation is handed over.
+	it("keeps streaming a conversation the page left while its turn runs, and lets go when it settles", { timeout: 30_000 }, async () => {
+		// Slow enough that the first turn is still streaming when the second conversation is opened.
 		const h = await harness(() => [fauxAssistantMessage([fauxText(`still talking. ${"word ".repeat(60)}`)], { timestamp: 0 })], { tokensPerSecond: 20 });
 		try {
 			const handle = await start(h.registry);
@@ -380,19 +380,24 @@ describe("flypi server", () => {
 				client.send({ type: "prompt", conversationId: left, text: "talk for a while" });
 				await client.next((frame) => frame.type === "event" && frame.conversationId === left);
 
-				// The sidebar's “+”: another conversation, while the first one is mid-answer.
+				// The sidebar's “+”: another conversation, while the first one is mid-answer. Opening a session
+				// never detaches another one — a turn in flight would lose its answer — so both stay attached.
 				client.send({ type: "newSession", requestId: "r2" });
 				const second = await client.next((frame) => frame.type === "result" && frame.requestId === "r2");
 				if (second.type !== "result" || !second.conversationId) throw new Error("no second conversation");
 				expect(second.conversationId).not.toBe(left);
+				expect(h.registry.get(left).listeners.size).toBe(1);
 
-				// The abandoned turn keeps running — coming back to it must lose nothing — but its frames no
-				// longer reach the socket, because the page has one transcript to put them in.
-				const since = client.frames.length;
-				await new Promise((resolve) => setTimeout(resolve, 300));
-				expect(client.frames.slice(since).filter((frame) => frame.type === "event" && frame.conversationId === left)).toHaveLength(0);
+				// Its frames keep arriving — the page folds them into the chat they name, which is exactly what
+				// lets a background answer land where it was asked for.
+				await client.next((frame) => frame.type === "event" && frame.conversationId === left && frame.event.type === "agent_settled");
+
+				// Once that turn is done the page is not watching it any more, so the client lets it go and the
+				// server can release it: an idle conversation nobody holds is evictable.
+				client.send({ type: "unsubscribe", conversationId: left, requestId: "r3" });
+				await client.next((frame) => frame.type === "result" && frame.requestId === "r3");
 				expect(h.registry.get(left).listeners.size).toBe(0);
-				expect(h.registry.get(left).session.isIdle).toBe(false);
+				expect(h.registry.get(left).uiListeners.size).toBe(0);
 
 				// The conversation the socket is on still answers, and only its events arrive.
 				client.send({ type: "prompt", conversationId: second.conversationId, text: "short answer" });
@@ -596,15 +601,16 @@ describe("flypi server", () => {
 				expect(debug.debug.context?.contextWindow).toBe(200_000);
 				expect((debug.debug.context?.tokens ?? 0)).toBeGreaterThan(0);
 
-				// Opening the session again has to bring its transcript with it: the registry seeds the
-				// loaded history into the event log, and `resume` is how the client reads it.
-				const forked = await h.registry.fork(conversationId, lastMessageSeq(client.frames, "assistant"));
-				await h.registry.switchSession(forked.id, created.sessionPath);
-				client.send({ type: "resume", conversationId: forked.id, afterSeq: 0, requestId: "r6" });
-				const opened = (await client.next((frame) => frame.type === "event" && frame.conversationId === forked.id && frame.event.type === "message_end")) as EventFrame;
+				// Opening the session again has to bring its transcript with it: the registry seeds the loaded
+				// history into the event log, and `resume` is how the client reads it. The file already has a
+				// conversation, so opening it hands that one back rather than making a second writer for it.
+				const reopened = await h.registry.switchSession(created.sessionPath);
+				expect(reopened.id).toBe(conversationId);
+				client.send({ type: "resume", conversationId: reopened.id, afterSeq: 0, requestId: "r6" });
+				const opened = (await client.next((frame) => frame.type === "event" && frame.conversationId === reopened.id && frame.event.type === "message_end")) as EventFrame;
 				void opened;
 				const seeded = client.frames.filter(
-					(frame): frame is EventFrame => frame.type === "event" && frame.conversationId === forked.id && frame.event.type === "message_end",
+					(frame): frame is EventFrame => frame.type === "event" && frame.conversationId === reopened.id && frame.event.type === "message_end",
 				);
 				expect(render(seeded)).toEqual(
 					client.frames
@@ -1043,7 +1049,7 @@ describe("the daemon's surface", () => {
 				const created = await client.next((frame) => frame.type === "result" && frame.requestId === "r1");
 				if (created.type !== "result" || !created.conversationId || !created.sessionPath) throw new Error("no conversation");
 
-				client.send({ type: "switchSession", conversationId: created.conversationId, sessionPath: created.sessionPath, requestId: "r2" });
+				client.send({ type: "switchSession", sessionPath: created.sessionPath, requestId: "r2" });
 				const opened = await client.next((frame) => frame.type === "result" && frame.requestId === "r2");
 				// With the session it opens, not as a separate message: the chat is about to render a half-finished
 				// answer, and this is the only thing that explains it.

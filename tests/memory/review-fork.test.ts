@@ -187,16 +187,18 @@ describe("the review fork (Phase 4.8)", () => {
 			await h.registry.prompt(conversation.id, "question two");
 			expect(forks(first), "a fork ran two turns into an interval of three").toHaveLength(0);
 
-			// Reopen the same session file — what closing the tab or restarting the daemon does to a
-			// conversation. The counter has to come back at 2, not at 0.
+			// Reopen the same session file — what restarting the daemon does to a conversation. The process
+			// that ran those turns is gone (dispose), and the file is opened as a conversation of its own.
+			// The counter has to come back at 2, not at 0.
 			const sessionFile = h.registry.get(conversation.id).session.sessionFile;
 			expect(sessionFile, "the conversation never wrote a session file").toBeTruthy();
-			await h.registry.switchSession(conversation.id, sessionFile!);
+			h.registry.dispose();
+			const reopenedConversation = await h.registry.switchSession(sessionFile!);
 			const reopened = h.sessions[1]!.stub;
-			await activeToolNames(h.registry.get(conversation.id).session, [WRITE]);
+			await activeToolNames(h.registry.get(reopenedConversation.id).session, [WRITE]);
 
 			reopened.append([answer("three"), answer(NOTHING)]);
-			await h.registry.prompt(conversation.id, "question three");
+			await h.registry.prompt(reopenedConversation.id, "question three");
 			await until(() => forks(reopened).length === 1, "the reopened conversation did not continue the count to the interval");
 		} finally {
 			h.registry.dispose();

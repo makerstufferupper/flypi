@@ -51,10 +51,17 @@ export const NewSessionCommand = Type.Object({
 	requestId: Type.Optional(RequestId),
 });
 
-/** Rebind this conversation to an existing session file (the sidebar's "open"). */
+/**
+ * Open an existing session file (the sidebar's "open") as its **own** conversation.
+ *
+ * Path-scoped, not conversation-scoped: every session file gets one conversation of its own, so opening a
+ * session never rebinds or disposes whatever the client was looking at. The `result` names the conversation
+ * that answers the file — the one already on it when there is one, otherwise a new one — and the client
+ * resumes it. No `conversationId` is asked for, because a page recovering from a restart holds ids the
+ * server has forgotten and still has to be able to open a session.
+ */
 export const SwitchSessionCommand = Type.Object({
 	type: Type.Literal("switchSession"),
-	conversationId: Id,
 	sessionPath: Id,
 	requestId: Type.Optional(RequestId),
 });
@@ -115,6 +122,18 @@ export const ResumeCommand = Type.Object({
 	type: Type.Literal("resume"),
 	conversationId: Id,
 	afterSeq: Type.Integer({ minimum: 0 }),
+	requestId: Type.Optional(RequestId),
+});
+
+/**
+ * Stop streaming one conversation to this socket. A page holds every session it has opened, but only the
+ * ones with a turn in flight (and the one on screen) need to keep their pi session attached: an idle
+ * background conversation can be detached and then evicted by its own idle TTL, and a later `resume`
+ * re-attaches it. Detaching is per socket, so another tab's subscription is untouched.
+ */
+export const UnsubscribeCommand = Type.Object({
+	type: Type.Literal("unsubscribe"),
+	conversationId: Id,
 	requestId: Type.Optional(RequestId),
 });
 
@@ -618,6 +637,7 @@ export const ClientCommandSchema = Type.Union([
 	SetModelCommand,
 	SetThinkingLevelCommand,
 	ResumeCommand,
+	UnsubscribeCommand,
 	ExtensionReplyCommand,
 	ListSessionsCommand,
 	RenameSessionCommand,
@@ -677,6 +697,12 @@ export const SessionSummary = Type.Object({
 	modified: Type.String(),
 	messageCount: Type.Integer(),
 	firstMessage: Type.String(),
+	/**
+	 * Is a turn running in this session right now, in this process? The sidebar needs it as its own fact:
+	 * sessions keep running with nobody looking, so the only place a background turn is visible before it
+	 * lands is this flag — and it says nothing about a turn a previous process was cut short on.
+	 */
+	running: Type.Optional(Type.Boolean()),
 });
 
 /**

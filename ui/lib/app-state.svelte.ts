@@ -1,9 +1,14 @@
 /**
  * All of the UI's state, and every command it can send, in one class with no DOM in it.
  *
- * `App.svelte` renders this; the UI tests drive it with a fake transport and assert the DOM that
- * comes out. The transcript itself is never held twice: it is the reducer's output, and a reconnect
- * replays it through the same `applyEvent` the live stream uses (docs/protocol.md).
+ * The page holds **one chat per session**, and each chat is bound to exactly one server-side conversation
+ * for as long as the page lives: opening another session never rebinds this one, and a background turn keeps
+ * streaming into its own chat. That 1:1 mapping is the whole design — a single global transcript was what let
+ * one session's answer land in another's chat and what made a row click look like it killed a turn.
+ *
+ * `App.svelte` renders this; the UI tests drive it with a fake transport and assert the DOM that comes out.
+ * The transcript is never held twice: it is the reducer's output per chat, and a reconnect replays each
+ * chat's own log through the same `applyEvent` the live stream uses (docs/protocol.md).
  */
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { FlypiAttachment } from "../../src/shared/attachments.ts";
@@ -15,27 +20,55 @@ import type { View } from "./route.ts";
 import type { FlypiThinkingLevel } from "../../src/agent/runtime.ts";
 import type { Transport } from "./client.ts";
 
+/** One session's chat, and the pi conversation answering it — one of each, for the chat's whole life. */
+interface Chat {
+	/** Local identity, stable across a rebind: a restart gives the session a new conversation id, not a new chat. */
+	id: string;
+	/** The server-side conversation this chat is bound to. Changes only when the old one is forgotten. */
+	conversationId: string;
+	/** The session file, when the server has one. A conversation pi has not written yet has none. */
+	sessionPath?: string;
+	transcript: Transcript;
+	metrics: Perf;
+	/** The model `metrics.last` was measured on — a rate describes a model, and this is part of the number. */
+	measuredOn: string | null;
+	/** The model this conversation answers on, as the app last heard it. */
+	modelInUse: string | null;
+	debug?: DebugInfo;
+	/** Set when the daemon says a turn in this session was cut short by a restart. */
+	interruptedAt?: string;
+	extensionNotes: { message: string; level: string }[];
+	extensionDialog?: ExtensionUiFrame;
+	/** What is typed in the box but not sent. It belongs to the session, not to the page. */
+	draft: string;
+	attachments: FlypiAttachment[];
+	/** The seq of the last event applied here — this chat's own resume cursor. */
+	lastSeq: number;
+	/** Whether this chat has asked for the session list since it was bound. */
+	rowRequested: boolean;
+	/** A recovery is in flight: this chat's conversation id is dead and is being reopened by path. */
+	rebinding: boolean;
+	/** The last thing the server said went wrong *about this chat*, so a background failure is not the active chat's. */
+	error?: string;
+}
+
+/** What a binding request is for. `replace` rebinds a chat that has no session file to reopen. */
+type BindTarget = { kind: "new"; replace?: string } | { kind: "open" } | { kind: "fork" };
+
+const EMPTY_TRANSCRIPT = emptyTranscript();
+const EMPTY_PERF = emptyPerf();
+
 export class FlypiAppState {
-	/** The rendered conversation. Rebuilt by the reducer, never by the components. */
-	transcript = $state<Transcript>(emptyTranscript());
-	/** Speed and context metrics for the same event stream — a second reducer over the same frames. */
-	metrics = $state<Perf>(emptyPerf());
-	/** The model `metrics.last` was measured on. A rate describes a model, so this is part of the number. */
-	measuredOn = $state<string | null>(null);
-	conversationId = $state<string | undefined>(undefined);
-	sessionPath = $state<string | undefined>(undefined);
+	/** Every chat this page holds, in the order it opened them. Only the active one is rendered. */
+	chats = $state<Chat[]>([]);
+	/** Which chat is on screen. The others keep their own transcripts, turns and drafts. */
+	activeChatId = $state<string | undefined>(undefined);
 	sessions = $state<SessionSummary[]>([]);
-	debug = $state<DebugInfo | undefined>(undefined);
 	/**
 	 * The daemon's job queue, for the activity panel's scheduler section (Phase 4.5). Asked when that
 	 * section is opened, never on a timer — and a plain `npm run serve` has no queue to show.
 	 */
 	scheduler = $state<SchedulerSnapshot | undefined>(undefined);
-	/**
-	 * When the daemon says a turn in this session was cut short by a restart. The chat has to say so: a
-	 * half-finished answer with no explanation reads as a model that stopped talking.
-	 */
-	interruptedAt = $state<string | undefined>(undefined);
 	/** The agent dir's config files, as the server last read them; the settings panel edits them. */
 	config = $state<ConfigSnapshot | undefined>(undefined);
 	/**
@@ -45,10 +78,10 @@ export class FlypiAppState {
 	 */
 	view = $state<View>("chat");
 	connected = $state(false);
-	/** Last thing the server told us went wrong — shown in the chat, not swallowed. */
-	lastError = $state<string | undefined>(undefined);
+	/** Last thing the server said went wrong and that was not about one conversation — shown in the chat. */
+	pageError = $state<string | undefined>(undefined);
 	/**
-	 * A config edit the server refused. It belongs here rather than only in `lastError` because the settings
+	 * A config edit the server refused. It belongs here rather than only in `pageError` because the settings
 	 * view is not the chat: a rejected row has to be said where the row is.
 	 */
 	configError = $state<string | undefined>(undefined);
@@ -103,18 +136,6 @@ export class FlypiAppState {
 	memories = $state<MemorySnapshot | undefined>(undefined);
 	/** A store this process could not open, or an edit it refused — said in the Memory view, not on the chat. */
 	memoryError = $state<string | undefined>(undefined);
-	/**
-	 * What the session's extensions said to the user this conversation (`extensionUi` frames): a notification
-	 * from a slash command, or the answer it gave back. Not part of the transcript — pi puts it nowhere the
-	 * session file holds (src/server/extension-ui.ts), so it lives here and is lost on a reload.
-	 */
-	extensionNotes = $state<{ message: string; level: string }[]>([]);
-	/**
-	 * A question an extension is waiting on (`ctx.ui.select` / `confirm` / `input`). Its handler is parked
-	 * until the page answers with `extensionReply`, so this is the one piece of state that must not be
-	 * dismissed silently — the server also releases it after five minutes of nobody answering.
-	 */
-	extensionDialog = $state<ExtensionUiFrame | undefined>(undefined);
 	protocolMismatch = $state<string | undefined>(undefined);
 	/**
 	 * Which pi the server loaded (docs/pi-upgrades.md Phase 8.1) — the version it is really running, not the
@@ -130,22 +151,16 @@ export class FlypiAppState {
 	piBusy = $state(false);
 
 	#transport: Transport;
-	#lastSeq = 0;
-	// Whether this conversation has asked for the session list since it was bound — see the event case.
-	#rowRequested = false;
 	/**
-	 * The model this conversation answers on, as the app last heard it: from a debug snapshot, or from a model
-	 * you just picked. It is the model the next answer's numbers belong to. Asking whichever snapshot happens
-	 * to be on hand instead is what made a model you had just chosen retire the numbers measured on it, and
-	 * what blanked the numbers of a question asked before the first snapshot landed.
+	 * The conversation ids this socket is currently following (`resume` sent, no `unsubscribe` yet). The
+	 * active chat and every chat with a turn running stay here; an idle background chat is let go so the
+	 * server can evict it, and a later resume re-attaches it.
 	 */
-	#modelInUse: string | null = null;
-	/**
-	 * The session to open on the next conversation the server hands us. Set when the server says the
-	 * conversation this page held no longer exists (see the error case), so a fresh registry costs the
-	 * chat on screen nothing but a round trip.
-	 */
-	#rebindTo: string | undefined;
+	#watched = new Set<string>();
+	/** Request ids whose `result` names the conversation that answers a session file. */
+	#bindTargets = new Map<string, BindTarget>();
+	/** Which chat a `debug` request was asked for, so a late reply refreshes that chat and not the one on screen. */
+	#debugTargets = new Map<string, string>();
 	#pendingRequest = new Map<string, (result: { conversationId?: string; sessionPath?: string; sessions?: SessionSummary[]; debug?: DebugInfo; config?: ConfigSnapshot; scheduler?: SchedulerSnapshot }) => void>();
 	#updateRequests = new Set<string>();
 
@@ -153,18 +168,92 @@ export class FlypiAppState {
 		this.#transport = transport;
 	}
 
-	/** Subscribe to the transport. Call once; the first conversation arrives with the connection. */
+	// ---- The active chat, as the components read it ------------------------------------------------------
+
+	#activeChat(): Chat | undefined {
+		return this.chats.find((chat) => chat.id === this.activeChatId);
+	}
+
+	get conversationId(): string | undefined {
+		return this.#activeChat()?.conversationId;
+	}
+
+	get sessionPath(): string | undefined {
+		return this.#activeChat()?.sessionPath;
+	}
+
+	get transcript(): Transcript {
+		return this.#activeChat()?.transcript ?? EMPTY_TRANSCRIPT;
+	}
+
+	get metrics(): Perf {
+		return this.#activeChat()?.metrics ?? EMPTY_PERF;
+	}
+
+	get measuredOn(): string | null {
+		return this.#activeChat()?.measuredOn ?? null;
+	}
+
+	get debug(): DebugInfo | undefined {
+		return this.#activeChat()?.debug;
+	}
+
+	get interruptedAt(): string | undefined {
+		return this.#activeChat()?.interruptedAt;
+	}
+
+	get extensionNotes(): { message: string; level: string }[] {
+		return this.#activeChat()?.extensionNotes ?? [];
+	}
+
+	get extensionDialog(): ExtensionUiFrame | undefined {
+		return this.#activeChat()?.extensionDialog;
+	}
+
+	/** The last error said about the chat on screen, or the page's own last error. */
+	get lastError(): string | undefined {
+		return this.#activeChat()?.error ?? this.pageError;
+	}
+
+	get draft(): string {
+		return this.#activeChat()?.draft ?? "";
+	}
+
+	set draft(value: string) {
+		const chat = this.#activeChat();
+		if (chat) chat.draft = value;
+	}
+
+	get attachments(): FlypiAttachment[] {
+		return this.#activeChat()?.attachments ?? [];
+	}
+
+	set attachments(value: FlypiAttachment[]) {
+		const chat = this.#activeChat();
+		if (chat) chat.attachments = value;
+	}
+
+	/** Is a turn running in the session at `path` — the sidebar's own question, answered per session. */
+	isRunning(path: string): boolean {
+		const chat = this.chats.find((candidate) => candidate.sessionPath === path);
+		if (chat?.transcript.running) return true;
+		return this.sessions.find((session) => session.path === path)?.running === true;
+	}
+
+	// ---- Transport ---------------------------------------------------------------------------------------
+
+	/** Subscribe to the transport. Call once; the first chat arrives with the connection. */
 	watch(): () => void {
 		return this.#transport.on((signal) => {
 			if (signal.type === "connected") {
 				this.connected = true;
-				// Re-attach, don't reload: a reconnect replays the event log, it is not a fresh start.
-				if (this.conversationId) this.send({ type: "resume", conversationId: this.conversationId, afterSeq: this.#lastSeq });
+				// The socket is new, so nothing is attached to it any more: resume every chat this page holds,
+				// each from its own cursor. A reconnect replays each log; it is not a fresh start.
+				this.#watched.clear();
+				if (this.chats.length) this.#syncSubscriptions();
 				else this.newSession();
 				// The chat needs the config files too, not only the settings view: with no endpoint configured the
 				// first thing the page should do is say so (ui/Chat.svelte) rather than let the first prompt fail.
-				// Three file reads per connect, not a poll — and not when the page opens on a view that asks for the
-				// files itself.
 				if (this.view === "chat") this.showConfig();
 				return;
 			}
@@ -188,59 +277,198 @@ export class FlypiAppState {
 		});
 	}
 
-	newSession(): void {
-		void this.request({ type: "newSession", requestId: nextId() });
+	// ---- Chat lifecycle ----------------------------------------------------------------------------------
+
+	#makeChat(conversationId: string, sessionPath: string | undefined): Chat {
+		return {
+			id: `chat-${++chatCounter}`,
+			conversationId,
+			...(sessionPath ? { sessionPath } : {}),
+			transcript: emptyTranscript(),
+			metrics: { ...emptyPerf(), last: sessionPath ? loadLastAnswer(sessionPath) : null },
+			measuredOn: sessionPath ? (loadLastAnswer(sessionPath)?.model ?? null) : null,
+			modelInUse: null,
+			extensionNotes: [],
+			draft: "",
+			attachments: [],
+			lastSeq: 0,
+			rowRequested: false,
+			rebinding: false,
+		};
 	}
 
+	/** Point an existing chat at a (new) conversation, rebuilding everything bound to the old one. */
+	#resetChat(chat: Chat, conversationId: string, sessionPath: string | undefined): void {
+		if (this.#watched.delete(chat.conversationId)) this.send({ type: "unsubscribe", conversationId: chat.conversationId });
+		chat.conversationId = conversationId;
+		if (sessionPath) chat.sessionPath = sessionPath;
+		const answer = chat.sessionPath ? loadLastAnswer(chat.sessionPath) : null;
+		chat.transcript = emptyTranscript();
+		chat.metrics = { ...emptyPerf(), last: answer };
+		chat.measuredOn = answer?.model ?? null;
+		chat.modelInUse = null;
+		chat.debug = undefined;
+		chat.interruptedAt = undefined;
+		chat.extensionNotes = [];
+		chat.extensionDialog = undefined;
+		chat.lastSeq = 0;
+		chat.rowRequested = false;
+		chat.rebinding = false;
+		chat.error = undefined;
+	}
+
+	#setActive(chat: Chat): void {
+		this.activeChatId = chat.id;
+		this.#syncSubscriptions();
+	}
+
+	/**
+	 * Handle the `result` that names the conversation answering a session file. `open` reuses the chat already
+	 * on that file (rebuilding it only when the conversation really changed); `new` and `fork` make a new one.
+	 */
+	#adopt(conversationId: string, sessionPath: string | undefined, target: BindTarget): Chat {
+		const existing =
+			target.kind === "open"
+				? (this.chats.find((chat) => (sessionPath ? chat.sessionPath === sessionPath : false)) ?? this.chats.find((chat) => chat.conversationId === conversationId))
+				: target.kind === "new" && target.replace
+					? this.chats.find((chat) => chat.id === target.replace)
+					: undefined;
+		if (existing) {
+			const rebound = existing.conversationId !== conversationId;
+			if (rebound) this.#resetChat(existing, conversationId, sessionPath);
+			else if (sessionPath) existing.sessionPath = sessionPath;
+			existing.rebinding = false;
+			this.activeChatId = existing.id;
+			this.#syncSubscriptions();
+			return existing;
+		}
+		const chat = this.#makeChat(conversationId, sessionPath);
+		this.chats.push(chat);
+		this.activeChatId = chat.id;
+		this.#syncSubscriptions();
+		return chat;
+	}
+
+	/**
+	 * Keep exactly the chats that need a live subscription attached: the one on screen and any with a turn
+	 * running. Everything else is let go, so an idle conversation can be evicted and a later `resume` (which
+	 * reopens from the file if it really is gone) brings it back.
+	 */
+	#syncSubscriptions(): void {
+		for (const chat of this.chats) {
+			if (chat.rebinding) continue;
+			const shouldWatch = chat.id === this.activeChatId || chat.transcript.running;
+			const watching = this.#watched.has(chat.conversationId);
+			if (shouldWatch && !watching) {
+				this.#watched.add(chat.conversationId);
+				this.send({ type: "resume", conversationId: chat.conversationId, afterSeq: chat.lastSeq });
+			} else if (!shouldWatch && watching) {
+				this.#watched.delete(chat.conversationId);
+				this.send({ type: "unsubscribe", conversationId: chat.conversationId });
+			}
+		}
+		for (const conversationId of [...this.#watched]) {
+			if (this.chats.some((chat) => chat.conversationId === conversationId)) continue;
+			this.#watched.delete(conversationId);
+			this.send({ type: "unsubscribe", conversationId });
+		}
+	}
+
+	newSession(): void {
+		const requestId = nextId();
+		this.#bindTargets.set(requestId, { kind: "new" });
+		this.send({ type: "newSession", requestId });
+	}
+
+	/**
+	 * Show an existing session. The chat already on that file is reused as it is — its conversation is the one
+	 * answering it — and only a session this page has never opened asks the server for a conversation of its own.
+	 */
+	openSession(path: string): void {
+		const existing = this.chats.find((chat) => chat.sessionPath === path);
+		if (existing) {
+			this.#setActive(existing);
+			this.showDebug(existing);
+			return;
+		}
+		// A session this page has never seen: the server answers with the conversation that answers the file.
+		// Session files are unique per conversation, so the answer is recognised by its path — which is what
+		// lets a chat be *reopened* rather than replaced, even when the conversation id behind it is new.
+		const requestId = nextId();
+		this.#bindTargets.set(requestId, { kind: "open" });
+		this.send({ type: "switchSession", sessionPath: path, requestId });
+	}
+
+	/** A conversation the server has forgotten: reopen the session it was showing as a conversation of its own. */
+	#recover(chat: Chat): void {
+		chat.rebinding = true;
+		this.#watched.delete(chat.conversationId);
+		const requestId = nextId();
+		if (chat.sessionPath) {
+			this.#bindTargets.set(requestId, { kind: "open" });
+			this.send({ type: "switchSession", sessionPath: chat.sessionPath, requestId });
+			return;
+		}
+		this.#bindTargets.set(requestId, { kind: "new", replace: chat.id });
+		this.send({ type: "newSession", requestId });
+	}
+
+	// ---- Commands, all against the chat on screen ----------------------------------------------------------
+
 	prompt(text: string, mode: "steer" | "followUp" = "steer", attachments: FlypiAttachment[] = []): void {
-		if (!this.conversationId) return;
-		this.send({ type: "prompt", conversationId: this.conversationId, text, ...(attachments.length ? { attachments } : {}), mode });
+		const chat = this.#activeChat();
+		if (!chat) return;
+		chat.error = undefined;
+		this.send({ type: "prompt", conversationId: chat.conversationId, text, ...(attachments.length ? { attachments } : {}), mode });
 	}
 
 	abort(): void {
-		if (this.conversationId) this.send({ type: "abort", conversationId: this.conversationId });
+		const chat = this.#activeChat();
+		if (chat) this.send({ type: "abort", conversationId: chat.conversationId });
 	}
 
 	fork(messageSeq: number): void {
-		if (!this.conversationId) return;
-		void this.request({ type: "fork", conversationId: this.conversationId, messageSeq, requestId: nextId() });
+		const chat = this.#activeChat();
+		if (!chat) return;
+		const requestId = nextId();
+		this.#bindTargets.set(requestId, { kind: "fork" });
+		this.send({ type: "fork", conversationId: chat.conversationId, messageSeq, requestId });
 	}
 
 	listSessions(): void {
 		void this.request({ type: "listSessions", requestId: nextId() });
 	}
 
-	openSession(path: string): void {
-		if (!this.conversationId) return;
-		// The server decides what opening a session means — reusing the conversation already answering it, or
-		// starting one so a turn in flight on this page is not cut short. It answers with the conversation to
-		// resume, which is not always the one this page is holding.
-		void this.request({ type: "switchSession", conversationId: this.conversationId, sessionPath: path, requestId: nextId() });
-	}
-
 	rename(name: string): void {
-		if (!this.conversationId) return;
-		this.send({ type: "renameSession", conversationId: this.conversationId, name });
+		const chat = this.#activeChat();
+		if (chat) this.send({ type: "renameSession", conversationId: chat.conversationId, name });
 	}
 
 	/**
-	 * Delete a session file for good — the server answers with the list without it. If it was the session
-	 * on screen, the conversation went with it, so the app starts a fresh one rather than sending
-	 * commands to a conversation id the server has already forgotten.
+	 * Delete a session file for good — the server answers with the list without it. The chat that was showing
+	 * it goes with it, and if it was the one on screen the page falls back to another open chat, or a fresh one.
 	 */
 	deleteSession(path: string): void {
-		const wasCurrent = path === this.sessionPath;
 		forgetLastAnswer(path);
 		void this.request({ type: "deleteSession", sessionPath: path, requestId: nextId() }).then(() => {
-			if (wasCurrent) this.newSession();
+			const chat = this.chats.find((candidate) => candidate.sessionPath === path);
+			if (!chat) return;
+			this.#watched.delete(chat.conversationId);
+			const wasActive = this.activeChatId === chat.id;
+			this.chats = this.chats.filter((candidate) => candidate.id !== chat.id);
+			if (!wasActive) return;
+			const next = this.chats.at(-1);
+			if (next) this.#setActive(next);
+			else this.newSession();
 		});
 	}
 
 	setModel(provider: string, modelId: string): void {
-		if (!this.conversationId) return;
-		this.send({ type: "setModel", conversationId: this.conversationId, provider, modelId });
+		const chat = this.#activeChat();
+		if (!chat) return;
+		this.send({ type: "setModel", conversationId: chat.conversationId, provider, modelId });
 		// No round trip needed to know the model changed: the numbers on screen stop being this chat's.
-		this.#keepNumbersFor(`${provider}/${modelId}`);
+		this.#keepNumbersFor(chat, `${provider}/${modelId}`);
 	}
 
 	/**
@@ -249,29 +477,29 @@ export class FlypiAppState {
 	 * just picked): keep what is on screen only if it was measured on this model — and since they are kept
 	 * per chat, switching back to a model this chat measured on brings its numbers back.
 	 */
-	#keepNumbersFor(model: string | null): void {
+	#keepNumbersFor(chat: Chat, model: string | null): void {
 		if (!model) return;
-		this.#modelInUse = model;
-		if (!this.sessionPath || this.measuredOn === model) return;
+		chat.modelInUse = model;
+		if (!chat.sessionPath || chat.measuredOn === model) return;
 		// Numbers whose model the app never knew were measured in this chat, and this is the first thing that
 		// ever named a model — so name them instead of retiring what was just measured. Only numbers known to
 		// belong to another model are retired below.
-		if (!this.measuredOn && (hasMeasurement(this.metrics.run) || hasMeasurement(this.metrics.last))) {
-			this.measuredOn = model;
-			if (hasMeasurement(this.metrics.run)) saveLastAnswer(this.sessionPath, { ...this.metrics.run, model });
+		if (!chat.measuredOn && (hasMeasurement(chat.metrics.run) || hasMeasurement(chat.metrics.last))) {
+			chat.measuredOn = model;
+			if (hasMeasurement(chat.metrics.run)) saveLastAnswer(chat.sessionPath, { ...chat.metrics.run, model });
 			return;
 		}
-		const answer = loadLastAnswer(this.sessionPath);
+		const answer = loadLastAnswer(chat.sessionPath);
 		const keep = answer && answer.model === model ? answer : null;
 		// A rate describes the model that produced it, so the question's average goes with it — that count
 		// is live state, not something a round trip could hand back.
-		this.metrics = { ...emptyPerf(), last: keep };
-		this.measuredOn = keep ? model : null;
+		chat.metrics = { ...emptyPerf(), last: keep };
+		chat.measuredOn = keep ? model : null;
 	}
 
 	setThinkingLevel(level: FlypiThinkingLevel): void {
-		if (!this.conversationId) return;
-		this.send({ type: "setThinkingLevel", conversationId: this.conversationId, level });
+		const chat = this.#activeChat();
+		if (chat) this.send({ type: "setThinkingLevel", conversationId: chat.conversationId, level });
 	}
 
 	/**
@@ -280,15 +508,20 @@ export class FlypiAppState {
 	 * server either resolves the handler or says nothing was waiting, and both mean stop showing it.
 	 */
 	answerExtension(dialogId: string, value: string | null): void {
-		if (!this.conversationId) return;
-		this.send({ type: "extensionReply", conversationId: this.conversationId, dialogId, value });
-		this.extensionDialog = undefined;
+		const chat = this.#activeChat();
+		if (!chat) return;
+		this.send({ type: "extensionReply", conversationId: chat.conversationId, dialogId, value });
+		chat.extensionDialog = undefined;
 	}
 
-	showDebug(): void {
-		if (!this.conversationId) return;
-		void this.request({ type: "debug", conversationId: this.conversationId, requestId: nextId() });
+	showDebug(chat: Chat | undefined = this.#activeChat()): void {
+		if (!chat) return;
+		const requestId = nextId();
+		this.#debugTargets.set(requestId, chat.id);
+		void this.request({ type: "debug", conversationId: chat.conversationId, requestId });
 	}
+
+	// ---- The page's views and the global settings surfaces -------------------------------------------------
 
 	/** What the daemon's queue is, and what it last did. Asked when the section opens; see ActivityPanel. */
 	loadScheduler(): void {
@@ -311,13 +544,6 @@ export class FlypiAppState {
 		void this.request({ type: "installUpdate", requestId });
 	}
 
-	/**
-	 * Move between the page's views. Nothing is fetched here beyond the config the chat needs and never had: a
-	 * view asks for its own snapshot when it mounts, which is the same "ask when it is opened, not on a timer"
-	 * the debug snapshot uses — and it works for a URL that opens the page there, where these methods are never
-	 * called. Leaving the vault is where a revealed value goes: the plaintext has no reason to sit in memory for
-	 * a view that is not showing it.
-	 */
 	openChat(): void {
 		this.revealed = undefined;
 		this.view = "chat";
@@ -495,6 +721,8 @@ export class FlypiAppState {
 		return requestId;
 	}
 
+	// ---- Frames -------------------------------------------------------------------------------------------
+
 	handleFrame(frame: ServerFrame): void {
 		switch (frame.type) {
 			case "hello":
@@ -502,104 +730,74 @@ export class FlypiAppState {
 				this.pi = frame.pi;
 				return;
 			case "event": {
-				// Every event frame is addressed. Once the page holds a conversation, a frame naming another
-				// one must not reach the transcript, the activity panel or the seq cursor: a turn started in the
-				// chat you left has frames already on the wire when the page moves on, and `#lastSeq` is the
-				// resume cursor of the conversation on screen. (Unbound is the startup window only — the server
-				// subscribes before it answers `newSession`, and a conversation that never had a prompt has no
-				// event to send in it.)
-				if (this.conversationId && frame.conversationId !== this.conversationId) return;
+				// Every event frame is addressed to a conversation, and every conversation has exactly one chat.
+				// Frames for a chat the page is not showing still update *that* chat — that is how a background
+				// turn's answer lands where it came from, and never in whatever happens to be on screen.
+				const chat = this.chats.find((candidate) => candidate.conversationId === frame.conversationId);
+				if (!chat) return;
 				// The only place a transcript changes: the same reducer a replay goes through.
-				this.#lastSeq = Math.max(this.#lastSeq, frame.seq);
+				chat.lastSeq = Math.max(chat.lastSeq, frame.seq);
 				// The protocol checks only the discriminator (SessionEventFrameBody); the reducer is the
 				// place that knows what each event means, and it ignores what it does not recognise.
 				const event = frame.event as AgentSessionEvent;
-				this.transcript = applyEvent(this.transcript, event, () => Date.now(), frame.seq);
-				this.metrics = applyPerfEvent(this.metrics, event, () => Date.now());
+				if (event.type === "agent_start") chat.error = undefined;
+				chat.transcript = applyEvent(chat.transcript, event, () => Date.now(), frame.seq);
+				chat.metrics = applyPerfEvent(chat.metrics, event, () => Date.now());
 				// The rates belong to this chat on the model that answered it, so they are kept per session and
 				// say which model they came from (ui/lib/last-answer.ts). What is kept is the question's average —
-				// the same sum the strip shows — so reopening a chat brings back those numbers, not one answer's. A
-				// turn with nothing measured (no response, or a provider that reports no usage) keeps nothing. The
-				// model named here is the one the app asked this chat to answer on, not whichever snapshot last
-				// arrived: a snapshot can be stale (a model you just picked is not in it yet), and a question asked
-				// before any snapshot has landed names nothing — that record says so, and the first snapshot that
-				// names a model adopts it rather than contradicting it (#keepNumbersFor).
-				if (event.type === "message_end" && hasMeasurement(this.metrics.run) && this.sessionPath) {
-					const measuredOn = this.#modelInUse;
-					if (measuredOn) this.measuredOn = measuredOn;
-					saveLastAnswer(this.sessionPath, { ...this.metrics.run, model: measuredOn });
+				// the same sum the strip shows — so reopening a chat brings back those numbers, not one answer's.
+				if (event.type === "message_end" && hasMeasurement(chat.metrics.run) && chat.sessionPath) {
+					const measuredOn = chat.modelInUse;
+					if (measuredOn) chat.measuredOn = measuredOn;
+					saveLastAnswer(chat.sessionPath, { ...chat.metrics.run, model: measuredOn });
 				}
 				// Context usage is a server-side estimate (pi's `getContextUsage`), and it only becomes
-				// trustworthy when the turn's answer lands — so the gauge is refreshed with the turn, on the
-				// one round trip the app can already make.
-				if (event.type === "agent_settled") this.showDebug();
+				// trustworthy when the turn's answer lands — so the gauge is refreshed with the turn.
+				if (event.type === "agent_settled") this.showDebug(chat);
 				// A chat earns its row with its first message: pi writes the session file on its first entry,
-				// so before that there is nothing to list — and the event for the message you just sent is what
-				// proves it is written. Once, and only once, per conversation.
-				if (!this.#rowRequested && this.transcript.messages.some((message) => message.role === "user")) {
-					this.#rowRequested = true;
+				// so before that there is nothing to list. Once, and only once, per conversation.
+				if (!chat.rowRequested && chat.transcript.messages.some((message) => message.role === "user")) {
+					chat.rowRequested = true;
 					this.listSessions();
 				}
+				// A turn starting or settling changes which chats need a live subscription.
+				if (event.type === "agent_start" || event.type === "agent_settled") this.#syncSubscriptions();
 				return;
 			}
-			case "extensionUi":
-				// Addressed like an event frame: an extension in another conversation has no business on this
-				// page, and a dialog left on screen would be answered against the wrong conversation.
-				if (this.conversationId && frame.conversationId !== this.conversationId) return;
-				// An extension spoke. A notification is this conversation's output and nothing waits on it; a
-				// question parks the extension's handler until the page answers (src/server/extension-ui.ts).
+			case "extensionUi": {
+				// Addressed like an event frame: an extension speaks for one conversation, and its question is
+				// answered against that conversation — the page shows the active chat's, and keeps the others'.
+				const chat = this.chats.find((candidate) => candidate.conversationId === frame.conversationId);
+				if (!chat) return;
 				if (frame.kind === "notify") {
-					this.extensionNotes = [...this.extensionNotes.slice(-49), { message: frame.message, level: frame.level ?? "info" }];
+					chat.extensionNotes = [...chat.extensionNotes.slice(-49), { message: frame.message, level: frame.level ?? "info" }];
 					return;
 				}
-				this.extensionDialog = frame;
+				chat.extensionDialog = frame;
 				return;
+			}
 			case "mcpAuth":
 				// The URL a sign-in is waiting on its redirect for. Nothing else carries it: this page asked for
 				// the sign-in, so it knows which row the frame belongs to.
 				this.mcpSignIn = { name: frame.name, url: frame.url };
 				return;
 			case "result": {
-				if (frame.sessionPath) {
-					// The server just handed us a conversation (new, opened or forked). Its history arrives
-					// as the seeded events the registry published, so we ask for the log instead of the file.
-					this.transcript = emptyTranscript();
-					// The numbers a chat has are its own — measured here, on the model it was using — so opening
-					// it is where they come back, and a half-measured response stays with the chat it came from.
-					const answer = loadLastAnswer(frame.sessionPath);
-					this.metrics = { ...emptyPerf(), last: answer };
-					this.measuredOn = answer?.model ?? null;
-					// A conversation the server just handed over answers on whatever model its file says, which this
-					// page does not know until the snapshot below arrives.
-					this.#modelInUse = null;
-					this.#lastSeq = 0;
-					this.conversationId = frame.conversationId;
-					this.sessionPath = frame.sessionPath;
-					// Extension output belongs to the conversation that produced it, and an unanswered question
-					// belongs to a conversation the server may no longer have.
-					this.extensionNotes = [];
-					this.extensionDialog = undefined;
+				// A result carrying a conversation *and* a session path is the server naming the conversation
+				// that answers a file — the answer to `newSession`, `switchSession` or `fork`. It is recognised
+				// structurally so a page recovering from a restart, which may not know the request it made,
+				// still lands on the right chat.
+				const target = frame.requestId ? this.#bindTargets.get(frame.requestId) : undefined;
+				const binding = target ?? (frame.conversationId && frame.sessionPath ? { kind: "open" as const } : undefined);
+				if (binding && frame.conversationId) {
+					if (frame.requestId) this.#bindTargets.delete(frame.requestId);
+					const chat = this.#adopt(frame.conversationId, frame.sessionPath, binding);
 					// The daemon answers this with the session it cut short, so the chat can say why the last
 					// answer stops where it does. Opening a later turn replaces it.
-					this.interruptedAt = frame.interrupted?.at;
-					// A session already in the list needs no second look; one that is not in it yet will ask
-					// for the list at its first message (below).
-					this.#rowRequested = this.sessions.some((session) => session.path === frame.sessionPath);
-					if (frame.conversationId) this.send({ type: "resume", conversationId: frame.conversationId, afterSeq: 0 });
-					// The sidebar's model and thinking selectors list what the live session offers, so they
-					// need this snapshot as soon as a conversation is bound.
-					this.showDebug();
-					// Every session flypi owns is listed from the start — the list is the navigation, so it is
-					// fetched rather than asked for. New, fork and switch all answer with a session path, so
-					// this one call keeps the list current for all of them.
+					chat.interruptedAt = frame.interrupted?.at;
+					// The sidebar's model and thinking selectors list what the live session offers, and the list
+					// itself is the navigation: both are refetched for every new, opened or forked conversation.
+					this.showDebug(chat);
 					this.listSessions();
-					// The replacement conversation opens the session the dead one was showing, so the chat comes
-					// back instead of the page landing on an empty new one.
-					if (this.#rebindTo && frame.conversationId && this.#rebindTo !== frame.sessionPath) {
-						const path = this.#rebindTo;
-						this.#rebindTo = undefined;
-						void this.request({ type: "switchSession", conversationId: frame.conversationId, sessionPath: path, requestId: nextId() });
-					}
 				}
 				if (frame.sessions) this.sessions = frame.sessions;
 				if (frame.config) {
@@ -612,10 +810,18 @@ export class FlypiAppState {
 					this.mcpStatus = undefined;
 				}
 				if (frame.debug) {
-					this.debug = frame.debug;
-					// The snapshot names the model this conversation is on, so it is also what retires numbers
-					// that were measured on a different one.
-					this.#keepNumbersFor(modelName(frame.debug));
+					// The snapshot is routed to the chat that asked for it — by request id first, then by the
+					// conversation the server named — so a late reply for a chat you left refreshes that chat's
+					// selectors and context gauge, never the one on screen.
+					const askedFor = frame.requestId ? this.#debugTargets.get(frame.requestId) : undefined;
+					if (frame.requestId) this.#debugTargets.delete(frame.requestId);
+					const chat = this.chats.find((candidate) => candidate.id === askedFor) ?? (frame.conversationId ? this.chats.find((candidate) => candidate.conversationId === frame.conversationId) : undefined) ?? this.#activeChat();
+					if (chat) {
+						chat.debug = frame.debug;
+						// The snapshot names the model this conversation is on, so it is also what retires numbers
+						// that were measured on a different one.
+						this.#keepNumbersFor(chat, modelName(frame.debug));
+					}
 				}
 				if (frame.scheduler) this.scheduler = frame.scheduler;
 				if (frame.secrets) {
@@ -673,17 +879,22 @@ export class FlypiAppState {
 					this.schedulerError = frame.message;
 					return;
 				}
-				// A conversation the server has forgotten — a new process, or another tab deleted it — would make
-				// every later command fail, so the page stops using it and asks for one in its place. That is what a
-				// restart looks like, so it is recovered from rather than reported: the chat comes back by itself,
-				// and a turn the restart cut short is said in the chat, from the session's own `interruptedAt`.
-				// Reporting it left `unknown conversation <uuid>` on screen for the rest of the page's life.
-				if (this.conversationId && frame.conversationId === this.conversationId && frame.code === "unknownConversation") {
-					this.#rebindTo = this.sessionPath;
-					this.newSession();
-					return;
+				// A conversation the server has forgotten — a new process, or a session it evicted — would make
+				// every later command fail. It is recovered from rather than reported: the page reopens the
+				// session it was showing as a conversation of its own, so the chat comes back by itself.
+				if (frame.code === "unknownConversation" && frame.conversationId) {
+					const chat = this.chats.find((candidate) => candidate.conversationId === frame.conversationId);
+					if (chat && !chat.rebinding) {
+						this.#recover(chat);
+						return;
+					}
+					// A conversation this page no longer holds: nothing to recover, and nothing a user can act on.
+					if (!chat) return;
 				}
-				this.lastError = frame.message;
+				// A failure that names a chat is that chat's, even when the chat is not the one on screen.
+				const about = frame.conversationId ? this.chats.find((candidate) => candidate.conversationId === frame.conversationId) : undefined;
+				if (about) about.error = frame.message;
+				else this.pageError = frame.message;
 				if (frame.requestId && this.#configRequests.delete(frame.requestId)) {
 					this.configError = frame.message;
 					// A failed probe leaves nothing to show, so the button goes back to being pressable.
@@ -715,6 +926,7 @@ export class FlypiAppState {
 	}
 }
 
+let chatCounter = 0;
 let counter = 0;
 function nextId(): string {
 	return `ui-${++counter}`;

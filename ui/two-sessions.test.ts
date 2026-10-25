@@ -110,11 +110,14 @@ function page() {
 				const field = li.querySelector("input") as HTMLInputElement | null;
 				return field ? field.value || field.placeholder : (li.querySelector("button.session")?.textContent ?? "").trim();
 			}),
+		/** The row for one session, by the text it shows — a row that is not on screen is a button. */
 		openRow: (name: string) => {
 			const button = [...document.querySelectorAll(".sessions button.session")].find((candidate) => (candidate.textContent ?? "").includes(name));
 			if (!button) throw new Error(`no row for ${name}`);
 			fireEvent.click(button);
 		},
+		/** The waiting rows: sessions whose turn is still running while the page is looking elsewhere. */
+		runningRows: () => [...document.querySelectorAll(".sessions li")].filter((li) => li.querySelector(".run-dot")).length,
 		/** What the chat says, whitespace collapsed: the transcript plus the answer on it. */
 		chat: () => (document.querySelector(".messages")?.textContent ?? "").replace(/\s+/g, " "),
 		alert: () => document.querySelector('[role="alert"]')?.textContent ?? null,
@@ -184,6 +187,7 @@ describe("two sessions on the real page", { timeout: 120_000 }, () => {
 			// so wait for the answer to land before killing it.
 			await until(() => onDisk().includes("answer number 1"));
 			expect(onDisk()).toContain("answer number 1");
+			await until(() => ui.chat().includes("answer number 1"));
 			expect(ui.chat()).toContain("answer number 1");
 
 			// The daemon restarts: same state on disk, a fresh (empty) registry and a new token. The page is
