@@ -1,6 +1,6 @@
 {
 	"name": "@makerstufferupper/flypi",
-	"version": "0.1.4",
+	"version": "0.1.5",
 	"type": "module",
 	"description": "Local multi-model agent tool with a browser UI and a personal knowledge wiki, built on the pi SDK.",
 	"license": "MIT",
