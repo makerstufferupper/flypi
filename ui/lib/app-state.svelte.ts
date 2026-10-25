@@ -212,6 +212,9 @@ export class FlypiAppState {
 
 	openSession(path: string): void {
 		if (!this.conversationId) return;
+		// The server decides what opening a session means — reusing the conversation already answering it, or
+		// starting one so a turn in flight on this page is not cut short. It answers with the conversation to
+		// resume, which is not always the one this page is holding.
 		void this.request({ type: "switchSession", conversationId: this.conversationId, sessionPath: path, requestId: nextId() });
 	}
 
@@ -499,6 +502,13 @@ export class FlypiAppState {
 				this.pi = frame.pi;
 				return;
 			case "event": {
+				// Every event frame is addressed. Once the page holds a conversation, a frame naming another
+				// one must not reach the transcript, the activity panel or the seq cursor: a turn started in the
+				// chat you left has frames already on the wire when the page moves on, and `#lastSeq` is the
+				// resume cursor of the conversation on screen. (Unbound is the startup window only — the server
+				// subscribes before it answers `newSession`, and a conversation that never had a prompt has no
+				// event to send in it.)
+				if (this.conversationId && frame.conversationId !== this.conversationId) return;
 				// The only place a transcript changes: the same reducer a replay goes through.
 				this.#lastSeq = Math.max(this.#lastSeq, frame.seq);
 				// The protocol checks only the discriminator (SessionEventFrameBody); the reducer is the
@@ -533,6 +543,9 @@ export class FlypiAppState {
 				return;
 			}
 			case "extensionUi":
+				// Addressed like an event frame: an extension in another conversation has no business on this
+				// page, and a dialog left on screen would be answered against the wrong conversation.
+				if (this.conversationId && frame.conversationId !== this.conversationId) return;
 				// An extension spoke. A notification is this conversation's output and nothing waits on it; a
 				// question parks the extension's handler until the page answers (src/server/extension-ui.ts).
 				if (frame.kind === "notify") {
@@ -660,6 +673,16 @@ export class FlypiAppState {
 					this.schedulerError = frame.message;
 					return;
 				}
+				// A conversation the server has forgotten — a new process, or another tab deleted it — would make
+				// every later command fail, so the page stops using it and asks for one in its place. That is what a
+				// restart looks like, so it is recovered from rather than reported: the chat comes back by itself,
+				// and a turn the restart cut short is said in the chat, from the session's own `interruptedAt`.
+				// Reporting it left `unknown conversation <uuid>` on screen for the rest of the page's life.
+				if (this.conversationId && frame.conversationId === this.conversationId && frame.code === "unknownConversation") {
+					this.#rebindTo = this.sessionPath;
+					this.newSession();
+					return;
+				}
 				this.lastError = frame.message;
 				if (frame.requestId && this.#configRequests.delete(frame.requestId)) {
 					this.configError = frame.message;
@@ -685,14 +708,6 @@ export class FlypiAppState {
 					// The store refused an edit (a row that is not there, an undo of a write) or this process has
 					// no memory database at all. Nothing changed, so the refusal has to be said where the row is.
 					this.memoryError = frame.message;
-				}
-				// A conversation the server has forgotten — a new process, or another tab deleted it — would make
-				// every later command fail, so the page stops using it and asks for one in its place.
-				// shortcut: keyed on the server's message text; give the protocol an error code if recovery ever
-				// needs to tell failures apart.
-				if (this.conversationId && frame.conversationId === this.conversationId && /^unknown conversation /.test(frame.message)) {
-					this.#rebindTo = this.sessionPath;
-					this.newSession();
 				}
 				return;
 			}

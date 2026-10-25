@@ -106,7 +106,13 @@ that version and names the pi it loaded. Details in [release-checks.md](release-
 
 An unpublished branch cannot use the repo Dockerfile — it installs from npm. Build from a local tarball
 instead, with the tarball's directory as the build context so the repo's `.dockerignore` (`*.tgz`) never
-applies:
+applies. One command does all of it:
+
+```bash
+npm run dev:container   # build → pack → image → replace the flypi container on 127.0.0.1:8791 → /healthz
+```
+
+What it runs, by hand, is this:
 
 ```bash
 npm run build && npm pack --pack-destination /tmp/flypi-pack
@@ -117,3 +123,10 @@ docker run -d --name flypi -p 127.0.0.1:8791:8791 -v flypi-data:/data flypi:loca
 
 Tag the image with the **commit sha**: the package version inside it collides with the published one.
 `scripts/release-check.mjs` runs exactly this path as its `image` stage.
+
+`scripts/dev-container.mjs` adds the two things the hand-run above gets wrong by omission, and one thing it
+refuses to do: it passes `--health-start-period 900s` (a fresh state root spends its first quarter hour
+downloading the memory models, so an earlier healthcheck calls a good build unhealthy), it waits for
+`/healthz` before reporting success, and it never runs `docker volume rm` on `flypi-data` — that volume is
+where those models live, and deleting it turns the next start into a download. It removes the `flypi`
+container and the `flypi:local-*` images it replaced, and tags `-dirty` when the tree is not clean.

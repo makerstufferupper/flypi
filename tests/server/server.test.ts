@@ -349,11 +349,55 @@ describe("flypi server", () => {
 				const refused = await client.next((frame) => frame.type === "error" && frame.requestId === "r4");
 				expect(refused.type === "error" && refused.message).toContain("no message at seq 9999");
 
+				// Switching back to the source hands back the conversation that holds that session — the fork
+				// rebinding onto a file another conversation is answering would be a second writer on it.
 				client.send({ type: "switchSession", conversationId: forked.conversationId, sessionPath: sourcePath, requestId: "r5" });
 				const switched = await client.next((frame) => frame.type === "result" && frame.requestId === "r5");
 				if (switched.type !== "result") throw new Error("switch failed");
 				expect(switched.sessionPath).toBe(sourcePath);
-				expect(switched.conversationId).toBe(forked.conversationId);
+				expect(switched.conversationId).toBe(sourceId);
+			} finally {
+				await client.close();
+				await handle.close();
+			}
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("streams a conversation only while the socket is on it — a turn started before the page moved on stays off screen", async () => {
+		// Slow enough that the first turn is still streaming when the second conversation is handed over.
+		const h = await harness(() => [fauxAssistantMessage([fauxText(`still talking. ${"word ".repeat(60)}`)], { timestamp: 0 })], { tokensPerSecond: 20 });
+		try {
+			const handle = await start(h.registry);
+			const client = await connect(handle.url, handle.token);
+			try {
+				client.send({ type: "newSession", requestId: "r1" });
+				const first = await client.next((frame) => frame.type === "result" && frame.requestId === "r1");
+				if (first.type !== "result" || !first.conversationId) throw new Error("no conversation");
+				const left = first.conversationId;
+
+				client.send({ type: "prompt", conversationId: left, text: "talk for a while" });
+				await client.next((frame) => frame.type === "event" && frame.conversationId === left);
+
+				// The sidebar's “+”: another conversation, while the first one is mid-answer.
+				client.send({ type: "newSession", requestId: "r2" });
+				const second = await client.next((frame) => frame.type === "result" && frame.requestId === "r2");
+				if (second.type !== "result" || !second.conversationId) throw new Error("no second conversation");
+				expect(second.conversationId).not.toBe(left);
+
+				// The abandoned turn keeps running — coming back to it must lose nothing — but its frames no
+				// longer reach the socket, because the page has one transcript to put them in.
+				const since = client.frames.length;
+				await new Promise((resolve) => setTimeout(resolve, 300));
+				expect(client.frames.slice(since).filter((frame) => frame.type === "event" && frame.conversationId === left)).toHaveLength(0);
+				expect(h.registry.get(left).listeners.size).toBe(0);
+				expect(h.registry.get(left).session.isIdle).toBe(false);
+
+				// The conversation the socket is on still answers, and only its events arrive.
+				client.send({ type: "prompt", conversationId: second.conversationId, text: "short answer" });
+				const settled = await client.next((frame) => frame.type === "event" && frame.event.type === "agent_settled");
+				expect(settled.type === "event" && settled.conversationId).toBe(second.conversationId);
 			} finally {
 				await client.close();
 				await handle.close();
@@ -429,6 +473,8 @@ describe("flypi server", () => {
 				client.send({ type: "prompt", conversationId: "nope", text: "hi", requestId: "r9" });
 				const error = await client.next((frame) => frame.type === "error" && frame.requestId === "r9");
 				expect(error.type === "error" && error.message).toMatch(/unknown conversation/);
+				// The code is what the page recovers on — it holds the id across reconnects (ui/lib/app-state.svelte.ts).
+				expect(error.type === "error" && error.code).toBe("unknownConversation");
 			} finally {
 				await client.close();
 				await handle.close();

@@ -126,11 +126,33 @@ export class SessionRegistry {
 		);
 	}
 
-	/** Rebind a conversation to an existing session file. The conversationId — what the client holds — does not change. */
+	/**
+	 * Open an existing session for a client: the conversation already answering it when there is one, and
+	 * otherwise this conversation moved onto it — or a new one, if this conversation is mid-turn.
+	 */
 	async switchSession(conversationId: string, sessionPath: string): Promise<Conversation> {
 		const conversation = this.get(conversationId);
 		const target = this.sessionFileIn(sessionPath);
+		// Already answering it: opening the file a second time would put a second writer on it, so the
+		// conversation the page is already on stays where it is. An idle one is reopened as asked — that is
+		// how a client reloads a session's history from disk.
+		if (conversation.session.sessionFile === target && !conversation.session.isIdle) return conversation;
+		// A session another conversation is already answering **is** that conversation, not a copy of it. Opening
+		// the file a second time would put a second writer on it and freeze the transcript at the moment of the
+		// switch, so the answer on its way would never reach the page that just asked for that session.
+		const live = [...this.conversations.values()].find((other) => other.id !== conversationId && other.session.sessionFile === target);
+		if (live) return live;
+		// Rebinding disposes the session this conversation is answering in, and a turn still running would be cut
+		// short: its answer would reach neither the page nor the session file. So a session with no conversation
+		// of its own is opened as one, and this conversation is left alone to finish (it stays in the map, and
+		// switching back to it returns it from the lookup above, log and all).
+		if (!conversation.session.isIdle) return this.bind(SessionManager.open(target, this.paths.sessionsDir));
 		this.teardown(conversation);
+		// The conversation lives on with a new session, so it is not disposed any more. Without this the
+		// exactly-once guard below stays set and the *new* session is never unsubscribed or disposed — it
+		// keeps streaming into this conversation's log (and its listeners) after the page moved on, keeps
+		// the conversation unevictable, and writes back any session file it is deleted out from under.
+		conversation.disposed = false;
 		conversation.session = await this.createSession({
 			sessionManager: SessionManager.open(target, this.paths.sessionsDir),
 			conversationId,
@@ -171,7 +193,9 @@ export class SessionRegistry {
 
 	get(conversationId: string): Conversation {
 		const conversation = this.conversations.get(conversationId);
-		if (!conversation) throw new Error(`unknown conversation ${conversationId}`);
+		// The code is what a page acts on: it holds a conversation id across reconnects, and after a restart
+		// every command it sends names a conversation this process never had (ui/lib/app-state.svelte.ts).
+		if (!conversation) throw Object.assign(new Error(`unknown conversation ${conversationId}`), { code: "unknownConversation" });
 		return conversation;
 	}
 

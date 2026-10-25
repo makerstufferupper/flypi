@@ -183,6 +183,16 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 
 		/** Start (or keep) this socket's subscription to a conversation; `afterSeq` replays what it missed. */
 		const subscribe = (conversationId: string, afterSeq?: number) => {
+			// A page holds one conversation, so a socket follows one conversation. Everything it watched
+			// before is detached here: a turn started in the chat you left would otherwise keep streaming,
+			// and its frames would be folded into the transcript of the chat that replaced it. It also keeps
+			// the abandoned conversation attached forever, so `evictIdle` never sees it as idle.
+			for (const [watched, previous] of [...subscriptions]) {
+				if (watched === conversationId) continue;
+				previous.detach();
+				previous.detachUi();
+				subscriptions.delete(watched);
+			}
 			let subscription = subscriptions.get(conversationId);
 			if (!subscription) {
 				const state: Subscription = { lastSent: 0, detach: () => {}, detachUi: () => {} };
@@ -222,10 +232,10 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 			const command = parsed.command;
 			const requestId = command.requestId;
 			const conversationId = "conversationId" in command ? command.conversationId : undefined;
-			const onError = (error: Error) => {
+			const onError = (error: Error & { code?: string }) => {
 				// What the page was told, in the dev log: an error frame alone leaves a stuck UI inexplicable.
 				console.error(`flypi: ${command.type} failed: ${error.message}${conversationId ? ` (conversation ${conversationId})` : ""}`);
-				fail(error.message, { requestId, conversationId });
+				fail(error.message, { ...(error.code ? { code: error.code } : {}), requestId, conversationId });
 			};
 
 			try {

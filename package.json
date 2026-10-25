@@ -29,6 +29,7 @@
 		"probe:boundary": "tsx scripts/turn-boundary.ts",
 		"start": "node scripts/start.mjs",
 		"dev": "vite",
+		"dev:container": "node scripts/dev-container.mjs",
 		"models:warm": "tsx scripts/warm-models.ts",
 		"build": "vite build",
 		"prepublishOnly": "npm run typecheck && npm test && npm run build",
