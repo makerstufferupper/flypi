@@ -25,7 +25,9 @@ import { createExtensionUiBridge } from "./extension-ui.ts";
 import type { CommandRow, DebugInfo, ExtensionUiFrame, SessionSummary, ConfigSnapshot, McpStatusSnapshot, PackagesSnapshot } from "./protocol.ts";
 import type { FlypiMessage } from "../shared/transcript.ts";
 
-export type EventListener = (seq: number, event: AgentSessionEvent) => void;
+/** `at` is when this process saw the event (src/server/event-log.ts); a listener that does not need the
+ *  clock for its own accounting can ignore it. */
+export type EventListener = (seq: number, event: AgentSessionEvent, at: number) => void;
 /** What an extension said to the user (`src/server/extension-ui.ts`) — a second channel, not a pi event. */
 export type ExtensionUiListener = (frame: ExtensionUiFrame) => void;
 /** Supplies the session for a conversation: production uses `createFlypiSession`, tests use the stub model. */
@@ -459,7 +461,8 @@ export class SessionRegistry {
 		});
 		const conversation: Conversation = {
 			id,
-			log: new EventLog<AgentSessionEvent>(this.options.logCapacity),
+			// The same clock eviction uses, so a scripted clock in a test stamps the events it drives.
+			log: new EventLog<AgentSessionEvent>(this.options.logCapacity, this.now),
 			listeners: new Set(),
 			messages: new Map(),
 			session: await this.createSession({
@@ -542,7 +545,7 @@ export class SessionRegistry {
 			}
 			const buffered = conversation.log.push(event);
 			if (event.type === "message_end") conversation.messages.set(buffered.seq, event.message);
-			for (const listener of conversation.listeners) listener(buffered.seq, event);
+			for (const listener of conversation.listeners) listener(buffered.seq, event, buffered.at);
 		});
 	}
 

@@ -157,6 +157,12 @@ export class FlypiAppState {
 	 * server can evict it, and a later resume re-attaches it.
 	 */
 	#watched = new Set<string>();
+	/**
+	 * The server's clock minus this page's, from `hello`. Events are stamped by the backend and a live
+	 * window keeps growing on this page's clock, so the two are put on one timeline instead of assuming
+	 * this page and the daemon are the same machine.
+	 */
+	#clockOffset = 0;
 	/** Request ids whose `result` names the conversation that answers a session file. */
 	#bindTargets = new Map<string, BindTarget>();
 	/** Which chat a `debug` request was asked for, so a late reply refreshes that chat and not the one on screen. */
@@ -267,6 +273,14 @@ export class FlypiAppState {
 
 	send(command: ClientCommand): void {
 		this.#transport.send(command);
+	}
+
+	/**
+	 * "Now", on the backend's clock: event stamps are the backend's, so anything that keeps growing
+	 * between events (a streaming response's decode window) has to be read on the same timeline.
+	 */
+	now(): number {
+		return Date.now() + this.#clockOffset;
 	}
 
 	/** Commands that answer with a result frame: give them a request id and wait for it. */
@@ -727,6 +741,7 @@ export class FlypiAppState {
 		switch (frame.type) {
 			case "hello":
 				if (frame.protocolVersion !== 1) this.protocolMismatch = `server speaks protocol v${frame.protocolVersion}, this UI speaks v1`;
+				if (typeof frame.now === "number") this.#clockOffset = frame.now - Date.now();
 				this.pi = frame.pi;
 				return;
 			case "event": {
@@ -741,8 +756,14 @@ export class FlypiAppState {
 				// place that knows what each event means, and it ignores what it does not recognise.
 				const event = frame.event as AgentSessionEvent;
 				if (event.type === "agent_start") chat.error = undefined;
-				chat.transcript = applyEvent(chat.transcript, event, () => Date.now(), frame.seq);
-				chat.metrics = applyPerfEvent(chat.metrics, event, () => Date.now());
+				// The clock is the one the **backend** stamped on the event (`at`), not when this page received
+				// it: a replay delivers minutes of a response in one burst, and timing that would report a
+				// thousands-of-tokens/second rate for a model that streamed at twenty. With no stamp (an older
+				// server) arrival is the only clock there is.
+				const at = typeof frame.at === "number" ? frame.at : Date.now();
+				const clock = () => at;
+				chat.transcript = applyEvent(chat.transcript, event, clock, frame.seq);
+				chat.metrics = applyPerfEvent(chat.metrics, event, clock);
 				// The rates belong to this chat on the model that answered it, so they are kept per session and
 				// say which model they came from (ui/lib/last-answer.ts). What is kept is the question's average —
 				// the same sum the strip shows — so reopening a chat brings back those numbers, not one answer's.

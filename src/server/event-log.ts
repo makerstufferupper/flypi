@@ -6,9 +6,15 @@
  * numbering and the client can dedupe on it. When the ring overwrites old events the gap is
  * reported rather than hidden: a client that asks for something evicted is told, not fed a
  * transcript that quietly starts later.
+ *
+ * `at` is stamped here too, for the same reason: this process is the only one that sees an event
+ * **when it happens**. A replay hands the same stamp back, so a client that attaches later still
+ * measures the response's real window instead of the burst it arrived in (src/shared/metrics.ts).
  */
 export interface BufferedEvent<T> {
 	seq: number;
+	/** When this process saw the event, in epoch milliseconds. */
+	at: number;
 	event: T;
 }
 
@@ -16,10 +22,13 @@ export class EventLog<T> {
 	private readonly events: BufferedEvent<T>[] = [];
 	private nextSeq = 1;
 
-	constructor(private readonly capacity: number = 5000) {}
+	constructor(
+		private readonly capacity: number = 5000,
+		private readonly now: () => number = Date.now,
+	) {}
 
 	push(event: T): BufferedEvent<T> {
-		const buffered: BufferedEvent<T> = { seq: this.nextSeq++, event };
+		const buffered: BufferedEvent<T> = { seq: this.nextSeq++, at: this.now(), event };
 		this.events.push(buffered);
 		if (this.events.length > this.capacity) this.events.shift();
 		return buffered;

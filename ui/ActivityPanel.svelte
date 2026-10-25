@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { FlypiAppState } from "./lib/app-state.svelte.ts";
+	import { FollowNewest } from "./lib/follow.ts";
 	import { formatCache, type RenderedMessage, type ToolCard } from "../src/shared/transcript.ts";
 
 	let { app }: { app: FlypiAppState } = $props();
@@ -37,17 +38,24 @@
 	let open = $state(false);
 
 	// The newest entry should stay on screen: the panel is where you watch a turn happen. Scroll up
-	// and it stops pulling you back down, so reading older output survives the next tool call.
+	// and it stops pulling you back down, so reading older output survives the next tool call — and the
+	// place belongs to the session, so switching chats does not inherit the last one's scroll position.
 	let list = $state<HTMLOListElement | undefined>();
-	let following = $state(true);
+	const follow = new FollowNewest();
+
+	function placedIn(): string | undefined {
+		return app.sessionPath ?? app.conversationId;
+	}
 
 	function onScroll() {
-		if (list) following = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+		follow.remember(placedIn(), list);
 	}
 
 	$effect(() => {
 		entries; // re-runs on any change to the list, including a card's output growing
-		if (list && following) list.scrollTop = list.scrollHeight;
+		if (!list) return;
+		if (follow.switched(placedIn())) follow.land(placedIn(), list);
+		else follow.keep(list);
 	});
 
 	function toggle() {

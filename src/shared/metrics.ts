@@ -2,8 +2,11 @@
  * Live model speed metrics, read out of the same pi event stream the transcript mapper reads
  * (`src/shared/transcript.ts`).
  *
- * pi reports tokens, never tokens/second, so the only clock available is when the events arrived here.
- * That decides what each number honestly means:
+ * pi reports tokens, never tokens/second, so the only clock available is when the events were **seen**. That
+ * clock is the backend's: every event frame carries an `at` stamp taken when the server logged it
+ * (src/server/event-log.ts), and a replay carries the same stamp. Timing the arrival here instead made a
+ * replayed response — a reconnect, or a session opened late — arrive as one burst, which reported a
+ * thousands-of-tokens/second rate for a model that streamed at twenty. What each number honestly means:
  *
  * - **prefill** — the provider request up to the first content token, over the prompt tokens that
  *   request carried. pi emits `turn_start` once per provider request, which is the closest the stream
@@ -18,8 +21,9 @@
  * cannot pull either rate down.
  *
  * `now` is injectable for the same reason the transcript reducer takes one: the numbers are testable
- * without a clock. A response with no measurable window (both events inside one ms, which a local model
- * does) reports `null`, not a huge number — an unknown rate is shown as unknown.
+ * without a clock. The caller passes the event's own stamp, so `now()` is one fixed instant per event. A
+ * response with no measurable window (both events inside one ms, which a local model does) reports `null`,
+ * not a huge number — an unknown rate is shown as unknown.
  *
  * A response that is still streaming is counted only from what the provider reported about it. Providers
  * differ in when they report: some carry usage in every chunk, so those numbers move as the answer streams;

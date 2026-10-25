@@ -5,6 +5,7 @@
 	import { renderMarkdown } from "../src/shared/markdown.ts";
 	import { compact, formatUsage, type RenderedBlock, type RenderedMessage } from "../src/shared/transcript.ts";
 	import { formatRate, speedsOf } from "../src/shared/metrics.ts";
+	import { FollowNewest } from "./lib/follow.ts";
 
 	let { app }: { app: FlypiAppState } = $props();
 
@@ -86,9 +87,15 @@
 		}
 	}
 
-	// Same as the activity panel: the newest message stays on screen, and scrolling up releases it.
+	// Same as the activity panel: the newest message stays on screen, and scrolling up releases it — but the
+	// place belongs to the session, not to this reused list, so a switch lands where that chat was left.
 	let list = $state<HTMLOListElement | undefined>();
-	let following = $state(true);
+	const follow = new FollowNewest();
+
+	/** The session whose place the list is holding. Stable across a rebind, where only the conversation changes. */
+	function placedIn(): string | undefined {
+		return app.sessionPath ?? app.conversationId;
+	}
 
 	// pi dispatches a slash command itself — `session.prompt` runs an extension command before it sends
 	// anything (docs/extensions.md) — so the box only has to say which ones this conversation has. The list
@@ -100,23 +107,29 @@
 	let typed = $state("");
 
 	function onScroll() {
-		if (list) following = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+		follow.remember(placedIn(), list);
 	}
 
 	$effect(() => {
 		app.transcript; // the reducer replaces the whole transcript per event, so this covers a streaming message too
-		if (list && following) list.scrollTop = list.scrollHeight;
+		if (!list) return;
+		// A different chat means a different place: land where it was left, or at its newest message. The
+		// transcript on screen changed with it, so this effect runs for both in one go.
+		if (follow.switched(placedIn())) follow.land(placedIn(), list);
+		else follow.keep(list);
 	});
 
-	// The metrics strip. Speeds are measured from event arrival times (src/shared/metrics.ts); context
-	// usage is pi's own estimate, which the server sends with the debug snapshot.
+	// The metrics strip. Speeds are measured from the stamps the **backend** put on the events
+	// (src/shared/metrics.ts, src/server/event-log.ts); context usage is pi's own estimate, which the
+	// server sends with the debug snapshot.
 	// A rate the provider has reported keeps aging while its answer streams (its window grows with the
-	// clock), so the strip re-reads the clock while a response streams.
+	// clock), so the strip re-reads the clock while a response streams — on the backend's clock, the same
+	// one the stamps are on, so a daemon on another machine does not shorten the window by its skew.
 	let tick = $state(0);
 	$effect(() => {
 		if (!app.metrics.live) return;
-		tick = Date.now();
-		const timer = setInterval(() => (tick = Date.now()), 500);
+		tick = app.now();
+		const timer = setInterval(() => (tick = app.now()), 500);
 		return () => clearInterval(timer);
 	});
 

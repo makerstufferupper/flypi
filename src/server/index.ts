@@ -193,10 +193,12 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 			let subscription = subscriptions.get(conversationId);
 			if (!subscription) {
 				const state: Subscription = { lastSent: 0, detach: () => {}, detachUi: () => {} };
-				state.detach = registry.attach(conversationId, (seq, event) => {
+				state.detach = registry.attach(conversationId, (seq, event, at) => {
 					if (seq <= state.lastSent) return;
 					state.lastSent = seq;
-					send({ type: "event", conversationId, seq, event });
+					// `at` is the backend's own clock: it is what lets a client attaching late measure the
+					// response's real window rather than the burst its replay arrived in.
+					send({ type: "event", conversationId, seq, at, event });
 				});
 				// Extension output is not a pi event, so it has no seq to dedupe: the page sees each frame once,
 				// live, and a dialog it was not connected for is simply missed (src/server/extension-ui.ts).
@@ -217,7 +219,7 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 			for (const entry of replay.events) {
 				if (entry.seq <= subscription.lastSent) continue;
 				subscription.lastSent = entry.seq;
-				send({ type: "event", conversationId, seq: entry.seq, event: entry.event });
+				send({ type: "event", conversationId, seq: entry.seq, at: entry.at, event: entry.event });
 			}
 		};
 
@@ -230,7 +232,9 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 			subscriptions.delete(conversationId);
 		};
 
-		send({ type: "hello", protocolVersion: PROTOCOL_VERSION, serverVersion: options.serverVersion ?? "dev", ...(options.pi ? { pi: options.pi() } : {}) });
+		// `now` is this process's clock, so a client on another machine can put its own ticking windows on
+		// the same timeline the events are stamped with instead of a skew's worth of milliseconds off.
+		send({ type: "hello", protocolVersion: PROTOCOL_VERSION, serverVersion: options.serverVersion ?? "dev", now: Date.now(), ...(options.pi ? { pi: options.pi() } : {}) });
 
 		const handle = async (raw: string): Promise<void> => {
 			const parsed = parseClientCommand(raw);

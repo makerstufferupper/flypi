@@ -392,6 +392,16 @@ describe("flypi server", () => {
 				// lets a background answer land where it was asked for.
 				await client.next((frame) => frame.type === "event" && frame.conversationId === left && frame.event.type === "agent_settled");
 
+				// Every event carries the backend's stamp, and a replay hands the same one back: that is the
+				// clock a rate is measured with, so a client that attaches late is not charged for the burst.
+				const firstLive = client.frames.find((frame): frame is EventFrame => frame.type === "event" && frame.conversationId === left);
+				expect(typeof firstLive?.at).toBe("number");
+				const hello = client.frames.find((frame) => frame.type === "hello");
+				expect(hello?.type === "hello" && typeof hello.now).toBe("number");
+				client.send({ type: "resume", conversationId: left, afterSeq: 0 });
+				const firstReplay = await client.next((frame) => frame.type === "event" && frame.conversationId === left && frame.seq === firstLive?.seq);
+				expect(firstReplay.type === "event" ? firstReplay.at : undefined).toBe(firstLive?.at);
+
 				// Once that turn is done the page is not watching it any more, so the client lets it go and the
 				// server can release it: an idle conversation nobody holds is evictable.
 				client.send({ type: "unsubscribe", conversationId: left, requestId: "r3" });

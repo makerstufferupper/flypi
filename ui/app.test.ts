@@ -228,6 +228,50 @@ describe("the chat", () => {
 		await frames(transport, [say("third")], 2);
 		expect(list.scrollTop).toBe(10);
 	});
+
+	// The list is one DOM node reused as chats change underneath it, so a switch used to inherit the
+	// previous session's scrollTop and its "follow the newest" flag: the new chat opened at an old place
+	// and then the follow effect dragged it to the end. Each session keeps its own place.
+	it("keeps each session's place in the list instead of inheriting the last one's", async () => {
+		const transport = await mount();
+		await bind(transport);
+		const said = (text: string) =>
+			({
+				type: "message_end",
+				message: { role: "assistant", content: [{ type: "text", text }], usage: {} },
+			}) as unknown as AgentSessionEvent;
+		const at = "2026-01-01T00:00:00.000Z";
+		transport.emit({
+			type: "result",
+			requestId: "rows",
+			sessions: [
+				{ path: "/tmp/s.jsonl", name: "s.jsonl", modified: at, messageCount: 2, firstMessage: "" },
+				{ path: "/tmp/b.jsonl", name: "b.jsonl", modified: at, messageCount: 1, firstMessage: "" },
+			],
+		});
+		await tick();
+		await frames(transport, [said("first")]);
+
+		const list = document.querySelector(".messages") as HTMLElement;
+		Object.defineProperty(list, "scrollHeight", { value: 5000, configurable: true });
+		await frames(transport, [said("second")], 1);
+		expect(list.scrollTop).toBe(5000); // following the newest message
+
+		// The reader scrolls up in the first session to read something older.
+		list.scrollTop = 1200;
+		fireEvent.scroll(list);
+		await tick();
+
+		// A second session, handed over by the server: it has its own transcript, so it starts at its newest.
+		transport.emit({ type: "result", requestId: "bind-b", conversationId: "c2", sessionPath: "/tmp/b.jsonl" });
+		await tick();
+		expect(list.scrollTop).toBe(5000);
+
+		// Back to the first: it is where it was left — not at the end, and not where the second chat was.
+		openRowByPath("/tmp/s.jsonl");
+		await tick();
+		expect(list.scrollTop).toBe(1200);
+	});
 });
 
 describe("tool cards", () => {
@@ -1450,6 +1494,27 @@ describe("the live metrics on the send row", () => {
 		} as unknown as AgentSessionEvent);
 		await tick();
 		expect(decode()).toContain("200 tok/s");
+	});
+
+	// A replay — a reconnect, or opening a session this page was not holding — delivers minutes of a
+	// response in one burst. Measured by arrival that is a thousands-of-tokens/second rate; the events
+	// carry the backend's own stamps, so the window is the one the model actually took.
+	it("measures a response delivered as a replay on the backend's clock", async () => {
+		vi.useFakeTimers({ now: 1_000_000, toFake: ["Date"] });
+		const transport = await mount();
+		await bind(transport);
+		const started = 1_000_000;
+		const replay = (seq: number, at: number, event: AgentSessionEvent) => transport.emit({ type: "event", conversationId: "c1", seq, at, event });
+		// 1000 prompt tokens in the first second, then 200 output tokens over the next two — received now,
+		// all of it, as a resume hands it over.
+		replay(1, started, { type: "agent_start" } as AgentSessionEvent);
+		replay(2, started, { type: "turn_start" } as AgentSessionEvent);
+		replay(3, started, { type: "message_start", message: assistant() } as unknown as AgentSessionEvent);
+		replay(4, started + 1000, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "don", partial: assistant() } } as unknown as AgentSessionEvent);
+		replay(5, started + 3000, { type: "message_end", message: assistant() } as unknown as AgentSessionEvent);
+		await tick();
+		expect(prefill()).toContain("1000 tok/s");
+		expect(decode()).toContain("100 tok/s");
 	});
 
 	it("holds the measured numbers while an answer's usage has not arrived", async () => {

@@ -679,6 +679,12 @@ export const HelloFrame = Type.Object({
 	type: Type.Literal("hello"),
 	protocolVersion: Type.Integer(),
 	serverVersion: Type.String(),
+	/**
+	 * The server's clock at handshake, in epoch ms. Event frames are stamped with that same clock, so a
+	 * page on another machine can measure a streaming response against it instead of against a skewed
+	 * local clock. Optional: a server that does not send it is assumed to share this one's clock.
+	 */
+	now: Type.Optional(Type.Integer()),
 	/** Optional so an older server still parses; every flypi server from here on sends it. */
 	pi: Type.Optional(PiInfoFrame),
 });
@@ -687,6 +693,13 @@ export const EventFrame = Type.Object({
 	type: Type.Literal("event"),
 	conversationId: Id,
 	seq: Type.Integer({ minimum: 1 }),
+	/**
+	 * When the **backend** first saw this event, in epoch milliseconds. It rides on replays too, so the
+	 * same event carries the same clock whenever it arrives — which is what lets a client that attaches
+	 * late (a reconnect, or opening a session it was not holding) measure the response's real window
+	 * instead of the burst the replay arrived in. Optional: a client without it falls back to arrival.
+	 */
+	at: Type.Optional(Type.Integer({ minimum: 0 })),
 	event: SessionEventFrameBody,
 });
 
