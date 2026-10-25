@@ -99,6 +99,25 @@ async function assertServing(name, port, expectVersion) {
 	page.stdout === "200" ? ok(`${name}: GET / is 200`) : bad(`${name}: GET /`, `got ${page.stdout || "no answer"}`);
 	return body;
 }
+/**
+ * The agent has a bash tool in here, so the tools a turn reaches for have to be present *and* working: git over
+ * https, git-lfs, curl, wget. Slim has none of them, and a git-lfs binary without its filters registered still
+ * checks in an LFS file's contents rather than a pointer — so this tracks one and reads the blob back out.
+ */
+function hasTools(name) {
+	const probe = docker([
+		"exec",
+		name,
+		"sh",
+		"-c",
+		"git --version >/dev/null && curl --version >/dev/null && wget --version >/dev/null" +
+			" && cd /tmp && rm -rf lfs-check && git init -q lfs-check && cd lfs-check && git lfs track '*.bin' >/dev/null" +
+			" && echo hello > a.bin && git -c user.email=flypi@example.com -c user.name=flypi add a.bin && git cat-file -p :a.bin",
+	]);
+	/git-lfs\.github\.com\/spec\/v1/.test(probe.stdout ?? "")
+		? ok(`${name}: it has git + git-lfs, curl and wget`)
+		: bad(`${name}: git + git-lfs, curl and wget`, `exit ${probe.status}: ${(probe.stderr || probe.stdout || "").trim().split("\n")[0]}`);
+}
 function cleanup() {
 	if (has("--keep")) return console.log(`\nkept: ${created.containers.join(", ")} · volumes ${created.volumes.join(", ")} · ${packDir}`);
 	for (const name of created.containers) docker(["rm", "-f", name]);
@@ -170,6 +189,7 @@ async function image(tgz) {
 		: bad("flypi pi use in a container", `exit ${refused.status}: ${(refused.stderr || refused.stdout).trim().split("\n")[0]}`);
 	const state = docker(["exec", name, "sh", "-c", "ls /data/.flypi/pi 2>&1"]);
 	/state/.test(state.stdout) ? bad("a refused switch leaves no pin behind", state.stdout.trim()) : ok("a refused switch left nothing behind");
+	hasTools(name);
 }
 
 async function published() {
@@ -193,6 +213,9 @@ async function published() {
 	const container = freshContainer(name, `${IMAGE}:${version}`, 8793, "flypi-check-published-data", ["flypi", "start", "--foreground", "--port", "8793", "--host", "0.0.0.0", "--embeddings", "none", "--judge", "none"]);
 	if (!container) return;
 	await assertServing(name, 8793, version);
+	// A stale push is exactly what this stage exists to catch, and the tools come from the Dockerfile — so the
+	// image Docker Hub serves, not just the one built here, has to carry them.
+	hasTools(name);
 }
 
 // ── run ───────────────────────────────────────────────────────────────────────────────────────────────────

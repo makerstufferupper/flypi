@@ -11,6 +11,14 @@
 
 FROM node:24-slim
 
+# The agent has a bash tool, so the tools a turn reaches for are installed the way a developer's shell has
+# them: git over https, git-lfs, curl, wget. Slim ships none of them, and git-lfs is only useful with its
+# filters registered — the binary alone leaves `git clone` of an LFS repo holding pointer files.
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates curl git git-lfs wget \
+	&& git lfs install --system \
+	&& rm -rf /var/lib/apt/lists/*
+
 ARG FLYPI_TGZ
 RUN test -n "$FLYPI_TGZ" || (echo "build-arg FLYPI_TGZ=<name>.tgz is required" && exit 1)
 COPY ${FLYPI_TGZ} /tmp/flypi.tgz
