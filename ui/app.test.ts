@@ -830,9 +830,10 @@ describe("the sidebar", () => {
 		});
 		await tick();
 		expect((document.querySelector(".sessions input.name") as HTMLInputElement).value).toBe("fix the failing test in this repo");
-		// The rest of the turn, and any later message, asks for the list no further.
+		// The rest of the turn asks once more — when it settles, so the list's own `running` flag is current —
+		// and not for any message before that.
 		await frames(transport, recordedEvents, 6);
-		expect(asked()).toBe(2);
+		expect(asked()).toBe(3);
 	});
 
 	it("lists every session by itself, marks the one you are in, and opens the one you click", async () => {
@@ -867,6 +868,100 @@ describe("the sidebar", () => {
 		fireEvent.click(screen.getByRole("button", { name: "New session" }));
 		await tick();
 		expect(sent(transport, "newSession")).toHaveLength(2);
+	});
+
+	// A finished turn must stop the row blinking even when the list still says it is running: the list was
+	// fetched mid-turn, and the chat this page holds is the truth about its own session.
+	it("stops the running dot when a turn settles, and marks a background chat unread instead", async () => {
+		const transport = await mount();
+		await bind(transport);
+		const at = "2026-01-01T00:00:00.000Z";
+		const rows = (running: boolean) => [
+			{ path: "/tmp/s.jsonl", name: "s.jsonl", modified: at, messageCount: 2, firstMessage: "", running },
+			{ path: "/tmp/b.jsonl", name: "b.jsonl", modified: at, messageCount: 1, firstMessage: "", running: false },
+		];
+		const rowFor = (name: string) =>
+			[...document.querySelectorAll(".sessions li")].find(
+				(item) => (item.textContent ?? "").includes(name) || (item.querySelector("input.name") as HTMLInputElement | null)?.value === name,
+			);
+
+		await frames(transport, [{ type: "agent_start" } as AgentSessionEvent]);
+		transport.emit({ type: "result", requestId: "rows", sessions: rows(true) });
+		await tick();
+		expect(rowFor("s.jsonl")?.querySelector(".run-dot")).toBeTruthy();
+
+		// Watched from the chat on screen: finishing is not news, so it is not unread either.
+		transport.emit({ type: "event", conversationId: "c1", seq: 40, event: { type: "agent_settled" } as AgentSessionEvent });
+		await tick();
+		expect(rowFor("s.jsonl")?.querySelector(".run-dot")).toBeNull();
+		expect(rowFor("s.jsonl")?.querySelector(".unread-dot")).toBeNull();
+
+		// A second turn, and the page moves to another chat before it finishes. The list still says `running`
+		// (it was fetched during the turn) — the stale flag must not keep the dot blinking.
+		await frames(transport, [{ type: "agent_start" } as AgentSessionEvent], 40);
+		transport.emit({ type: "result", requestId: "bind-b", conversationId: "c2", sessionPath: "/tmp/b.jsonl" });
+		await tick();
+		transport.emit({ type: "event", conversationId: "c1", seq: 41, event: { type: "agent_settled" } as AgentSessionEvent });
+		await tick();
+
+		expect(rowFor("s.jsonl")?.querySelector(".run-dot")).toBeNull();
+		expect(rowFor("s.jsonl")?.querySelector(".unread-dot")).toBeTruthy();
+		expect(rowFor("s.jsonl")?.classList.contains("unread")).toBe(true);
+
+		// Opening it reads it: the still dot and the bold go away.
+		openRowByPath("/tmp/s.jsonl");
+		await tick();
+		expect(rowFor("s.jsonl")?.querySelector(".unread-dot")).toBeNull();
+		expect(rowFor("s.jsonl")?.classList.contains("unread")).toBe(false);
+	});
+
+	it("notifies the desktop when a background turn finishes, and lets the bell turn it off", async () => {
+		const shown: { title: string; body?: string }[] = [];
+		class FakeNotification {
+			static permission: NotificationPermission = "granted";
+			static requestPermission = async (): Promise<NotificationPermission> => "granted";
+			onclick: (() => void) | null = null;
+			closed = false;
+			constructor(title: string, options: NotificationOptions = {}) {
+				shown.push({ title, body: options.body });
+			}
+			close(): void {
+				this.closed = true;
+			}
+		}
+		vi.stubGlobal("Notification", FakeNotification);
+		const transport = await mount();
+		await bind(transport);
+
+		// The bell is on, because permission is granted and the page has no stored preference.
+		const bell = screen.getByRole("button", { name: /desktop notifications/i });
+		expect(bell.getAttribute("aria-pressed")).toBe("true");
+
+		// A turn that finishes in the chat on screen is not a notification: you watched it.
+		transport.emit({ type: "event", conversationId: "c1", seq: 9, event: { type: "agent_settled" } as AgentSessionEvent });
+		await tick();
+		expect(shown).toHaveLength(0);
+
+		// One that finishes in the chat you left is, and it says which session and what it said.
+		transport.emit({ type: "result", requestId: "bind-b", conversationId: "c2", sessionPath: "/tmp/b.jsonl" });
+		await tick();
+		transport.emit({
+			type: "event",
+			conversationId: "c1",
+			seq: 10,
+			event: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "the sort is fixed" }], usage: {} } } as unknown as AgentSessionEvent,
+		});
+		transport.emit({ type: "event", conversationId: "c1", seq: 11, event: { type: "agent_settled" } as AgentSessionEvent });
+		await tick();
+		expect(shown).toHaveLength(1);
+		expect(shown[0]!.title).toContain("s.jsonl");
+		expect(shown[0]!.body).toBe("the sort is fixed");
+
+		// The bell turns them off, and the preference outlives the page.
+		fireEvent.click(bell);
+		await tick();
+		expect(bell.getAttribute("aria-pressed")).toBe("false");
+		expect(localStorage.getItem("flypi.notifications")).toBe("off");
 	});
 
 	it("deletes a session row, and starts a new conversation when you delete the one you are in", async () => {

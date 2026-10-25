@@ -2,6 +2,7 @@
 	import type { FlypiAppState } from "./lib/app-state.svelte.ts";
 	import type { SessionSummary } from "../src/server/protocol.ts";
 	import { currentTheme, setTheme, type Theme } from "./lib/theme.ts";
+	import { notificationState, notificationsSupported, requestNotifications, setWantsNotifications, wantsNotifications, type NotificationState } from "./lib/notify.ts";
 
 	let { app, update }: { app: FlypiAppState; update?: { version: string; ready: boolean } | null } = $props();
 
@@ -43,6 +44,36 @@
 	 * daemon's list is only as fresh as the last fetch.
 	 */
 	const running = $derived(new Set(app.sessions.filter((session) => app.isRunning(session.path)).map((session) => session.path)));
+	/** Sessions that finished a turn after you last looked at them: the row is bold until opened again. */
+	const unread = $derived(new Set(app.sessions.filter((session) => app.isUnread(session.path)).map((session) => session.path)));
+
+	// Desktop notifications (ui/lib/notify.ts). The browser's permission can only be asked for from a
+	// gesture, so this button is the one place that asks; the preference is the page's own, like the theme.
+	let permission = $state<NotificationState>(notificationState());
+	let wanted = $state(wantsNotifications());
+	const notificationsLabel = $derived(
+		permission === "unsupported"
+			? "This browser has no desktop notifications"
+			: permission === "denied"
+				? "Desktop notifications are blocked in the browser"
+				: permission !== "granted"
+					? "Enable desktop notifications for finished sessions"
+					: wanted
+						? "Desktop notifications on — click to turn off"
+						: "Desktop notifications off — click to turn on",
+	);
+
+	async function toggleNotifications() {
+		if (permission === "unsupported" || permission === "denied") return;
+		if (permission === "default") {
+			permission = await requestNotifications();
+			if (permission !== "granted") return;
+			wanted = true;
+		} else {
+			wanted = !wanted;
+		}
+		setWantsNotifications(wanted);
+	}
 </script>
 
 <aside class="sidebar">
@@ -73,6 +104,22 @@
 				<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4m0-14.2-1.4 1.4M6.3 17.7l-1.4 1.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
 			{:else}
 				<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 13.1A8.5 8.5 0 1 1 10.9 3a7.5 7.5 0 0 0 10.1 10.1Z" fill="currentColor" /></svg>
+			{/if}
+		</button>
+		<button
+			type="button"
+			class="icon notify"
+			data-role="notifications"
+			aria-pressed={permission === "granted" && wanted}
+			aria-label={notificationsLabel}
+			title={notificationsLabel}
+			disabled={!notificationsSupported() || permission === "denied"}
+			onclick={() => void toggleNotifications()}
+		>
+			{#if permission === "granted" && wanted}
+				<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 4 1.2 5.2 1.7 5.8.3.4 0 1-.4 1H4.7c-.5 0-.7-.6-.4-1C4.8 14.2 6 13 6 9Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" /><path d="M9.5 19a2.5 2.5 0 0 0 5 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+			{:else}
+				<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 4 1.2 5.2 1.7 5.8.3.4 0 1-.4 1H4.7c-.5 0-.7-.6-.4-1C4.8 14.2 6 13 6 9Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" /><path d="M9.5 19a2.5 2.5 0 0 0 5 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /><path d="M4 4l16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
 			{/if}
 		</button>
 		<!-- Model endpoints and MCP servers are the agent dir's config files, not this session's state, and
@@ -156,9 +203,12 @@
 		{#each app.sessions as session (session.path)}
 			<!-- A session with a turn still running gets its dot: leaving a chat does not stop it, and this is
 				 where you can see that without opening it. -->
-			<li class:running={running.has(session.path)}>
+			<li class:running={running.has(session.path)} class:unread={unread.has(session.path)}>
 				{#if running.has(session.path)}
 					<span class="run-dot" role="img" aria-label="Running" title="A turn is running in this session"></span>
+				{:else if unread.has(session.path)}
+					<!-- Finished, and not read yet: a still dot rather than a blink, and the row is bold. -->
+					<span class="unread-dot" role="img" aria-label="Finished, unread" title="Finished — you have not read it"></span>
 				{/if}
 				{#if session.path === app.sessionPath}
 					<!-- Only the name and the first-message hint, never the path: a new session reads as

@@ -50,6 +50,23 @@ interface Chat {
 	rebinding: boolean;
 	/** The last thing the server said went wrong *about this chat*, so a background failure is not the active chat's. */
 	error?: string;
+	/**
+	 * A turn finished in this chat while it was not the one on screen. Cleared when it is opened; shown as
+	 * the row's unread marker. A turn in the chat you are looking at is not unread — you watched it happen.
+	 */
+	unread?: boolean;
+}
+
+/** What a finished turn looks like to the page's notifications (ui/lib/notify.ts). */
+export interface SettledTurn {
+	chatId: string;
+	sessionPath?: string;
+	/** Was this the chat on screen when it finished? */
+	active: boolean;
+	/** The session's own name or first message, else its file name. */
+	title: string;
+	/** The last thing it said, shortened for a notification body. */
+	preview: string;
 }
 
 /** What a binding request is for. `replace` rebinds a chat that has no session file to reopen. */
@@ -170,7 +187,10 @@ export class FlypiAppState {
 	#pendingRequest = new Map<string, (result: { conversationId?: string; sessionPath?: string; sessions?: SessionSummary[]; debug?: DebugInfo; config?: ConfigSnapshot; scheduler?: SchedulerSnapshot }) => void>();
 	#updateRequests = new Set<string>();
 
-	constructor(transport: Transport) {
+	constructor(
+		transport: Transport,
+		private readonly options: { onTurnSettled?: (turn: SettledTurn) => void } = {},
+	) {
 		this.#transport = transport;
 	}
 
@@ -239,11 +259,22 @@ export class FlypiAppState {
 		if (chat) chat.attachments = value;
 	}
 
-	/** Is a turn running in the session at `path` — the sidebar's own question, answered per session. */
+	/**
+	 * Is a turn running in the session at `path` — the sidebar's own question, answered per session.
+	 *
+	 * For a session this page holds, its own transcript is the truth: the list's `running` flag is only as
+	 * fresh as the last fetch, and a turn that settled since then otherwise kept the row blinking forever.
+	 * The flag is still what answers for a session there is no chat for.
+	 */
 	isRunning(path: string): boolean {
 		const chat = this.chats.find((candidate) => candidate.sessionPath === path);
-		if (chat?.transcript.running) return true;
+		if (chat) return chat.transcript.running;
 		return this.sessions.find((session) => session.path === path)?.running === true;
+	}
+
+	/** A finished turn in this session that has not been looked at yet. */
+	isUnread(path: string): boolean {
+		return this.chats.find((candidate) => candidate.sessionPath === path)?.unread === true;
 	}
 
 	// ---- Transport ---------------------------------------------------------------------------------------
@@ -333,6 +364,7 @@ export class FlypiAppState {
 
 	#setActive(chat: Chat): void {
 		this.activeChatId = chat.id;
+		chat.unread = false;
 		this.#syncSubscriptions();
 	}
 
@@ -353,6 +385,7 @@ export class FlypiAppState {
 			else if (sessionPath) existing.sessionPath = sessionPath;
 			existing.rebinding = false;
 			this.activeChatId = existing.id;
+			existing.unread = false;
 			this.#syncSubscriptions();
 			return existing;
 		}
@@ -361,6 +394,28 @@ export class FlypiAppState {
 		this.activeChatId = chat.id;
 		this.#syncSubscriptions();
 		return chat;
+	}
+
+	/** Tell the page a turn finished, for a desktop notification. Silent when nothing is listening. */
+	#announceSettled(chat: Chat): void {
+		if (!this.options.onTurnSettled) return;
+		try {
+			this.options.onTurnSettled({
+				chatId: chat.id,
+				...(chat.sessionPath ? { sessionPath: chat.sessionPath } : {}),
+				active: chat.id === this.activeChatId,
+				title: this.#titleOf(chat),
+				preview: lastSpoken(chat.transcript),
+			});
+		} catch {
+			// A notification is the least important thing here; it must not break the turn that produced it.
+		}
+	}
+
+	/** The name the sidebar gives this session, so a notification says the same thing the row does. */
+	#titleOf(chat: Chat): string {
+		const row = chat.sessionPath ? this.sessions.find((session) => session.path === chat.sessionPath) : undefined;
+		return row?.name || row?.firstMessage || chat.sessionPath?.split("/").pop() || "flypi";
 	}
 
 	/**
@@ -774,7 +829,16 @@ export class FlypiAppState {
 				}
 				// Context usage is a server-side estimate (pi's `getContextUsage`), and it only becomes
 				// trustworthy when the turn's answer lands — so the gauge is refreshed with the turn.
-				if (event.type === "agent_settled") this.showDebug(chat);
+				if (event.type === "agent_settled") {
+					// A turn that finished somewhere you were not looking is unread; the one you watched is not.
+					chat.unread = chat.id !== this.activeChatId;
+					this.showDebug(chat);
+					// The list's own `running` flag has to catch up too: a row the page holds reads its chat, but a
+					// session it does not hold is only answered by this.
+					this.listSessions();
+					this.#announceSettled(chat);
+				}
+				if (event.type === "agent_start") chat.unread = false;
 				// A chat earns its row with its first message: pi writes the session file on its first entry,
 				// so before that there is nothing to list. Once, and only once, per conversation.
 				if (!chat.rowRequested && chat.transcript.messages.some((message) => message.role === "user")) {
@@ -945,6 +1009,22 @@ export class FlypiAppState {
 			}
 		}
 	}
+}
+
+/** The last thing the assistant said, for a notification body. Empty turns fall back to a plain sentence. */
+function lastSpoken(transcript: Transcript): string {
+	for (let index = transcript.messages.length - 1; index >= 0; index -= 1) {
+		const message = transcript.messages[index];
+		if (!message || message.role !== "assistant") continue;
+		const text = message.blocks
+			.filter((block) => block.kind === "text")
+			.map((block) => (block.kind === "text" ? block.text : ""))
+			.join(" ")
+			.replace(/\s+/g, " ")
+			.trim();
+		if (text) return text.length > 160 ? `${text.slice(0, 157)}…` : text;
+	}
+	return "Finished its turn.";
 }
 
 let chatCounter = 0;

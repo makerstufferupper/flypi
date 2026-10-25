@@ -38,12 +38,6 @@ export class EventLog<T> {
 		return this.nextSeq - 1;
 	}
 
-	/** Start over. Opening another session replaces the transcript a client is looking at. */
-	reset(): void {
-		this.events.length = 0;
-		this.nextSeq = 1;
-	}
-
 	/** Highest seq already dropped from the ring (0 when nothing has been dropped). */
 	get evictedThroughSeq(): number {
 		return this.events[0] ? this.events[0].seq - 1 : this.lastSeq;

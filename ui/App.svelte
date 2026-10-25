@@ -9,10 +9,28 @@
 	import MemoryPanel from "./MemoryPanel.svelte";
 	import { clampWidth, limits, loadWidth, saveWidth, type Panel } from "./lib/panels.ts";
 	import { readRoute, sessionId, writeRoute } from "./lib/route.ts";
+	import { notifyTurnDone } from "./lib/notify.ts";
 
 	let { transport }: { transport: Transport } = $props();
 	// svelte-ignore state_referenced_locally — the transport is fixed for the life of the page.
-	const app = new FlypiAppState(transport);
+	const app = new FlypiAppState(transport, {
+		/**
+		 * A turn finished. Say so in a desktop notification only when it is news: a chat on screen with the
+		 * window in front is its own notification, and the row's unread marker covers the rest.
+		 */
+		onTurnSettled: (turn) => {
+			if (turn.active && !document.hidden && document.hasFocus()) return;
+			notifyTurnDone({
+				title: `flypi — ${turn.title}`,
+				body: turn.preview,
+				tag: turn.sessionPath ?? turn.chatId,
+				onClick: () => {
+					app.openChat();
+					if (turn.sessionPath) app.openSession(turn.sessionPath);
+				},
+			});
+		},
+	});
 	app.watch();
 
 	// Column widths are the page's own setting, like the theme (ui/lib/theme.ts).

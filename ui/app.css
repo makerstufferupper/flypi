@@ -77,6 +77,10 @@ body { margin: 0; background: var(--bg); color: var(--ink); }
 .sessions .run-dot { flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--accent, #3b82f6); animation: run-pulse 1.4s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .sessions .run-dot { animation: none; } }
 @keyframes run-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+/* A turn that finished while you were elsewhere. Still, not blinking — it is news, not work in progress —
+   and the row reads bold until it is opened. */
+.sessions .unread-dot { flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--accent, #3b82f6); }
+.sessions li.unread .session { font-weight: 700; }
 .sessions .remove { opacity: 0.6; }
 .sessions .remove:hover { opacity: 1; }
 /* Rows are plain text: no chrome around each item, and a row lights up when you point at it. The row
