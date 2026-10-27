@@ -251,6 +251,25 @@ describe("applyEvent()", () => {
 		expect(applyEvent(state, { type: "agent_settled" } as AgentSessionEvent).queue).toEqual({ steering: [], followUp: [] });
 	});
 
+	// The goal round (docs/goals.md 9.4). The round prompt is `display: false`, so its entry is the only place
+	// the round number reaches the page; the goal entry is the durable record, and the view takes the goal from
+	// the tool cards instead, which is what lets a reopened conversation show it at all.
+	it("takes the goal round from the round entry, and nothing from any other entry", () => {
+		const appended = (entry: unknown) => applyEvent(emptyTranscript(), { type: "entry_appended", entry } as unknown as AgentSessionEvent);
+		const round = { type: "custom_message", customType: "flypi-goal-round", content: "round 3 of 16", display: false, details: { goalId: "g1", round: 3 } };
+		expect(appended(round).goalRound).toBe(3);
+		// Every other entry leaves the transcript exactly as it was — including flypi's own `flypi-goal` record.
+		const goal = { type: "custom", customType: "flypi-goal", data: { id: "g1", phase: "active" } };
+		expect(appended(goal)).toEqual(emptyTranscript());
+		// A round entry with no number to carry is not a round the view can name, and neither is one that
+		// carries something that is not a number.
+		expect(appended({ type: "custom_message", customType: "flypi-goal-round", content: "x", display: false }).goalRound).toBeUndefined();
+		expect(appended({ type: "custom_message", customType: "flypi-goal-round", details: { round: "3" } }).goalRound).toBeUndefined();
+		// The newest round wins: the driver starts one per settle, and the view shows where the run got to.
+		const state = applyEvent(appended(round), { type: "entry_appended", entry: { ...round, details: { goalId: "g1", round: 4 } } } as unknown as AgentSessionEvent);
+		expect(state.goalRound).toBe(4);
+	});
+
 	it("reads tool output from a string, a content array, a result object, or nothing at all", () => {
 		const outputOf = (result: unknown) =>
 			applyEvent(emptyTranscript(), { type: "tool_execution_end", toolCallId: "c1", toolName: "bash", result } as AgentSessionEvent).tools["c1"]!.output;

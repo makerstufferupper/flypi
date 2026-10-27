@@ -1,7 +1,13 @@
 <script lang="ts">
 	import type { FlypiAppState } from "./lib/app-state.svelte.ts";
 	import { FollowNewest } from "./lib/follow.ts";
-	import { formatCache, type RenderedMessage, type ToolCard } from "../src/shared/transcript.ts";
+	import { formatCache, type RenderedMessage, type Transcript, type ToolCard } from "../src/shared/transcript.ts";
+	import type { TaskItem, TaskStatus } from "../src/agent/goals.ts";
+
+	// `GOAL_TOOL`/`TASK_TOOL` in `src/agent/goals.ts`, spelled out rather than imported: that module reads
+	// `node:crypto` and `node:fs`, and this component is in the browser bundle. Only its types come over.
+	const GOAL_TOOL = "goal";
+	const TASK_TOOL = "task_write";
 
 	let { app }: { app: FlypiAppState } = $props();
 
@@ -73,9 +79,93 @@
 		if (card.startedAt === undefined || card.endedAt === undefined) return "";
 		return ` · ${((card.endedAt - card.startedAt) / 1000).toFixed(1)}s`;
 	}
+
+	/**
+	 * The goal and its checklist, read off the tool cards alone (docs/goals.md 9.4): a session reopened from its
+	 * file replays messages and nothing else, so the cards are the only goal view that survives it. Only a `done`
+	 * card counts — the tool refuses a bad write with no list in the result, and a refusal must not repaint one.
+	 *
+	 * The strings are composed here rather than in the template: Svelte compiles every interpolated expression in
+	 * text position into a nullish branch, and those are what has been eating the `ui/**` branch floor
+	 * (docs/testing.md).
+	 */
+	const goal = $derived(goalOf(app.transcript));
+	const tasks = $derived(tasksOf(app.transcript));
+
+	/** The phase each action leaves the goal in. `edit` is absent — it rewords without moving — and `clear`
+	 *  drops the goal before the lookup. The driver's cap-block is an entry rather than a card, so a goal the
+	 *  round limit stopped still reads `active` here (docs/goals.md risk 10). */
+	const PHASE: Record<string, string> = { create: "active", pause: "paused", resume: "active", complete: "complete", blocked: "blocked" };
+	const GLYPH: Record<TaskStatus, string> = { completed: "✓", in_progress: "◐", pending: "○" };
+
+	/** Where the conversation's own `goal` calls left it: the last objective, and the last phase it moved to. */
+	function goalOf(transcript: Transcript): { objective: string; phase: string; round: string } | undefined {
+		let objective = "";
+		let phase = "";
+		let maxRounds: number | undefined;
+		for (const card of Object.values(transcript.tools)) {
+			if (card.name !== GOAL_TOOL || card.state !== "done") continue;
+			const args = card.args as { action?: string; objective?: string; max_rounds?: number } | undefined;
+			if (!args?.action) continue;
+			if (args.action === "clear") {
+				objective = "";
+				phase = "";
+				maxRounds = undefined;
+				continue;
+			}
+			if (args.objective) objective = args.objective;
+			if (args.max_rounds !== undefined) maxRounds = args.max_rounds;
+			phase = PHASE[args.action] ?? phase;
+		}
+		if (!objective) return undefined;
+		return { objective, phase, round: roundLine(transcript.goalRound, maxRounds) };
+	}
+
+	/** `Round 3/16`. The cap is only in the cards when `create` was given `max_rounds`, and the round only
+	 *  arrives with the live entries, so a reopened conversation shows neither and says nothing instead. */
+	function roundLine(round: number | undefined, maxRounds: number | undefined): string {
+		if (round === undefined) return "";
+		return maxRounds === undefined ? `Round ${round}` : `Round ${round}/${maxRounds}`;
+	}
+
+	/** The last list the tool accepted. Every call replaces the whole list, so that write is the whole truth. */
+	function tasksOf(transcript: Transcript): TaskItem[] {
+		let list: TaskItem[] = [];
+		for (const card of Object.values(transcript.tools)) {
+			if (card.name !== TASK_TOOL || card.state !== "done") continue;
+			const written = (card.args as { tasks?: TaskItem[] } | undefined)?.tasks;
+			if (written) list = written;
+		}
+		return list;
+	}
+
+	function taskLine(task: TaskItem): string {
+		return `${GLYPH[task.status] ?? "○"} ${task.content}`;
+	}
 </script>
 
 <aside class="activity-panel" aria-label="Thinking and tool activity">
+	{#if goal}
+		<section class="goal-block" data-role="goal">
+			<h2>Goal <span class="goal-phase" data-role="goal-phase">{goal.phase}</span></h2>
+			<p class="goal-objective">{goal.objective}</p>
+			{#if goal.round}
+				<p class="goal-round" data-role="goal-round">{goal.round}</p>
+			{/if}
+		</section>
+	{/if}
+
+	{#if tasks.length}
+		<section class="task-block">
+			<h2>Tasks <span class="count">{tasks.length}</span></h2>
+			<ul class="tasks" data-role="tasks">
+				{#each tasks as task}
+					<li data-status={task.status}>{taskLine(task)}</li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
+
 	<h2>Activity <span class="count" data-role="count">{entries.length}</span></h2>
 
 	{#if !entries.length}

@@ -179,6 +179,16 @@ details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px
 .activity li { border-bottom: 1px solid var(--line); padding: 0.3rem 0; }
 .activity li .tool-card { margin: 0; }
 .activity-empty { color: var(--muted); font-size: 12px; }
+/* The goal and its checklist (docs/goals.md 9.4): the heading style the panel already uses, no box and no
+   separators — the state is the whole content, and the panel already scrolls. */
+.goal-block, .task-block { margin: 0 0 0.75rem; }
+.goal-phase { font-weight: 400; }
+.goal-objective { margin: 0; font-size: 13px; }
+.goal-round { margin: 0.25rem 0 0; color: var(--muted); font-size: 12px; }
+.tasks { list-style: none; margin: 0; padding: 0; }
+.tasks li { font-size: 13px; padding: 0.1rem 0; }
+.tasks li[data-status="completed"] { color: var(--muted); }
+.tasks li[data-status="in_progress"] { color: var(--accent); }
 /* A config view — the settings files (ui/SettingsPanel.svelte) or the vault (ui/SecretsPanel.svelte). It
    replaces the chat and the activity column, so it takes both of their tracks (`grid-column: 3 / -1`) — the
    sidebar's gutter still resizes it. What is on screen is a list; a row's name opens the one modal. */

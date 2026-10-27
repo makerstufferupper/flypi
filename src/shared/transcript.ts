@@ -25,6 +25,13 @@ type ToolStartEvent = Extract<AgentSessionEvent, { type: "tool_execution_start" 
 type ToolUpdateEvent = Extract<AgentSessionEvent, { type: "tool_execution_update" }>;
 type ToolEndEvent = Extract<AgentSessionEvent, { type: "tool_execution_end" }>;
 type QueueUpdateEvent = Extract<AgentSessionEvent, { type: "queue_update" }>;
+type EntryAppendedEvent = Extract<AgentSessionEvent, { type: "entry_appended" }>;
+
+/**
+ * `GOAL_ROUND_ENTRY` in `src/agent/goals.ts`, spelled out rather than imported: that module reads
+ * `node:crypto` and `node:fs`, and this file is in the browser bundle.
+ */
+const GOAL_ROUND_ENTRY = "flypi-goal-round";
 
 export type FlypiMessage = MessageEndEvent["message"];
 
@@ -76,6 +83,13 @@ export interface Transcript {
 	tools: Record<string, ToolCard>;
 	/** pi's `queue_update`: what the user steered in, and what is waiting for the turn. */
 	queue: { steering: string[]; followUp: string[] };
+	/**
+	 * The round the goal driver last started (docs/goals.md 9.4): the `round` of the newest `flypi-goal-round`
+	 * entry. Nothing else carries it — the round prompt is `display: false`, and a session reopened from its
+	 * file replays messages and not entries, so a reopened conversation has no round number and the view says
+	 * so rather than showing a stale one. The goal itself lives in the tool cards for that reason.
+	 */
+	goalRound?: number;
 	running: boolean;
 	/** Usage/cost for the current turn, and for the whole conversation. */
 	turn: RenderedUsage;
@@ -311,6 +325,14 @@ export function applyEvent(state: Transcript, event: AgentSessionEvent, now: () 
 				endedAt: now(),
 			};
 			return { ...state, tools: { ...state.tools, [end.toolCallId]: finished } };
+		}
+		case "entry_appended": {
+			// Of flypi's two entries only the round prompt has a view here. A `flypi-goal` entry is the goal's
+			// durable record, and the page reads the goal from the tool cards instead — the one goal source a
+			// reopened conversation has.
+			const entry = (event as EntryAppendedEvent).entry as { customType?: string; details?: { round?: unknown } };
+			if (entry.customType !== GOAL_ROUND_ENTRY) return state;
+			return typeof entry.details?.round === "number" ? { ...state, goalRound: entry.details.round } : state;
 		}
 		case "queue_update": {
 			const queue = event as QueueUpdateEvent;
