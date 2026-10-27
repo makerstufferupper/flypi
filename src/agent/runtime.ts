@@ -21,7 +21,7 @@ import { memoryConfig } from "../memory/config.ts";
 import { createMemoryRecallExtension, memoryInstruction, memoryTool, recallServer } from "../memory/recall.ts";
 import { backgroundMount, reviewPrompt, type ReviewParent } from "../memory/review.ts";
 import { createPermissionGateExtension } from "./permission-gate.ts";
-import { createTaskExtension } from "./goals.ts";
+import { createGoalExtension, createTaskExtension } from "./goals.ts";
 import { createSecretsExtension } from "../secrets/extension.ts";
 import type { SecretStore } from "../secrets/vault.ts";
 
@@ -176,6 +176,9 @@ export async function createFlypiSession(options: {
 			// a list existed, or whose description moved with the phase, would re-pay the whole conversation
 			// (risk 2). Same rule for the fork below — it has to be advertised the parent's tool set.
 			createTaskExtension(),
+			// The `goal` tool (docs/goals.md 9.2), registered by the same rule: the tool set stays constant, and
+			// what 9.3 makes opt-in per process is the driver that continues a goal, not the tool that records one.
+			createGoalExtension(),
 			...(options.memoryRecall === false
 				? []
 				: [createMemoryRecallExtension(memoryServer, options.onMemoryBlock, { conversationId: options.conversationId, ...(review ? { review } : {}) })]),

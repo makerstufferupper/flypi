@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { SessionManager, type AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { createTaskExtension, TASK_TOOL, type TaskDetails, type TaskItem } from "../../src/agent/goals.ts";
+import { createTaskExtension, GOAL_ROUND_ENTRY, GOAL_TOOL, readGoal, TASK_TOOL, type GoalState, type TaskDetails, type TaskItem } from "../../src/agent/goals.ts";
 import { createFlypiSession, type FlypiSession } from "../../src/agent/runtime.ts";
 import { flypiPaths } from "../../src/agent/paths.ts";
 import { reduceEvents } from "../../src/shared/transcript.ts";
@@ -143,5 +143,187 @@ describe("task_write", () => {
 		const names: string[] = [];
 		createTaskExtension()({ registerTool: (tool: { name: string }) => names.push(tool.name) } as never);
 		expect(names).toEqual([TASK_TOOL]);
+	});
+});
+
+/**
+ * Phase 9.2 — the `goal` tool (docs/goals.md). Asserted through a session rather than against `decide`,
+ * because the claim is that the session branch is the whole state: what a write appends, what a refusal
+ * leaves out, and what a conversation reopened from its file reports.
+ */
+describe("goal", () => {
+	type GoalCall = { action: string; objective?: string; max_rounds?: number; blocked_reason?: string };
+
+	function goalScript(calls: GoalCall[]) {
+		return [
+			...calls.map((call, i) =>
+				fauxAssistantMessage([fauxToolCall(GOAL_TOOL, call, { id: `goal-${i + 1}` })], { stopReason: "toolUse", timestamp: 0 }),
+			),
+			fauxAssistantMessage([fauxText("noted")], { timestamp: 0 }),
+		];
+	}
+
+	async function runGoal(root: string, calls: GoalCall[]) {
+		const stub = await createStubModel({ responses: goalScript(calls) });
+		const { session } = await createFlypiSession({ root, modelRuntime: stub.modelRuntime, model: stub.model });
+		const events: AgentSessionEvent[] = [];
+		const detach = session.subscribe((event) => events.push(event));
+		await session.prompt("carry this on");
+		detach();
+		return { session, stub, transcript: reduceEvents(events) };
+	}
+
+	/**
+	 * The round prompts 9.3 will append at the settle boundary, put on the branch by hand. The round count is
+	 * derived from them rather than stored, so this is how a test reaches round 3 before the loop exists.
+	 */
+	function advanceRounds(session: FlypiSession, rounds: number): void {
+		const goal = readGoal(session.sessionManager);
+		expect(goal).toBeDefined();
+		for (let round = 1; round <= rounds; round += 1) {
+			session.sessionManager.appendCustomMessageEntry(GOAL_ROUND_ENTRY, `round ${round}`, false, { goalId: goal!.id, round });
+		}
+	}
+
+	it("is registered, and its guidance reaches the model in the tool description", async () => {
+		const root = createTempFlypiRoot();
+		const { session, stub } = await runGoal(root, [{ action: "create", objective: "ship T17" }]);
+		try {
+			expect(session.getActiveToolNames()).toContain(GOAL_TOOL);
+			expect(JSON.stringify(stub.requests[0])).toContain("difficulty is not a blocker");
+			expect(readGoal(session.sessionManager)).toMatchObject({
+				objective: "ship T17",
+				phase: "active",
+				maxRounds: 16,
+				revision: 1,
+				rounds: 0,
+			});
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("refuses a create with no objective, and writes no goal", async () => {
+		const root = createTempFlypiRoot();
+		const { session, transcript } = await runGoal(root, [{ action: "create" }]);
+		try {
+			expect(transcript.tools["goal-1"]).toMatchObject({ name: GOAL_TOOL, state: "error" });
+			expect(transcript.tools["goal-1"]?.output).toContain("needs an `objective`");
+			expect(readGoal(session.sessionManager)).toBeUndefined();
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("keeps one goal per conversation: a second create is refused until the first is complete", async () => {
+		const root = createTempFlypiRoot();
+		const { session, transcript } = await runGoal(root, [
+			{ action: "create", objective: "first" },
+			{ action: "create", objective: "second" },
+			{ action: "complete" },
+			{ action: "create", objective: "second" },
+		]);
+		try {
+			expect(transcript.tools["goal-2"]?.state).toBe("error");
+			expect(transcript.tools["goal-2"]?.output).toContain("already has a goal that is active");
+			expect(readGoal(session.sessionManager)).toMatchObject({ objective: "second", phase: "active", revision: 1 });
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("edits, pauses and resumes the same goal, and refuses an action that has no goal to act on", async () => {
+		const root = createTempFlypiRoot();
+		const { session, transcript } = await runGoal(root, [
+			{ action: "resume" },
+			{ action: "create", objective: "first" },
+			{ action: "edit", objective: "reworded" },
+			{ action: "pause" },
+			{ action: "resume" },
+		]);
+		try {
+			expect(transcript.tools["goal-1"]?.output).toContain("there is no goal to resume");
+			const goal = readGoal(session.sessionManager);
+			expect(goal).toMatchObject({ objective: "reworded", phase: "active", revision: 4 });
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("will not resume a goal that is complete", async () => {
+		const root = createTempFlypiRoot();
+		const { session, transcript } = await runGoal(root, [
+			{ action: "create", objective: "done work" },
+			{ action: "complete" },
+			{ action: "resume" },
+		]);
+		try {
+			expect(transcript.tools["goal-3"]?.state).toBe("error");
+			expect(transcript.tools["goal-3"]?.output).toContain("the goal is complete, so resume does not apply");
+			expect(readGoal(session.sessionManager)).toMatchObject({ phase: "complete" });
+		} finally {
+			session.dispose();
+		}
+	});
+
+	// The guard against giving up on round one: difficulty is not a blocker (docs/goals.md 9.2).
+	it("refuses `blocked` at round 1 and accepts it at round 3, with its reason", async () => {
+		const early = await runGoal(createTempFlypiRoot(), [{ action: "create", objective: "hard thing" }]);
+		try {
+			advanceRounds(early.session, 1);
+			early.stub.append([...goalScript([{ action: "blocked", blocked_reason: "the API is down" }])]);
+			await early.session.prompt("how is it going");
+			expect(readGoal(early.session.sessionManager)).toMatchObject({ phase: "active", rounds: 1 });
+		} finally {
+			early.session.dispose();
+		}
+
+		const late = await runGoal(createTempFlypiRoot(), [{ action: "create", objective: "hard thing" }]);
+		try {
+			advanceRounds(late.session, 3);
+			late.stub.append([...goalScript([{ action: "blocked", blocked_reason: "the API is down" }])]);
+			await late.session.prompt("how is it going");
+			expect(readGoal(late.session.sessionManager)).toMatchObject({ phase: "blocked", blockedReason: "the API is down", rounds: 3 });
+		} finally {
+			late.session.dispose();
+		}
+	});
+
+	it("clear leaves the conversation with no goal", async () => {
+		const root = createTempFlypiRoot();
+		const { session } = await runGoal(root, [
+			{ action: "create", objective: "drop me" },
+			{ action: "clear" },
+		]);
+		try {
+			expect(readGoal(session.sessionManager)).toBeUndefined();
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("reports the same goal, phase and round count in a session reopened from its file", async () => {
+		const root = createTempFlypiRoot();
+		const first = await runGoal(root, [{ action: "create", objective: "outlive the process", max_rounds: 4 }]);
+		advanceRounds(first.session, 2);
+		first.stub.append([...goalScript([{ action: "pause" }])]);
+		await first.session.prompt("hold on");
+		const before: GoalState | undefined = readGoal(first.session.sessionManager);
+		const file = first.session.sessionFile!;
+		first.session.dispose();
+		expect(before).toMatchObject({ objective: "outlive the process", phase: "paused", maxRounds: 4, rounds: 2 });
+
+		const stub = await createStubModel({ responses: [] });
+		const reopened = await createFlypiSession({
+			root,
+			sessionManager: SessionManager.open(file, flypiPaths(root).sessionsDir),
+			modelRuntime: stub.modelRuntime,
+			model: stub.model,
+		});
+		try {
+			expect(readGoal(reopened.session.sessionManager)).toEqual(before);
+		} finally {
+			reopened.session.dispose();
+		}
 	});
 });
