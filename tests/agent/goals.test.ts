@@ -1,16 +1,31 @@
 /**
- * Phase 9.1 — `task_write` (docs/goals.md). Driven through a real session with the stub model rather than by
- * calling the tool, because the claims are about what reaches the session file and what a card rebuilt from
- * that file shows: a tool that returns the right object and lands nothing durable would pass the cheaper test.
+ * Phase 9 — goals and tasks (docs/goals.md). Driven through a real session with the stub model rather than by
+ * calling the tools, because the claims are about what reaches the session file, what a card rebuilt from that
+ * file shows, and — for 9.3 — whether pi starts the next run. A tool that returns the right object and lands
+ * nothing durable, or a settle handler that asks for a round pi never runs, would pass the cheaper test.
  */
 import { describe, expect, it } from "vitest";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { SessionManager, type AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { createTaskExtension, GOAL_ROUND_ENTRY, GOAL_TOOL, readGoal, TASK_TOOL, type GoalState, type TaskDetails, type TaskItem } from "../../src/agent/goals.ts";
+import {
+	createTaskExtension,
+	GOAL_ROUND_ENTRY,
+	GOAL_TOOL,
+	goalsConfig,
+	MAX_ROUNDS_CAP,
+	parseGoalsConfig,
+	readGoal,
+	TASK_TOOL,
+	type GoalState,
+	type TaskDetails,
+	type TaskItem,
+} from "../../src/agent/goals.ts";
 import { createFlypiSession, type FlypiSession } from "../../src/agent/runtime.ts";
 import { flypiPaths } from "../../src/agent/paths.ts";
 import { reduceEvents } from "../../src/shared/transcript.ts";
 import { createTempFlypiRoot } from "../helpers/flypi-root.ts";
-import { createStubModel, fauxAssistantMessage, fauxText, fauxToolCall } from "../helpers/stub-model.ts";
+import { createStubModel, fauxAssistantMessage, fauxText, fauxToolCall, type FauxResponseStep } from "../helpers/stub-model.ts";
 
 const LIST: TaskItem[] = [
 	{ content: "read the failing test", status: "completed" },
@@ -20,6 +35,9 @@ const LIST: TaskItem[] = [
 
 /** One scripted turn per payload: the model calls `task_write` with each list in turn, then answers. */
 type Write = { tasks: { content: string; status: string }[] };
+
+/** One scripted `goal` call. */
+type GoalCall = { action: string; objective?: string; max_rounds?: number; blocked_reason?: string };
 
 function scripted(payloads: Write[]) {
 	return [
@@ -152,10 +170,7 @@ describe("task_write", () => {
  * leaves out, and what a conversation reopened from its file reports.
  */
 describe("goal", () => {
-	type GoalCall = { action: string; objective?: string; max_rounds?: number; blocked_reason?: string };
-
-	function goalScript(calls: GoalCall[]) {
-		return [
+	function goalScript(calls: GoalCall[]) {		return [
 			...calls.map((call, i) =>
 				fauxAssistantMessage([fauxToolCall(GOAL_TOOL, call, { id: `goal-${i + 1}` })], { stopReason: "toolUse", timestamp: 0 }),
 			),
@@ -325,5 +340,184 @@ describe("goal", () => {
 		} finally {
 			reopened.session.dispose();
 		}
+	});
+});
+
+/**
+ * Phase 9.3 — the round driver (docs/goals.md). Asserted on the run loop: which requests the stub was asked to
+ * answer, what the branch holds when the run settles, and how many times `agent_settled` fires. Calling the
+ * handler and checking its return value would prove nothing about whether pi starts the next run, which is the
+ * whole feature.
+ */
+describe("the goal round driver", () => {
+	/** `goal create`, then one plain-text answer per response. */
+	function roundScript(calls: GoalCall[], answers: number) {
+		return [
+			...calls.map((call, i) =>
+				fauxAssistantMessage([fauxToolCall(GOAL_TOOL, call, { id: `goal-${i + 1}` })], { stopReason: "toolUse", timestamp: 0 }),
+			),
+			...Array.from({ length: answers }, (_unused, i) => fauxAssistantMessage([fauxText(`step ${i + 1}`)], { timestamp: 0 })),
+		];
+	}
+
+	async function runDriver(responses: FauxResponseStep[], options: { goalDriver?: boolean; goals?: unknown } = {}) {
+		const root = createTempFlypiRoot();
+		if (options.goals !== undefined) {
+			writeFileSync(join(root, ".flypi", "agent", "settings.json"), JSON.stringify({ goals: options.goals }));
+		}
+		const stub = await createStubModel({ responses });
+		const { session } = await createFlypiSession({
+			root,
+			modelRuntime: stub.modelRuntime,
+			model: stub.model,
+			...(options.goalDriver ? { goalDriver: true } : {}),
+		});
+		const events: AgentSessionEvent[] = [];
+		const detach = session.subscribe((event) => events.push(event));
+		await session.prompt("carry this on");
+		detach();
+		return { session, stub, events };
+	}
+
+	/** The round prompts on the branch, as the model saw them: what 9.4's round counter reads. */
+	function roundsOnBranch(session: FlypiSession) {
+		return session.sessionManager
+			.getBranch()
+			.filter((entry) => entry.type === "custom_message" && entry.customType === GOAL_ROUND_ENTRY)
+			.map((entry) => {
+				const round = entry as { display: boolean; details?: { goalId: string; round: number } };
+				return { display: round.display, ...round.details };
+			});
+	}
+
+	it("keeps the run going: every answer is followed by a round prompt that reaches the model", async () => {
+		const { session, stub, events } = await runDriver(
+			[
+				...roundScript([{ action: "create", objective: "ship T18" }], 2),
+				fauxAssistantMessage([fauxToolCall(GOAL_TOOL, { action: "complete" }, { id: "goal-close" })], { stopReason: "toolUse", timestamp: 0 }),
+				fauxAssistantMessage([fauxText("done")], { timestamp: 0 }),
+			],
+			{ goalDriver: true },
+		);
+		try {
+			// One human prompt, three runs: the answer, round 1, round 2 — and `complete` ends it.
+			expect(stub.requests.length).toBe(5);
+			// The objective rides the round message rather than the system prompt: an `edit` never re-pays the
+			// conversation (docs/goals.md 9.0).
+			expect(JSON.stringify(stub.requests[2])).toContain("ship T18");
+			expect(JSON.stringify(stub.requests[2])).toContain("round 1 of 16");
+			expect(JSON.stringify(stub.requests[3])).toContain("round 2 of 16");
+			expect(roundsOnBranch(session)).toEqual([
+				{ display: false, goalId: expect.any(String), round: 1 },
+				{ display: false, goalId: expect.any(String), round: 2 },
+			]);
+			expect(readGoal(session.sessionManager)).toMatchObject({ phase: "complete", rounds: 2 });
+			// The run is one run: `agent_settled` fires once, so `markRun(id, "idle")` and the UI's stop button
+			// stay meaningful across every round.
+			expect(events.filter((event) => event.type === "agent_settled")).toHaveLength(1);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("stops at the cap and records the goal blocked: round-limit", async () => {
+		const { session, stub } = await runDriver(roundScript([{ action: "create", objective: "loop", max_rounds: 2 }], 3), {
+			goalDriver: true,
+		});
+		try {
+			// create, then three answers: rounds 1 and 2 are paid for, and the settle after the third is the cap.
+			expect(stub.requests.length).toBe(4);
+			expect(roundsOnBranch(session)).toHaveLength(2);
+			expect(readGoal(session.sessionManager)).toMatchObject({
+				phase: "blocked",
+				blockedReason: "round-limit",
+				maxRounds: 2,
+				revision: 2,
+				rounds: 2,
+			});
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("starts no further round when the run is aborted mid-round", async () => {
+		const stub = await createStubModel({ responses: roundScript([{ action: "create", objective: "stop me" }], 3) });
+		const { session } = await createFlypiSession({
+			root: createTempFlypiRoot(),
+			modelRuntime: stub.modelRuntime,
+			model: stub.model,
+			goalDriver: true,
+		});
+		// Let round 1 start, then abort inside it: the loop is already running, so this is the stop button in
+		// the case that matters. pi's own settle-abort guard ends it — the goal stays active and nothing is
+		// appended to continue it, so the brake covers the whole run and not only its first turn.
+		let ends = 0;
+		const detach = session.subscribe((event) => {
+			if (event.type !== "agent_end" || event.willRetry || ++ends < 2) return;
+			void session.abort();
+		});
+		try {
+			await session.prompt("carry this on");
+			expect(stub.requests.length).toBe(3);
+			expect(roundsOnBranch(session).map((round) => round.round)).toEqual([1]);
+			expect(readGoal(session.sessionManager)).toMatchObject({ phase: "active", rounds: 1 });
+		} finally {
+			session.dispose();
+		}
+	});
+
+	// The one item in the phase that can cost money, so the opt-in is asserted as hard as the loop is: a probe,
+	// a daemon job, a review fork and any other process that never asked for the driver cannot loop unattended.
+	it("starts no round at all for a session that did not ask for the driver", async () => {
+		const { session, stub } = await runDriver(roundScript([{ action: "create", objective: "unattended", max_rounds: 2 }], 3));
+		try {
+			// The run settles where the model stopped it: one prompt, two requests, no round prompt anywhere.
+			expect(stub.requests.length).toBe(2);
+			expect(JSON.stringify(stub.requests.map((request) => request.messages))).not.toContain("round 1 of");
+			expect(roundsOnBranch(session)).toEqual([]);
+			expect(readGoal(session.sessionManager)).toMatchObject({ phase: "active", rounds: 0 });
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("starts no round when goals.autoContinue is off", async () => {
+		const { session, stub } = await runDriver(roundScript([{ action: "create", objective: "hands off", max_rounds: 2 }], 3), {
+			goalDriver: true,
+			goals: { autoContinue: false },
+		});
+		try {
+			expect(stub.requests.length).toBe(2);
+			expect(roundsOnBranch(session)).toEqual([]);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("gives a create the cap from goals.maxRounds, resolved once at session start", async () => {
+		const { session } = await runDriver(roundScript([{ action: "create", objective: "capped" }], 1), { goals: { maxRounds: 3 } });
+		try {
+			expect(readGoal(session.sessionManager)).toMatchObject({ maxRounds: 3 });
+		} finally {
+			session.dispose();
+		}
+	});
+
+	describe("goals config", () => {
+		it("defaults to auto-continue at 16 rounds, and reads `goals` from settings.json", () => {
+			expect(parseGoalsConfig({})).toEqual({ autoContinue: true, maxRounds: 16 });
+			expect(parseGoalsConfig({ goals: { autoContinue: false } })).toEqual({ autoContinue: false, maxRounds: 16 });
+			expect(parseGoalsConfig({ goals: { maxRounds: 3 } })).toEqual({ autoContinue: true, maxRounds: 3 });
+			expect(parseGoalsConfig({ goals: { maxRounds: MAX_ROUNDS_CAP } })).toEqual({ autoContinue: true, maxRounds: MAX_ROUNDS_CAP });
+			// A round is a paid run, so a value that is not a whole number inside the schema's ceiling is the
+			// default rather than a licence: `true` must not become 1, and 1e9 must not mean unbounded.
+			for (const written of [0, -1, 2.5, 1e9, MAX_ROUNDS_CAP + 1, true, "8", null]) {
+				expect(parseGoalsConfig({ goals: { maxRounds: written } }).maxRounds).toBe(16);
+			}
+		});
+
+		it("falls back to the defaults when settings.json is not there yet", () => {
+			expect(goalsConfig(flypiPaths("/nonexistent-flypi-root"))).toEqual({ autoContinue: true, maxRounds: 16 });
+		});
 	});
 });

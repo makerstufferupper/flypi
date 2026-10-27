@@ -112,7 +112,7 @@ export class SessionRegistry {
 		this.createSession =
 			options.createSession ??
 			(({ sessionManager, conversationId, onMemoryBlock }) =>
-				createFlypiSession({ root: options.root, sessionManager, conversationId, onMemoryBlock, vault: options.vault, review: true }).then((r) => r.session));
+				createFlypiSession({ root: options.root, sessionManager, conversationId, onMemoryBlock, vault: options.vault, review: true, goalDriver: true }).then((r) => r.session));
 		this.idleTtlMs = options.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
 		this.now = options.now ?? Date.now;
 		this.onRunStatus = options.onRunStatus;

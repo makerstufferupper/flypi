@@ -21,7 +21,7 @@ import { memoryConfig } from "../memory/config.ts";
 import { createMemoryRecallExtension, memoryInstruction, memoryTool, recallServer } from "../memory/recall.ts";
 import { backgroundMount, reviewPrompt, type ReviewParent } from "../memory/review.ts";
 import { createPermissionGateExtension } from "./permission-gate.ts";
-import { createGoalExtension, createTaskExtension } from "./goals.ts";
+import { createGoalDriverExtension, createGoalExtension, createTaskExtension, goalsConfig } from "./goals.ts";
 import { createSecretsExtension } from "../secrets/extension.ts";
 import type { SecretStore } from "../secrets/vault.ts";
 
@@ -90,6 +90,13 @@ export async function createFlypiSession(options: {
 	 */
 	review?: boolean;
 	/**
+	 * The goal round driver (docs/goals.md 9.3): a conversation whose goal is `active` keeps running to its
+	 * round cap instead of settling. Off unless asked for, for the same reason as `review` above — a probe, a
+	 * daemon job, a subagent and a fork itself must never loop unattended and spend money with nobody watching.
+	 * This is the one thing in Phase 9 that can hurt.
+	 */
+	goalDriver?: boolean;
+	/**
 	 * The conversation's extension UI (src/server/extension-ui.ts): what `ctx.ui.notify/select/confirm/input`
 	 * do. Absent, pi binds its no-op context and an extension command's output goes nowhere — which is what a
 	 * process with no page attached (a probe, a fork) should get.
@@ -132,6 +139,9 @@ export async function createFlypiSession(options: {
 	// Resolved once, and used for both halves of the memory wiring: the instruction below and the recall
 	// extension have to agree about whether this session has a memory server at all.
 	const memoryServer = recallServer(mcpConfig);
+	// The goal config (docs/goals.md 9.0): read once here, not per call. A cap that can move mid-run is not a
+	// cap, and a session whose prompt depends on a settings edit made mid-conversation is a prefix regression.
+	const goals = goalsConfig(paths);
 	// The review fork (docs/memory.md Phase 4.8): a conversation a human is in, a store to write to, and an
 	// interval that is not switched off. `session` is read from inside the closure, which runs turns later.
 	const reviewInterval = options.review && memoryServer ? memoryConfig(paths).review.interval : 0;
@@ -178,7 +188,10 @@ export async function createFlypiSession(options: {
 			createTaskExtension(),
 			// The `goal` tool (docs/goals.md 9.2), registered by the same rule: the tool set stays constant, and
 			// what 9.3 makes opt-in per process is the driver that continues a goal, not the tool that records one.
-			createGoalExtension(),
+			createGoalExtension(goals.maxRounds),
+			// The round driver (docs/goals.md 9.3): a human conversation only, and `goals.autoContinue` off means
+			// no handler at all — pi then skips the settle boundary rather than asking an extension about it.
+			...(options.goalDriver && goals.autoContinue ? [createGoalDriverExtension()] : []),
 			...(options.memoryRecall === false
 				? []
 				: [createMemoryRecallExtension(memoryServer, options.onMemoryBlock, { conversationId: options.conversationId, ...(review ? { review } : {}) })]),

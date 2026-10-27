@@ -1,6 +1,6 @@
 /**
- * Phase 9 — goals and tasks (docs/goals.md): 9.1 `task_write` and 9.2 the `goal` tool. The round driver of
- * 9.3 belongs to neither tool and is opt-in per process, so it is not registered from here.
+ * Phase 9 — goals and tasks (docs/goals.md): 9.1 `task_write`, 9.2 the `goal` tool and 9.3 the round driver.
+ * The driver belongs to neither tool and is opt-in per process, so `createFlypiSession` registers it alone.
  *
  * The goal has no store either: every accepted action appends one `flypi-goal` session entry and `readGoal`
  * takes the last one on the active branch, so the conversation log is the only state. That is what makes a
@@ -18,8 +18,10 @@
  * when a list exists invalidates everything behind it (docs/prompt-cache.md, risk 2).
  */
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { type ExtensionFactory, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { FlypiPaths } from "./paths.ts";
 
 export const TASK_TOOL = "task_write";
 
@@ -108,7 +110,7 @@ export type GoalPhase = (typeof GOAL_PHASES)[number];
 export const GOAL_ACTIONS = ["create", "edit", "pause", "resume", "complete", "blocked", "clear"] as const;
 export type GoalAction = (typeof GOAL_ACTIONS)[number];
 
-/** dh ships 256, which is 256 paid runs. 9.3 reads `goals.maxRounds` and passes it over this. */
+/** dh ships 256, which is 256 paid runs. `goals.maxRounds` in settings.json overrides this default. */
 export const DEFAULT_MAX_ROUNDS = 16;
 /** A per-goal override is still a cap: an unbounded one is not a cap (docs/goals.md, the new risk). */
 export const MAX_ROUNDS_CAP = 128;
@@ -169,7 +171,11 @@ export function readGoal(sessionManager: Pick<SessionManager, "getBranch">): Goa
 	return { ...snapshot, rounds };
 }
 
-export function createGoalExtension(): ExtensionFactory {
+/**
+ * The `goal` tool. `defaultMaxRounds` is `goals.maxRounds` from settings.json, resolved once at session start
+ * (9.0) and passed in, so a `create` with no override lands the cap this process was started with.
+ */
+export function createGoalExtension(defaultMaxRounds: number): ExtensionFactory {
 	return (pi) => {
 		pi.registerTool({
 			name: GOAL_TOOL,
@@ -182,13 +188,13 @@ export function createGoalExtension(): ExtensionFactory {
 					Type.Number({
 						minimum: 1,
 						maximum: MAX_ROUNDS_CAP,
-						description: `Rounds before the goal is recorded blocked. Default ${DEFAULT_MAX_ROUNDS}.`,
+						description: `Rounds before the goal is recorded blocked. Default ${defaultMaxRounds}.`,
 					}),
 				),
 				blocked_reason: Type.Optional(Type.String({ description: "Why the objective cannot be reached. Needed by blocked." })),
 			}),
 			execute: async (_id, args, _signal, _onUpdate, ctx): Promise<GoalResult> => {
-				const decision = decide(readGoal(ctx.sessionManager), args as GoalArgs);
+				const decision = decide(readGoal(ctx.sessionManager), args as GoalArgs, defaultMaxRounds);
 				if ("error" in decision) {
 					return { content: [{ type: "text", text: decision.error }], details: { error: decision.error }, isError: true };
 				}
@@ -220,7 +226,7 @@ const GOAL_ACTION_PHASES: Record<Exclude<GoalAction, "create">, readonly GoalPha
 };
 
 /** One goal per conversation, and the transitions between its phases. `undefined` current means none yet. */
-function decide(current: GoalState | undefined, args: GoalArgs): Decision {
+function decide(current: GoalState | undefined, args: GoalArgs, defaultMaxRounds: number): Decision {
 	const at = new Date().toISOString();
 	if (args.action === "create") {
 		const objective = args.objective?.trim();
@@ -228,7 +234,7 @@ function decide(current: GoalState | undefined, args: GoalArgs): Decision {
 		if (current && current.phase !== "complete") {
 			return refuses(`this conversation already has a goal that is ${current.phase}: "${current.objective}" — complete, pause or clear it before starting another`);
 		}
-		const maxRounds = args.max_rounds ?? DEFAULT_MAX_ROUNDS;
+		const maxRounds = args.max_rounds ?? defaultMaxRounds;
 		const entry: GoalSnapshot = { id: randomUUID(), objective, phase: "active", maxRounds, revision: 1, at };
 		return says(`goal active: "${objective}" — round 0/${maxRounds}`, entry);
 	}
@@ -264,4 +270,109 @@ function decide(current: GoalState | undefined, args: GoalArgs): Decision {
 		case "clear":
 			return says(`goal cleared: "${current.objective}"`, { cleared: true, at });
 	}
+}
+
+// --- 9.3: the round driver ---------------------------------------------------------------------------
+
+/** `goals` in `.flypi/agent/settings.json`. */
+export interface GoalsConfig {
+	/** Off means the conversation stops when the model stops, whatever the goal says. */
+	autoContinue: boolean;
+	/** The cap a `create` with no `max_rounds` gets. A round is a paid model run. */
+	maxRounds: number;
+}
+
+export const ROUND_LIMIT = "round-limit";
+
+/** Read once at session start, never per call: 9.0. A cap that can move mid-run is not a cap. */
+export function goalsConfig(paths: FlypiPaths): GoalsConfig {
+	let settings: unknown;
+	try {
+		settings = JSON.parse(readFileSync(paths.settingsPath, "utf8"));
+	} catch {
+		settings = {}; // no settings file yet: the defaults have to work
+	}
+	return parseGoalsConfig(settings);
+}
+
+export function parseGoalsConfig(settings: unknown): GoalsConfig {
+	const goals = (settings as { goals?: Record<string, unknown> } | undefined)?.goals;
+	// A round is a paid run, so a value that is not a whole number inside the schema's ceiling is the default
+	// rather than a licence: `true` must not become 1, and 1e9 must not become "unbounded".
+	const written = goals?.maxRounds;
+	const maxRounds =
+		typeof written === "number" && Number.isInteger(written) && written >= 1 && written <= MAX_ROUNDS_CAP ? written : DEFAULT_MAX_ROUNDS;
+	return { autoContinue: goals?.autoContinue !== false, maxRounds };
+}
+
+/**
+ * The round that does not stop (docs/goals.md 9.3): one handler at pi's settle boundary. While the
+ * conversation's goal is `active` it appends the round prompt and asks pi for another run; pi owns the loop,
+ * so there is no scheduler of ours to race with it — `agent_settled` still fires only when the run truly
+ * settles, and pi's own abort guard means the stop button ends the loop for free.
+ *
+ * Registered only for a process a human is watching (`goalDriver` in `createFlypiSession`, which only the WS
+ * server's conversations pass), and only when `goals.autoContinue` says so: a daemon job or a review fork
+ * holding a goal must never loop unattended and spend money with nobody there.
+ *
+ * At the cap the goal is recorded `blocked: round-limit` rather than stopping quietly, so the reason a run
+ * ended is in the transcript and the UI, not only in the absence of another round.
+ */
+export function createGoalDriverExtension(): ExtensionFactory {
+	return (pi) => {
+		pi.on("agent_before_settle", (_event, ctx) => {
+			// One `readGoal` call: 9.2 derives the round count from the round prompts, so there is no counter
+			// of ours to keep in sync, and a goal a compaction dropped reads as no goal — the loop stops.
+			const goal = readGoal(ctx.sessionManager);
+			if (!goal || goal.phase !== "active") return undefined;
+			if (goal.rounds >= goal.maxRounds) {
+				return {
+					entries: [
+						{
+							type: "custom",
+							customType: GOAL_ENTRY,
+							// The same snapshot shape the tool appends — including no `rounds`, which is derived.
+							data: {
+								id: goal.id,
+								objective: goal.objective,
+								maxRounds: goal.maxRounds,
+								revision: goal.revision + 1,
+								phase: "blocked",
+								at: new Date().toISOString(),
+								blockedReason: ROUND_LIMIT,
+							} satisfies GoalSnapshot,
+						},
+					],
+					continue: false,
+				};
+			}
+			const round = goal.rounds + 1;
+			return {
+				entries: [
+					{
+						type: "custom_message",
+						customType: GOAL_ROUND_ENTRY,
+						content: roundPrompt(goal, round),
+						display: false,
+						// The `goalId` is what `readGoal` counts the rounds by, and `round` is what the UI shows.
+						details: { goalId: goal.id, round },
+					},
+				],
+				continue: true,
+			};
+		});
+	};
+}
+
+/**
+ * 9.0 rule 3: the round prompt is the only cold bytes a round adds, so it stays small — the objective, the
+ * round number, and the same verify-before-claiming sentence the tool description carries. Byte-identical for
+ * one (goal revision, round) pair, so a retry re-hits the cache rather than re-paying it.
+ */
+function roundPrompt(goal: GoalState, round: number): string {
+	return (
+		`Goal ${JSON.stringify(goal.objective)} — round ${round} of ${goal.maxRounds}. Take the next step towards it now; do not stop at a plan. ` +
+		"Before you say the objective is met, read it back and gather the evidence: `goal complete` only if it holds, `goal blocked` with a reason " +
+		"if it cannot be reached, and `pause` or `clear` if the work has moved on."
+	);
 }

@@ -24,9 +24,15 @@
  * transient is injected, so the prefix is byte-identical across the boundary and whatever the route still
  * re-pays is its own forgetting, not the block's. `probe:boundary` prices the block case from the
  * conversations that really ran.
+ *
+ * `--goal` puts a goal on the session and turns the round driver on (docs/goals.md 9.3), which is how the
+ * per-round boundary cost gets re-taken on the route you actually run: turn 1 ends at the settle boundary,
+ * the round prompt is appended there, and one continuation follows. `maxRounds: 1` keeps it to that one
+ * round — this prices a boundary, not a goal that runs to 16.
  */
 import { createHash } from "node:crypto";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { GOAL_ENTRY } from "../src/agent/goals.ts";
 import { flypiPaths } from "../src/agent/paths.ts";
 import { createFlypiSession } from "../src/agent/runtime.ts";
 import { cacheProbeEnabled, cacheProbeLines } from "../src/shared/cache-probe.ts";
@@ -35,6 +41,7 @@ import { addUsage, emptyUsage, usageOf } from "../src/shared/transcript.ts";
 const PROMPTS = ["List the files in the current directory.", "How many of those are markdown files?"];
 const args = process.argv.slice(2);
 const control = args.includes("--no-memory");
+const goalRound = args.includes("--goal");
 const modelRef = args.find((arg) => !arg.startsWith("--"));
 const probing = cacheProbeEnabled();
 let blockChars = 0;
@@ -53,6 +60,8 @@ const { session } = await createFlypiSession({
 	// so a SIGKILL or a second overlapping run cannot leave the real config disabled. `blockChars=0` in the
 	// output below is the proof the control really ran.
 	...(control ? { mcpConfig: { servers: [], errors: [] } } : {}),
+	// The driver is opt-in per process; a probe that wants the round boundary asks for it explicitly.
+	...(goalRound ? { goalDriver: true } : {}),
 	...(model ? { model } : {}),
 	onMemoryBlock: (block) => {
 		blockChars = block.length;
@@ -70,6 +79,19 @@ if (probing) {
 	console.log(`FLYPI_CACHE_PROBE=1: hashing every request; diff two runs to see what the route could not reuse`);
 }
 
+if (goalRound) {
+	// The goal is a session entry, so this is what a conversation that already holds one looks like: the entry
+	// is the whole state, and `maxRounds: 1` means turn 1 pays exactly one round before the cap blocks it.
+	session.sessionManager.appendCustomEntry(GOAL_ENTRY, {
+		id: "probe-round",
+		objective: PROMPTS[1],
+		phase: "active",
+		maxRounds: 1,
+		revision: 1,
+		at: new Date().toISOString(),
+	});
+	console.log("goal: active, maxRounds=1 — turn 1 ends at the settle boundary and one round prompt follows");
+}
 let turn = 0;
 for (const prompt of PROMPTS) {
 	turn += 1;
