@@ -442,6 +442,37 @@ details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px
 	.icon { min-width: 2.75rem; min-height: 2.75rem; display: grid; place-items: center; }
 	button, select, input:not([type="checkbox"]), textarea { min-height: 2.5rem; }
 	.followup { display: inline-flex; align-items: center; gap: 0.35rem; min-height: 2.5rem; }
+	/* A row in a config list is edited by tapping its name, so the name is a target, not a caption — it measured
+	   13px tall and 14px wide at 390px, the smallest thing on the page. Both dimensions, because a two-letter
+	   name is a narrow button otherwise. An on/off row is the same: the 13px checkbox is inside a full-height
+	   label. */
+	.cfg-list .cfg-name { display: flex; align-items: center; justify-content: flex-start; padding: 0 0.45rem; min-width: 2.5rem; min-height: 2.5rem; }
+	.cfg-enabled { min-height: 2.5rem; }
+	/* A row's state chip is one short word on a desktop, and `nowrap` keeps it that way. On a phone the same
+	   chip can be a secret's meta — a host and a URL, which measured 107px too wide and scrolled the vault
+	   pane sideways — so the chip wraps here. */
+	.cfg-list .cfg-state { white-space: normal; }
+	/* Long paths, commands and server errors wrap instead of pushing the page sideways. */
+	.settings-view .cfg-note code,
+	.settings-view .cfg-list .cfg-state,
+	.settings-view .cfg-state-error { overflow-wrap: anywhere; }
+
+	/* The editor is the whole screen: a 30rem card floating in a 390px window with the keyboard up is a form
+	   you cannot reach the bottom of (ui/SettingsPanel.svelte, the vault and the memory browser share it).
+	   The inline pairs stack for the same reason. */
+	.cfg-modal {
+		width: 100vw;
+		max-width: none;
+		height: 100dvh;
+		max-height: 100dvh;
+		margin: 0;
+		border: 0;
+		border-radius: 0;
+		padding: calc(0.9rem + env(safe-area-inset-top)) calc(0.9rem + env(safe-area-inset-right))
+			calc(0.9rem + env(safe-area-inset-bottom)) calc(0.9rem + env(safe-area-inset-left));
+	}
+	.cfg-modal .cfg-inline { flex-direction: column; align-items: stretch; gap: 0.35rem; }
+	.cfg-modal .cfg-inline .field:first-child { flex: none; }
 }
 
 /* A short viewport — the keyboard is up, or the phone is on its side. There is no height to share, so the
@@ -466,6 +497,23 @@ details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px
 		border-radius: 12px 12px 0 0;
 		padding-bottom: calc(0.6rem + env(safe-area-inset-bottom));
 	}
+}
+
+/* A touch screen has no hover, so anything that only appears on hover is not there at all. The delete is
+   already visible rather than hover-only (ui/app.css:71 made that call for touch); the fork and the list
+   icons were not. */
+@media (max-width: 56rem) and (hover: none) {
+	.msg .fork,
+	.cfg-list .icon { opacity: 1; }
+}
+
+/* The metrics strip is a readout. At phone width the two rates are the first thing to go: the ring and the
+   context text keep the one number that changes what you do next (how full the context is), and the ring's
+   title carries the counts. A readout rule, not a second layout breakpoint. */
+@media (max-width: 30rem) {
+	.metrics .metric[data-role="decode"],
+	.metrics .metric[data-role="prefill"] { display: none; }
+	.picker { gap: 0.3rem; }
 }
 
 /* The sheet and the drawer slide; the run dot already respects this, and so must they. */
