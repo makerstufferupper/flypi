@@ -185,7 +185,10 @@ details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px
 .goal-phase { font-weight: 400; }
 .goal-objective { margin: 0; font-size: 13px; }
 .goal-round { margin: 0.25rem 0 0; color: var(--muted); font-size: 12px; }
-.tasks { list-style: none; margin: 0; padding: 0; }
+/* The checklist scrolls inside its own box: the panel is a flex column whose only scrollable child is
+   `.activity`, so an unbounded list would push the activity list and the debug footer out of view. The
+   ceiling is the viewport's, not a rem count — the width is what the user resizes (`--activity-w`). */
+.tasks { list-style: none; margin: 0; padding: 0; max-height: 30vh; overflow: auto; }
 .tasks li { font-size: 13px; padding: 0.1rem 0; }
 .tasks li[data-status="completed"] { color: var(--muted); }
 .tasks li[data-status="in_progress"] { color: var(--accent); }
