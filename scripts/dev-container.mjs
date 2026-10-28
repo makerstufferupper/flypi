@@ -24,11 +24,20 @@ import { join } from "node:path";
 const NAME = "flypi";
 const PORT = 8791;
 const VOLUME = "flypi-data";
+// `--lan` publishes the port on every interface instead of loopback only. The image's CMD already listens on
+// 0.0.0.0 inside the container, so the host-side mapping is the only thing that changes.
+const BIND = process.argv.includes("--lan") ? "0.0.0.0" : "127.0.0.1";
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
 	console.log(`flypi dev container — docs/release.md "Deploying something that is *not* released"
 
   npm run dev:container        build → pack → image → replace the ${NAME} container on 127.0.0.1:${PORT}
+  npm run dev:container -- --lan
+                               the same, published on 0.0.0.0:${PORT} so the LAN can reach it
+
+--lan is exposure, not a password: GET /__flypi.json is unauthenticated and returns the socket token
+(src/server/index.ts), so anyone who can reach the port can drive this agent — its bash tool, its secrets
+vault, its memory. Loopback is the safe default for a reason.
 
 Removes: the ${NAME} container, and flypi:local-* images older than the one it just built.
 Keeps:   the ${VOLUME} volume — the memory models live there, and this script never deletes a volume.
@@ -75,7 +84,7 @@ try {
 	step(`image — ${tag} from ${tgz}`);
 	run("docker", ["build", "-q", "--build-arg", `FLYPI_TGZ=${tgz}`, "-t", tag, packDir]);
 
-	step(`replace — container ${NAME} on 127.0.0.1:${PORT}, volume ${VOLUME} kept`);
+	step(`replace — container ${NAME} on ${BIND}:${PORT}, volume ${VOLUME} kept`);
 	// `rm -f` on a name that is not there exits 1; that is the normal first run, not a failure.
 	spawnSync("docker", ["rm", "-f", NAME], { encoding: "utf8" });
 	run("docker", [
@@ -84,7 +93,7 @@ try {
 		"--name",
 		NAME,
 		"-p",
-		`127.0.0.1:${PORT}:${PORT}`,
+		`${BIND}:${PORT}:${PORT}`,
 		"-v",
 		`${VOLUME}:/data`,
 		"-e",
@@ -125,7 +134,7 @@ try {
 	for (const image of stale) run("docker", ["rmi", image], { quiet: true });
 	console.log(stale.length ? `  removed ${stale.join(", ")}` : "  nothing older to remove");
 
-	console.log(`\n${NAME} is on http://127.0.0.1:${PORT} — docker logs -f ${NAME} to watch it`);
+	console.log(`\n${NAME} is on http://127.0.0.1:${PORT}${BIND === "0.0.0.0" ? `, published on 0.0.0.0:${PORT} so the LAN can reach it` : ""} — docker logs -f ${NAME} to watch it`);
 } finally {
 	rmSync(packDir, { recursive: true, force: true });
 }

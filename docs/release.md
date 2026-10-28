@@ -112,6 +112,15 @@ applies. One command does all of it:
 npm run dev:container   # build → pack → image → replace the flypi container on 127.0.0.1:8791 → /healthz
 ```
 
+`--lan` publishes that port on every interface instead of loopback only. The image's `CMD` already binds
+`0.0.0.0` inside the container, so the host-side mapping is the only thing that changes. It is exposure, not
+a password: `GET /__flypi.json` is unauthenticated and returns the socket token (`src/server/index.ts`), so
+anyone who can reach the port can drive this agent — its bash tool, its secrets vault, its memory.
+
+```bash
+npm run dev:container -- --lan   # the same container, published on 0.0.0.0:8791
+```
+
 What it runs, by hand, is this:
 
 ```bash

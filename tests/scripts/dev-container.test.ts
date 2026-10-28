@@ -27,6 +27,9 @@ describe("the dev container script", () => {
 		expect(help.stdout).toContain("flypi:local-");
 		expect(help.stdout).toContain("flypi-data");
 		expect(help.stdout).toContain("8791");
+		// `--lan` is exposure, so the help has to name it and say what it costs.
+		expect(help.stdout).toContain("--lan");
+		expect(help.stdout).toContain("/__flypi.json");
 	});
 
 	// The models in that volume are ~933 MB and re-download on the next start (docs/release.md), so the
@@ -48,5 +51,11 @@ describe("the dev container script", () => {
 		expect(source.slice(at, at + 160)).toContain("packDir");
 		expect(source).toContain("docker/Dockerfile.local");
 		expect(source).toMatch(/"pack",\s*"--pack-destination",\s*packDir/);
+	});
+
+	// The image's CMD already binds 0.0.0.0 inside the container, so `--lan` is only the host-side mapping.
+	it("publishes on loopback unless --lan asks for every interface", () => {
+		expect(source).toContain('process.argv.includes("--lan") ? "0.0.0.0" : "127.0.0.1"');
+		expect(source).toContain("${BIND}:${PORT}:${PORT}");
 	});
 });
