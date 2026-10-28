@@ -3,8 +3,13 @@
 	import type { SessionSummary } from "../src/server/protocol.ts";
 	import { currentTheme, setTheme, type Theme } from "./lib/theme.ts";
 	import { notificationState, notificationsSupported, notifyTurnDone, requestNotifications, setWantsNotifications, wantsNotifications, type NotificationState } from "./lib/notify.ts";
+	import { sessionHint, sessionTitle } from "./lib/sessions.ts";
 
-	let { app, update }: { app: FlypiAppState; update?: { version: string; ready: boolean } | null } = $props();
+	let {
+		app,
+		update,
+		onclose,
+	}: { app: FlypiAppState; update?: { version: string; ready: boolean } | null; onclose?: () => void } = $props();
 
 	// The page's own setting, so it does not go through the app state or the socket.
 	let theme = $state<Theme>(currentTheme() ?? "light");
@@ -14,16 +19,9 @@
 		setTheme(theme);
 	}
 
-	// A row is named by what the user called it, then by its first message, then by its path. The row
-	// you are in edits the first two of those: the first message is the hint for a session that has no
-	// name yet, and a brand-new session has no first message, so its field is blank by itself.
-	function hint(session: SessionSummary): string {
-		return session.name || session.firstMessage;
-	}
-
-	function title(session: SessionSummary): string {
-		return hint(session) || session.path;
-	}
+	// The row you are in edits the same two strings the phone's top bar reads (ui/lib/sessions.ts): the
+	// first message is the hint for a session that has no name yet, and a brand-new session has no first
+	// message, so its field is blank by itself. A name you did not actually change sends nothing.
 
 	// The row you are in is an inline rename field, so it fires on Enter and on clicking away;
 	// a name you did not actually change sends nothing.
@@ -101,7 +99,9 @@
 	}
 </script>
 
-<aside class="sidebar">
+<!-- `tabindex="-1"` is not a tab stop: it is how the phone's drawer takes focus when it opens (ui/App.svelte),
+	 and `id` is what the hamburger's aria-controls points at. -->
+<aside class="sidebar" id="flypi-sidebar" tabindex="-1">
 	<!-- The title row carries the panel's identity and nothing else; the icons you can press are below it. -->
 	<header class="panel-head">
 		<!-- Each logo file is tinted for one palette and has no transparency, so only the one matching
@@ -114,7 +114,7 @@
 		is more than a 15rem panel holds, and a wrapping row splits them across two lines. Icons are a fixed
 		size, so this row never wraps and they stay on one line. -->
 	<div class="panel-actions">
-		<button type="button" class="icon" aria-label="New session" title="New session" onclick={() => { app.openChat(); app.newSession(); }}>
+		<button type="button" class="icon" aria-label="New session" title="New session" onclick={() => { app.openChat(); app.newSession(); onclose?.(); }}>
 			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
 		</button>
 		<button
@@ -157,7 +157,7 @@
 			type="button"
 			class="icon"
 			data-role="memory"
-			onclick={() => app.toggleMemory()}
+			onclick={() => { app.toggleMemory(); onclose?.(); }}
 			aria-pressed={app.view === "memory"}
 			aria-label="Memory"
 			title="Memory — what is remembered, and why"
@@ -171,7 +171,7 @@
 			type="button"
 			class="icon"
 			data-role="secrets"
-			onclick={() => app.toggleSecrets()}
+			onclick={() => { app.toggleSecrets(); onclose?.(); }}
 			aria-pressed={app.view === "secrets"}
 			aria-label="Secrets"
 			title="Secrets — the encrypted vault"
@@ -182,7 +182,7 @@
 			type="button"
 			class="icon"
 			data-role="settings"
-			onclick={() => app.toggleSettings()}
+			onclick={() => { app.toggleSettings(); onclose?.(); }}
 			aria-pressed={app.view === "settings"}
 			aria-label="Model endpoints and MCP servers"
 			title="Model endpoints and MCP servers"
@@ -244,24 +244,24 @@
 						an empty field that says what it is. -->
 					<input
 						class="name current"
-						value={hint(session)}
+						value={sessionHint(session)}
 						placeholder="New session"
 						aria-label="Session name"
-						onblur={(event) => rename(hint(session), event)}
+						onblur={(event) => rename(sessionHint(session), event)}
 						onkeydown={(event) => {
-							if (event.key === "Enter") rename(hint(session), event);
-							else if (event.key === "Escape") (event.currentTarget as HTMLInputElement).value = hint(session);
+							if (event.key === "Enter") rename(sessionHint(session), event);
+							else if (event.key === "Escape") (event.currentTarget as HTMLInputElement).value = sessionHint(session);
 						}}
 					/>
 				{:else}
 					<!-- Picking a conversation is the other way back to the chat: the settings view has no
 						 conversation of its own, so opening one means leaving it. -->
-					<button type="button" class="session" onclick={() => { app.openChat(); app.openSession(session.path); }}>{title(session)}</button>
+					<button type="button" class="session" onclick={() => { app.openChat(); app.openSession(session.path); onclose?.(); }}>{sessionTitle(session)}</button>
 				{/if}
 				<button
 					type="button"
 					class="icon remove"
-					aria-label="Delete {title(session)}"
+					aria-label="Delete {sessionTitle(session)}"
 					title="Delete this session"
 					onclick={() => remove(session)}
 				>

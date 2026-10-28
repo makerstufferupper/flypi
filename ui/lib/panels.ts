@@ -2,6 +2,9 @@
  * The two resizable columns are the page's own setting, exactly like the theme (ui/lib/theme.ts):
  * a choice you make once and expect to keep, so it lives in localStorage and never crosses the
  * socket. Widths are in rem, the unit the layout is written in.
+ *
+ * The activity sheet's open state is kept the same way — a panel you left open should still be open after
+ * a reload — but it is a phone-only surface, so on a desktop it is simply never read (`ui/app.css`).
  */
 export type Panel = "sidebar" | "activity";
 
@@ -32,5 +35,22 @@ export function saveWidth(panel: Panel, rem: number): void {
 		localStorage.setItem(`flypi.${panel}Width`, String(clampWidth(panel, rem)));
 	} catch {
 		// Private mode: the width lasts as long as the tab, which is fine.
+	}
+}
+
+/** Whether the activity sheet was left open on the last visit. */
+export function loadSheet(): boolean {
+	try {
+		return localStorage.getItem("flypi.sheetOpen") === "1";
+	} catch {
+		return false;
+	}
+}
+
+export function saveSheet(open: boolean): void {
+	try {
+		localStorage.setItem("flypi.sheetOpen", open ? "1" : "0");
+	} catch {
+		// Private mode: the sheet lasts as long as the tab, which is fine.
 	}
 }

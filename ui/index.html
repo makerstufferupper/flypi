@@ -2,7 +2,11 @@
 <html lang="en">
 	<head>
 		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<!-- `viewport-fit=cover` is what makes the safe-area insets real on a notched phone, and
+			`interactive-widget=resizes-content` makes Chrome resize the layout viewport for the keyboard
+			instead of overlaying it. iOS ignores the second one — `--flypi-vh` (ui/lib/viewport.ts) is what
+			covers it there. -->
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
 		<title>flypi</title>
 		<!-- The tab icon follows the OS palette, not the page toggle (ui/lib/theme.ts) — the browser picks
 			one of the two files and there is no script in this document to do anything else. -->

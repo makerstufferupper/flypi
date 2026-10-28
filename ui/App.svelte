@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { flushSync } from "svelte";
 	import { FlypiAppState } from "./lib/app-state.svelte.ts";
 	import type { Transport } from "./lib/client.ts";
 	import Sidebar from "./Sidebar.svelte";
@@ -7,9 +8,11 @@
 	import SettingsPanel from "./SettingsPanel.svelte";
 	import SecretsPanel from "./SecretsPanel.svelte";
 	import MemoryPanel from "./MemoryPanel.svelte";
-	import { clampWidth, limits, loadWidth, saveWidth, type Panel } from "./lib/panels.ts";
-	import { readRoute, sessionId, writeRoute } from "./lib/route.ts";
+	import { clampWidth, limits, loadSheet, loadWidth, saveSheet, saveWidth, type Panel } from "./lib/panels.ts";
+	import { readRoute, sessionId, writeRoute, type View } from "./lib/route.ts";
 	import { notifyTurnDone } from "./lib/notify.ts";
+	import { sessionTitle } from "./lib/sessions.ts";
+	import { onBreakpointChange } from "./lib/viewport.ts";
 
 	let { transport }: { transport: Transport } = $props();
 	// svelte-ignore state_referenced_locally — the transport is fixed for the life of the page.
@@ -36,6 +39,62 @@
 
 	// Column widths are the page's own setting, like the theme (ui/lib/theme.ts).
 	const width = $state<Record<Panel, number>>({ sidebar: loadWidth("sidebar"), activity: loadWidth("activity") });
+
+	// The drawer and the activity sheet are the page's own state too: the drawer is transient, the sheet is
+	// remembered (ui/lib/panels.ts) — a panel you left open should still be open after a reload. Neither is
+	// ever sent over the socket.
+	let nav = $state(false);
+	let sheet = $state(loadSheet());
+	let navButtonEl = $state<HTMLButtonElement | undefined>();
+
+	// `<html>` carries the state, so the layout is expressed in CSS alone: the sidebar's transform, the
+	// sheet's height and the scrim all key off these two attributes (ui/app.css).
+	$effect(() => {
+		document.documentElement.dataset.nav = nav ? "open" : "closed";
+		document.documentElement.dataset.sheet = sheet ? "open" : "closed";
+	});
+
+	// Growing past the layout breakpoint while the drawer is open would leave an off-canvas panel that no
+	// longer has any CSS — close it. The sheet simply stops being displayed; its state is harmless.
+	$effect(() => onBreakpointChange((mobile) => { if (!mobile) nav = false; }));
+
+	/** Open the drawer and put focus in it: the page behind it is inert while it is open. `flushSync` is
+	 *  what makes the focus land in the same gesture — the aside must be visible (not inert) first. */
+	function openNav(): void {
+		nav = true;
+		flushSync();
+		document.getElementById("flypi-sidebar")?.focus();
+	}
+
+	/**
+	 * Close the drawer. Focus goes back to the hamburger that opened it, so a keyboard user is where they
+	 * were rather than at the top of the document.
+	 */
+	function closeNav(): void {
+		if (!nav) return;
+		nav = false;
+		// The hamburger is inside the inert page, so it can only take focus after the attribute is gone.
+		flushSync();
+		navButtonEl?.focus();
+	}
+
+	function toggleSheet(): void {
+		sheet = !sheet;
+		saveSheet(sheet);
+	}
+
+	/** The top bar's one line: the session on screen, or the name of the view that replaced it. */
+	const VIEW_TITLE: Record<View, string> = { chat: "flypi", settings: "Settings", secrets: "Secrets", memory: "Memory" };
+	const activeSession = $derived(app.sessions.find((session) => session.path === app.sessionPath));
+	const where = $derived(
+		app.view !== "chat"
+			? VIEW_TITLE[app.view]
+			: activeSession
+				? sessionTitle(activeSession)
+				: app.sessionPath
+					? sessionId(app.sessionPath)
+					: "new session",
+	);
 
 	function remPx(): number {
 		// The drag is in pixels and the layout is in rem; the root size is 16px unless the user changed it.
@@ -194,26 +253,55 @@
 				onkeydown={(event) => nudge(event, panel)}
 			></div>
 		{/snippet}
-		<Sidebar {app} update={banner} />
+		<Sidebar {app} update={banner} onclose={() => closeNav()} />
 		{@render gutter("sidebar")}
-		{#if app.view === "settings"}
-			<!-- The settings view replaces the chat and the activity column: configuring the agent's endpoints
-				 and MCP servers is not about this conversation, so nothing of the conversation is on screen with
-				 it. The way back is the button on the view (and the gear, which is a toggle). -->
-			<SettingsPanel {app} />
-		{:else if app.view === "secrets"}
-			<!-- Same for the vault: it is about the agent's credentials, not this conversation — and a screen that
-				 still showed the transcript next to a revealed value would be a second place the value is written.
-				 Only masks are ever rendered here (docs/secrets.md). -->
-			<SecretsPanel {app} />
-		{:else if app.view === "memory"}
-			<!-- And the memory browser: it is about the store, not this conversation, so it replaces the chat the
-				 same way (docs/memory.md Phase 6). -->
-			<MemoryPanel {app} />
-		{:else}
-			<Chat {app} />
-			{@render gutter("activity")}
-			<ActivityPanel {app} />
-		{/if}
+		<!-- Everything the drawer covers. On a phone it is the column the bar, the chat and the sheet share;
+			 on a desktop it is `display: contents`, so this wrapper is not in the grid at all. `inert` is what
+			 keeps the page behind an open drawer out of the tab order and the accessibility tree. -->
+		<div class="main" inert={nav}>
+			<!-- The phone's bar: the drawer's only opener, and the one place the page says which session (or
+				 which of the full-screen views) is on screen. Hidden above the breakpoint, where the sidebar's
+				 own title row already says it. No sheet toggle here: the sheet's handle is always on screen. -->
+			<header class="topbar">
+				<button
+					type="button"
+					class="icon"
+					data-role="nav-toggle"
+					bind:this={navButtonEl}
+					aria-label="Sessions"
+					aria-controls="flypi-sidebar"
+					aria-expanded={nav}
+					title="Sessions"
+					onclick={() => (nav ? closeNav() : openNav())}
+				>
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+				</button>
+				<span class="where" data-role="where">{where}</span>
+			</header>
+			{#if app.view === "settings"}
+				<!-- The settings view replaces the chat and the activity column: configuring the agent's endpoints
+					 and MCP servers is not about this conversation, so nothing of the conversation is on screen with
+					 it. The way back is the button on the view (and the gear, which is a toggle). -->
+				<SettingsPanel {app} />
+			{:else if app.view === "secrets"}
+				<!-- Same for the vault: it is about the agent's credentials, not this conversation — and a screen that
+					 still showed the transcript next to a revealed value would be a second place the value is written.
+					 Only masks are ever rendered here (docs/secrets.md). -->
+				<SecretsPanel {app} />
+			{:else if app.view === "memory"}
+				<!-- And the memory browser: it is about the store, not this conversation, so it replaces the chat the
+					 same way (docs/memory.md Phase 6). -->
+				<MemoryPanel {app} />
+			{:else}
+				<Chat {app} />
+				{@render gutter("activity")}
+				<ActivityPanel {app} sheet={sheet} onsheet={toggleSheet} />
+			{/if}
+		</div>
+		<!-- The click-away: a real button, so a tap anywhere outside the drawer closes it. It carries no tab
+			 stop — Escape is the keyboard path, and the drawer is right there. -->
+		<button class="scrim" type="button" tabindex="-1" aria-label="Close sessions" onclick={() => closeNav()}></button>
 	</div>
 {/if}
+
+<svelte:window onkeydown={(event) => { if (event.key === "Escape" && nav) closeNav(); }} />

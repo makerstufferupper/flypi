@@ -9,7 +9,11 @@
 	const GOAL_TOOL = "goal";
 	const TASK_TOOL = "task_write";
 
-	let { app }: { app: FlypiAppState } = $props();
+	let {
+		app,
+		sheet = false,
+		onsheet,
+	}: { app: FlypiAppState; sheet?: boolean; onsheet?: () => void } = $props();
 
 	/**
 	 * The machinery behind the answers, in the order the turn produced it: thinking, tool calls with
@@ -41,7 +45,7 @@
 		return listed;
 	});
 
-	let open = $state(false);
+	let debugOpen = $state(false);
 
 	// The newest entry should stay on screen: the panel is where you watch a turn happen. Scroll up
 	// and it stops pulling you back down, so reading older output survives the next tool call — and the
@@ -64,10 +68,46 @@
 		else follow.keep(list);
 	});
 
+	/**
+	 * The sheet grows to its height over 0.18s, and while it is closed the list is `display: none`, so it
+	 * comes back at the top. Land at the newest entry once the height has settled, or the one line the
+	 * peek advertised ("running bash · 5 entries") is not the line you are shown. `reduced-motion` removes
+	 * the transition, not the wait, so the timer is the one path that covers both.
+	 */
+	let wasOpen = false;
+	$effect(() => {
+		if (sheet === wasOpen) return;
+		wasOpen = sheet;
+		const node = list;
+		if (!sheet || !node) return;
+		const land = () => follow.land(placedIn(), node);
+		const timer = setTimeout(land, 220);
+		return () => clearTimeout(timer);
+	});
+
+	/** The tool still running, if any: what the closed sheet's one line says first. */
+	const runningTool = $derived.by(() => {
+		for (const entry of entries) if (entry.kind === "tool" && entry.card.state === "running") return entry.card;
+		return undefined;
+	});
+
+	/**
+	 * The peek line — the whole of the closed sheet. It has to be worth the 51px: what is running, how much
+	 * has happened, and the round when a goal is driving. The same values the open panel shows, composed
+	 * here because Svelte's interpolated multi-branch text is what eats the `ui/**` branch floor.
+	 */
+	const peekLabel = $derived.by(() => {
+		const count = `${entries.length} ${entries.length === 1 ? "entry" : "entries"}`;
+		if (runningTool) return `running ${runningTool.name} · ${count}`;
+		if (goal?.round) return `Activity · ${entries.length} · ${goal.round}`;
+		if (!entries.length) return "Activity · nothing yet";
+		return `Activity · ${count}`;
+	});
+
 	function toggle() {
-		open = !open;
+		debugOpen = !debugOpen;
 		// Ask when it is opened, not on a timer: the debug view is a snapshot of the live session.
-		if (open) {
+		if (debugOpen) {
 			app.showDebug();
 			// The queue is the daemon's, not the conversation's, so it is a separate request — and this is the
 			// only place it is shown (docs/architecture.md Phase 4.5).
@@ -144,7 +184,20 @@
 	}
 </script>
 
-<aside class="activity-panel" aria-label="Thinking and tool activity">
+<aside class="activity-panel" id="flypi-activity" aria-label="Thinking and tool activity">
+	<!-- The sheet's only control, in both states: closed it is the peek line, open it stays at the top of the
+		 panel. A bar button would be a second toggle to keep in agreement with this one. -->
+	<button
+		type="button"
+		class="sheet-handle"
+		aria-controls="flypi-activity"
+		aria-expanded={sheet}
+		title={sheet ? "Close the activity sheet" : "Open the activity sheet"}
+		onclick={() => onsheet?.()}
+	>
+		{peekLabel}
+	</button>
+
 	{#if goal}
 		<section class="goal-block" data-role="goal">
 			<h2>Goal <span class="goal-phase" data-role="goal-phase">{goal.phase}</span></h2>
@@ -198,9 +251,9 @@
 
 	<footer>
 		<!-- Still the session's own snapshot, just no longer a panel of its own (docs/architecture.md). -->
-		<button type="button" class="debug-toggle" onclick={toggle}>{open ? "Hide debug" : "Debug"}</button>
+		<button type="button" class="debug-toggle" onclick={toggle}>{debugOpen ? "Hide debug" : "Debug"}</button>
 
-		{#if open && app.debug}
+		{#if debugOpen && app.debug}
 			<h2>System prompt</h2>
 			<pre class="system-prompt">{app.debug.systemPrompt}</pre>
 
@@ -214,11 +267,11 @@
 			<h2>Injected memory</h2>
 			<!-- What went into this turn, not what a recall would return now (docs/architecture.md Phase 4). -->
 			<pre class="memory-block">{app.debug.memoryBlock ?? "no memory block injected"}</pre>
-		{:else if open}
+		{:else if debugOpen}
 			<p class="debug-empty">no debug info yet</p>
 		{/if}
 
-		{#if open}
+		{#if debugOpen}
 			<!-- What the injected block cost the prompt cache (docs/prompt-cache.md Phase 4.6 A2). These are
 			     the reducer's own `turn`/`total` sums — the same accounting `src/memory/recall.ts` writes into
 			     the `turns` row — so the number on screen and the number in the store cannot drift. "This

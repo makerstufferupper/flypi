@@ -277,3 +277,200 @@ details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px
 .cfg-actions .remove { color: var(--error); }
 .linklike { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; }
 .cfg-errors { list-style: none; margin: 0 0 0.5rem; padding: 0; font-size: 12px; max-width: 46rem; }
+
+/* ==================================================================================================
+ * The phone layout (docs/mobile.md Phase 10.1)
+ *
+ * One breakpoint, one column. Everything below is inside it (except the three rules that have to be
+ * outside it, at the bottom of this block), so above 56rem the desktop layout is the file it already is:
+ * the same five tracks, the same gutters, the same rem widths from localStorage.
+ *
+ * The rule the whole thing rests on: the chat is the only thing left in the grid, and it is never
+ * unmounted. The sidebar and the activity panel leave the grid — the sidebar with `position: fixed` and
+ * `visibility: hidden` while closed (so it is not in the tab order or the accessibility tree), the
+ * activity panel as a sheet in the flow — which is why the components needed almost no markup change.
+ *
+ * The open/closed state is one attribute on <html> (`data-nav`, `data-sheet`) — the page's own state, like
+ * the theme and the column widths (ui/lib/theme.ts, ui/lib/panels.ts), and never sent over the socket.
+ *
+ * Heights are measured against `--flypi-vh`, which ui/lib/viewport.ts sets to the **visual** viewport while
+ * the on-screen keyboard is up (and leaves unset otherwise, so `100dvh` is the fallback and this file still
+ * works with no JS). `dvh` tracks the browser's own chrome; it does not know about the keyboard.
+ * ================================================================================================== */
+
+/* The top bar, the scrim and the sheet handle are the only new elements. Hidden on desktop, so these rules
+   are OUTSIDE the query: hidden inside it, they would simply never be hidden. */
+.topbar,
+.scrim,
+.sheet-handle { display: none; }
+
+/* The wrapper exists so the drawer can inert everything behind it with one attribute (ui/App.svelte). On a
+   wide window it is `display: contents`, so the layout's children are still the grid's own children and the
+   `.settings-view { grid-column: 3 / -1 }` span still lands in the tracks. */
+.main { display: contents; }
+
+@media (max-width: 56rem) {
+	.layout {
+		/* Not a grid any more: a column with a bar on top and one panel that takes the rest. The gutters
+		   are display:none here, so the rem widths the user set simply stop applying. */
+		display: flex;
+		flex-direction: column;
+		height: var(--flypi-vh, 100dvh); /* not 100vh: that is the *largest* viewport on a phone */
+		/* Every edge, because the page is `viewport-fit=cover`: the topbar would otherwise sit under the
+		   status bar, and the sheet under the home indicator. Left/right are the landscape notch. */
+		padding: calc(0.4rem + env(safe-area-inset-top)) calc(0.5rem + env(safe-area-inset-right))
+			calc(0.4rem + env(safe-area-inset-bottom)) calc(0.5rem + env(safe-area-inset-left));
+		gap: 0.4rem;
+	}
+
+	/* The column the bar, the chat and the sheet share. */
+	.main { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 0.4rem; }
+
+	/* The bar the drawer is opened from. It carries where you are — which is what the sidebar's title row
+	   said — and the session name. No second sheet toggle: the handle is always on screen (it *is* the
+	   peek line), and a bar button would be a second thing to keep in agreement with it. */
+	.topbar {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex: none;
+		min-height: 2.75rem;
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: 8px;
+		padding: 0.15rem 0.35rem;
+	}
+	.topbar .where { flex: 1; min-width: 0; padding: 0 0.15rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+	.gutter { display: none; }
+
+	/* The chat is the page now: no border of its own (the bar and the sheet have theirs), and it is the one
+	   thing that must always be visible. `min-height: 0` lets the sheet take height from it deliberately;
+	   `.messages` keeps a floor so the transcript never becomes a sliver. */
+	.chat { flex: 1; min-height: 0; border: 0; padding: 0 0.25rem; background: none; overflow: hidden; }
+	.chat .messages { min-height: 4.5rem; overscroll-behavior: contain; }
+	.chat textarea { min-height: 4.5rem; }
+	.activity { overscroll-behavior: contain; }
+
+	/* The settings, vault and memory views already replace the chat; here they simply stop spanning two
+	   grid tracks that no longer exist. */
+	.settings-view { grid-column: auto; flex: 1; min-height: 0; }
+
+	/* iOS zooms the page when a field it thinks is a text box is focused under 16px, which moves the whole
+	   layout out from under the thumb. 16px is the floor, not a style choice. */
+	.chat textarea, .chat select, .chat input,
+	.settings-view input, .settings-view select, .settings-view textarea,
+	.sessions input.name { font-size: 16px; }
+
+	/* ---- The sidebar: off-canvas, over the chat ------------------------------------------------ */
+	.sidebar {
+		position: fixed;
+		inset: 0 auto 0 0;
+		z-index: 30;
+		width: min(20rem, 86vw);
+		border: 0;
+		border-right: 1px solid var(--line);
+		border-radius: 0;
+		padding: calc(0.75rem + env(safe-area-inset-top)) calc(0.75rem + env(safe-area-inset-right))
+			calc(0.75rem + env(safe-area-inset-bottom)) 0.75rem;
+		transform: translateX(-100%);
+		/* Closed is out of the tab order and the accessibility tree, not merely off-screen: a translated
+		   panel is still focusable, so tabbing would walk ~14 invisible buttons before the chat. */
+		visibility: hidden;
+		transition: transform 0.18s ease-out, visibility 0s linear 0.18s;
+		box-shadow: 0 0 24px rgb(0 0 0 / 0.25);
+	}
+	html[data-nav="open"] .sidebar { transform: none; visibility: visible; transition: transform 0.18s ease-out, visibility 0s; }
+	.scrim { position: fixed; inset: 0; z-index: 20; background: rgb(0 0 0 / 0.4); border: 0; padding: 0; }
+	html[data-nav="open"] .scrim { display: block; }
+	/* The drawer covers the bar, so the hamburger is not a second close path: the scrim, Escape and picking
+	   a row are. (That is also why the bar lives inside `.main`, which is inert while the drawer is open.) */
+
+	/* A row you can hit with a thumb: 2.75rem is the iOS minimum, and the delete keeps its own target. */
+	.sessions .session,
+	.sessions input.name { min-height: 2.75rem; }
+
+	/* ---- The activity panel: a bottom sheet with a peek line ------------------------------------ */
+	/* In the flow, not an overlay: opening it takes height from the chat instead of covering it, so the
+	   composer stays on screen and a running turn can still be steered while its tool output is read. */
+	.activity-panel {
+		flex: none;
+		/* Closed: the handle and nothing else. 3.2rem, because the handle itself is 2.7rem of content
+		   (7px + 6px of its own padding + the 3px grab bar + an 18px line) and 2.7rem of *panel* minus its
+		   own padding clipped the bottom of the one line this phase exists to show. */
+		height: 3.2rem;
+		padding: 0 0.6rem; /* no bottom padding while closed — it must not eat the peek line */
+		overflow: hidden;
+		border: 1px solid var(--line);
+		border-radius: 12px;
+		box-shadow: 0 -2px 14px rgb(0 0 0 / 0.12);
+		transition: height 0.18s ease-out;
+	}
+	/* Closed: only the handle shows, and it says what is happening — the running tool, the entry count,
+	   the round. That line is what keeps the panel reachable without taking the screen from the chat. */
+	.sheet-handle {
+		display: block;
+		width: 100%;
+		min-height: 2.75rem;
+		text-align: left;
+		border: 0;
+		background: none;
+		padding: 0.45rem 0.1rem 0.5rem;
+		font-size: 12px;
+		color: var(--muted);
+	}
+	.sheet-handle::before { content: ""; display: block; width: 2.5rem; height: 3px; border-radius: 2px; background: var(--line); margin: 0 0 0.4rem; }
+	/* Closed is the default: everything but the handle is out of the layout (not merely clipped), so the
+	   panel's flex column never gets a second scrollbar. */
+	.activity-panel > :not(.sheet-handle) { display: none; }
+	html[data-sheet="open"] .activity-panel {
+		height: auto;
+		padding-bottom: 0.6rem;
+		/* `max(3.2rem, ...)`: on a viewport too short to give the sheet anything, it stays closed-sized
+		   rather than collapsing under its own handle. */
+		max-height: max(3.2rem, min(52dvh, calc(var(--flypi-vh, 100dvh) - 24rem)));
+	}
+	html[data-sheet="open"] .activity-panel > :not(.sheet-handle) { display: block; }
+	/* The checklist keeps a ceiling (T21's fix, #105) — a tighter one than the desktop column's 30vh,
+	   because `.activity` is the panel's only scroller and the thing FollowNewest drives, so it must keep
+	   real height: on a phone the tool output is what you opened the sheet for. */
+	.tasks { max-height: min(16dvh, 6rem); }
+
+	/* ---- Tap targets ---------------------------------------------------------------------------- */
+	/* 44px for the icon buttons (the iOS minimum) and 40px for everything that is a row of text; the
+	   follow-up checkbox is 13px of box inside a 40px label, which is the target that counts. */
+	.icon { min-width: 2.75rem; min-height: 2.75rem; display: grid; place-items: center; }
+	button, select, input:not([type="checkbox"]), textarea { min-height: 2.5rem; }
+	.followup { display: inline-flex; align-items: center; gap: 0.35rem; min-height: 2.5rem; }
+}
+
+/* A short viewport — the keyboard is up, or the phone is on its side. There is no height to share, so the
+   goal and the checklist step aside for the thing the sheet was opened for: the activity list. The handle
+   still says what is happening — the running tool and the count, or the round when nothing runs. */
+@media (max-width: 56rem) and (max-height: 44rem) {
+	/* The same specificity as the open-sheet rule that shows them again, or it would lose. */
+	html[data-sheet="open"] .activity-panel > .goal-block,
+	html[data-sheet="open"] .activity-panel > .task-block { display: none; }
+}
+
+/* Shorter still (a phone in landscape): even that is not enough for a sheet *and* a usable chat, so the
+   sheet becomes an overlay for these heights only. This is the one place the "in the flow" rule gives way,
+   and it gives way to reality: 390px of height cannot hold a bar, a composer, a transcript and a sheet. */
+@media (max-width: 56rem) and (max-height: 34rem) {
+	html[data-sheet="open"] .activity-panel {
+		position: fixed;
+		inset: auto 0 0 0;
+		z-index: 25;
+		height: 70dvh;
+		max-height: 70dvh;
+		border-radius: 12px 12px 0 0;
+		padding-bottom: calc(0.6rem + env(safe-area-inset-bottom));
+	}
+}
+
+/* The sheet and the drawer slide; the run dot already respects this, and so must they. */
+@media (prefers-reduced-motion: reduce) {
+	.sidebar,
+	.activity-panel,
+	html[data-nav="open"] .sidebar { transition: none; }
+}
