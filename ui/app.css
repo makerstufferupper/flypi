@@ -188,8 +188,11 @@ details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px
 /* The checklist scrolls inside its own box: the panel is a flex column whose only scrollable child is
    `.activity`, so an unbounded list would push the activity list and the debug footer out of view. The
    ceiling is the viewport's, not a rem count — the width is what the user resizes (`--activity-w`). */
-.tasks { list-style: none; margin: 0; padding: 0; max-height: 30vh; overflow: auto; }
-.tasks li { font-size: 13px; padding: 0.1rem 0; }
+/* `hidden auto`: the box scrolls vertically and never sideways — a checklist item is a sentence, and a
+   horizontal bar inside it costs a thumb-swipe that moves nothing. `overflow-wrap` is what keeps it true
+   when the item is a long path or command rather than a sentence. */
+.tasks { list-style: none; margin: 0; padding: 0; max-height: 30vh; overflow: hidden auto; }
+.tasks li { font-size: 13px; padding: 0.1rem 0; overflow-wrap: anywhere; }
 .tasks li[data-status="completed"] { color: var(--muted); }
 .tasks li[data-status="in_progress"] { color: var(--accent); }
 /* A config view — the settings files (ui/SettingsPanel.svelte) or the vault (ui/SecretsPanel.svelte). It
@@ -391,8 +394,10 @@ details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px
 	.sessions input.name { min-height: 2.75rem; }
 
 	/* ---- The activity panel: a bottom sheet with a peek line ------------------------------------ */
-	/* In the flow, not an overlay: opening it takes height from the chat instead of covering it, so the
-	   composer stays on screen and a running turn can still be steered while its tool output is read. */
+	/* Closed it is a peek line in the flow; open it is an overlay over the chat. The chat keeps its full
+	   height either way, so the transcript never shrinks to read a tool card — and the sheet is tall enough
+	   to be worth opening. The cost is that the composer is behind the sheet while it is open; the handle is
+	   one tap from getting it back. */
 	.activity-panel {
 		flex: none;
 		/* Closed: the handle and nothing else. 3.2rem, because the handle itself is 2.7rem of content
@@ -423,12 +428,21 @@ details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px
 	/* Closed is the default: everything but the handle is out of the layout (not merely clipped), so the
 	   panel's flex column never gets a second scrollbar. */
 	.activity-panel > :not(.sheet-handle) { display: none; }
+	/* Open: out of the flow and over the chat, at most of the screen. `--flypi-vh` caps it at the visual
+	   viewport while the keyboard is up; with no JS that is `100dvh`. The left/right insets are the landscape
+	   notch — the page is `viewport-fit=cover`, so a `0` would put the list under it. */
 	html[data-sheet="open"] .activity-panel {
-		height: auto;
-		padding-bottom: 0.6rem;
-		/* `max(3.2rem, ...)`: on a viewport too short to give the sheet anything, it stays closed-sized
-		   rather than collapsing under its own handle. */
-		max-height: max(3.2rem, min(52dvh, calc(var(--flypi-vh, 100dvh) - 24rem)));
+		position: fixed;
+		top: auto;
+		right: env(safe-area-inset-right);
+		bottom: 0;
+		left: env(safe-area-inset-left);
+		z-index: 25; /* over the chat, under the drawer (30) and its scrim (20) */
+		height: min(85dvh, var(--flypi-vh, 100dvh));
+		max-height: min(85dvh, var(--flypi-vh, 100dvh));
+		padding-bottom: calc(0.6rem + env(safe-area-inset-bottom));
+		border-radius: 12px 12px 0 0;
+		box-shadow: 0 -6px 24px rgb(0 0 0 / 0.25);
 	}
 	html[data-sheet="open"] .activity-panel > :not(.sheet-handle) { display: block; }
 	/* The checklist keeps a ceiling (T21's fix, #105) — a tighter one than the desktop column's 30vh,
@@ -475,29 +489,9 @@ details.thinking summary { cursor: pointer; color: var(--muted); font-size: 12px
 	.cfg-modal .cfg-inline .field:first-child { flex: none; }
 }
 
-/* A short viewport — the keyboard is up, or the phone is on its side. There is no height to share, so the
-   goal and the checklist step aside for the thing the sheet was opened for: the activity list. The handle
-   still says what is happening — the running tool and the count, or the round when nothing runs. */
-@media (max-width: 56rem) and (max-height: 44rem) {
-	/* The same specificity as the open-sheet rule that shows them again, or it would lose. */
-	html[data-sheet="open"] .activity-panel > .goal-block,
-	html[data-sheet="open"] .activity-panel > .task-block { display: none; }
-}
-
-/* Shorter still (a phone in landscape): even that is not enough for a sheet *and* a usable chat, so the
-   sheet becomes an overlay for these heights only. This is the one place the "in the flow" rule gives way,
-   and it gives way to reality: 390px of height cannot hold a bar, a composer, a transcript and a sheet. */
-@media (max-width: 56rem) and (max-height: 34rem) {
-	html[data-sheet="open"] .activity-panel {
-		position: fixed;
-		inset: auto 0 0 0;
-		z-index: 25;
-		height: 70dvh;
-		max-height: 70dvh;
-		border-radius: 12px 12px 0 0;
-		padding-bottom: calc(0.6rem + env(safe-area-inset-bottom));
-	}
-}
+/* The sheet used to become an overlay only below 34rem of height, because in the flow it took that height
+   from the chat. It is an overlay at every phone height now, so the two height queries that shared the chat
+   away are gone: there is nothing left to trade. */
 
 /* A touch screen has no hover, so anything that only appears on hover is not there at all. The delete is
    already visible rather than hover-only (ui/app.css:71 made that call for touch); the fork and the list
