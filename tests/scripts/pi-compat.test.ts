@@ -127,13 +127,17 @@ describe("the probe", () => {
 	// second case only adds to what the first already did.
 	let candidate = "";
 	const doctored = () => (candidate ||= doctoredCandidate("flypi-candidate-"));
+	// Both cases pay that copy plus fresh `tsx` processes, which blows vitest's 5 s default when the whole
+	// suite runs in parallel. It is a slow answer, not a wrong one — same shape as the embedder timeout
+	// noted in docs/release-checks.md.
+	const SLOW = 30_000;
 
 	it("names a renamed export and a moved deep file, and only those", async () => {
 		expect(await checkPiCompat(doctored())).toEqual([
 			"@earendil-works/pi-coding-agent: createToolSearchExtension is undefined, and flypi calls it as a function",
 			"@earendil-works/pi-coding-agent: dist/extensions/mcp/runtime.js is not there, and flypi imports it by path",
 		]);
-	});
+	}, SLOW);
 
 	it("exits 1 with one line per problem, and 0 when there are none", async () => {
 		const { execFileSync } = await import("node:child_process");
@@ -163,7 +167,7 @@ describe("the probe", () => {
 		} finally {
 			rmSync(empty, { recursive: true, force: true });
 		}
-	});
+	}, SLOW);
 
 	afterAll(() => rmSync(candidate, { recursive: true, force: true }));
 });
