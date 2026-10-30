@@ -264,6 +264,52 @@ describe("flypi server", () => {
 		}
 	});
 
+	// A replayed event frame carries `replay`, and only a replay does: the flag is what tells the page that a
+	// frame is history it never saw (so it must not announce it as if it did), and it must not ride on the live
+	// tail of a subscription that is already being followed.
+	it("tags a replayed event frame with replay, and leaves the live tail flag-free", async () => {
+		const h = await harness(toolTurn());
+		try {
+			const handle = await start(h.registry);
+			const client = await connect(handle.url, handle.token);
+			const back = await connect(handle.url, handle.token);
+			try {
+				await client.next((frame) => frame.type === "hello");
+				client.send({ type: "newSession", requestId: "r1" });
+				const created = await client.next((frame) => frame.type === "result" && frame.requestId === "r1");
+				if (created.type !== "result" || !created.conversationId) throw new Error("no conversation");
+				const conversationId = created.conversationId;
+
+				// The turn settles on the first socket, so the event log still holds its agent_settled when the page is gone.
+				client.send({ type: "prompt", conversationId, text: "list the files" });
+				await client.next(isEvent("agent_settled"));
+				const settled = client.frames.find(isEvent("agent_settled"));
+				if (!settled) throw new Error("no settled turn");
+				await client.close();
+
+				// A new socket resumes from the cursor: the buffered turn is replayed, flagged as a replay.
+				back.send({ type: "resume", conversationId, afterSeq: 0, requestId: "r2" });
+				const replayed = (await back.next(isEvent("agent_settled"))) as EventFrame;
+				expect(replayed.replay).toBe(true);
+
+				// The flag must not disturb replay numbering or the backend clock: the replay carries the same seq and
+				// `at` as the frame the page first saw.
+				expect(replayed.seq).toBe(settled.seq);
+				expect(replayed.at).toBe(settled.at);
+
+				// The flag marks replay only: a live event after the replay is not flagged either.
+				back.send({ type: "prompt", conversationId, text: "list the files again" });
+				const live = (await back.next(isEvent("agent_settled"))) as EventFrame;
+				expect(live.replay).toBeUndefined();
+			} finally {
+				await back.close();
+				await handle.close();
+			}
+		} finally {
+			h.cleanup();
+		}
+	});
+
 	it("applies setThinkingLevel and setModel, and aborts a running turn", async () => {
 		const answer = `a long answer that keeps streaming so abort has something to stop `.repeat(12);
 		// Text-only script: abort has to land mid-stream, not between a tool call and its answer.

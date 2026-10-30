@@ -969,6 +969,18 @@ describe("the sidebar", () => {
 		expect(shown[1]!.title).toContain("s.jsonl");
 		expect(shown[1]!.body).toBe("the sort is fixed");
 
+		// A refresh resumes the conversation from its cursor, so the server hands back every buffered event —
+		// including the settled turn this page already saw. That replayed frame must not re-notify.
+		transport.emit({ type: "event", conversationId: "c1", seq: 12, replay: true, event: { type: "agent_settled" } as AgentSessionEvent });
+		await tick();
+		expect(shown).toHaveLength(2);
+
+		// ... and a live agent_settled still notifies.
+		transport.emit({ type: "event", conversationId: "c1", seq: 13, event: { type: "agent_settled" } as AgentSessionEvent });
+		await tick();
+		expect(shown).toHaveLength(3);
+		expect(shown[2]!.title).toContain("s.jsonl");
+
 		// The bell turns them off, and the preference outlives the page.
 		fireEvent.click(bell);
 		await tick();

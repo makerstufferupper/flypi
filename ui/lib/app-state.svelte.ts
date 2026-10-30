@@ -836,7 +836,9 @@ export class FlypiAppState {
 					// The list's own `running` flag has to catch up too: a row the page holds reads its chat, but a
 					// session it does not hold is only answered by this.
 					this.listSessions();
-					this.#announceSettled(chat);
+					// Only a live settle is announced: a replayed one is history the page never saw. The unread,
+					// debug, list and subscription effects above still run for a replay.
+					if (!frame.replay) this.#announceSettled(chat);
 				}
 				if (event.type === "agent_start") chat.unread = false;
 				// A chat earns its row with its first message: pi writes the session file on its first entry,

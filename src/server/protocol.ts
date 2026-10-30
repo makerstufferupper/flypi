@@ -701,6 +701,13 @@ export const EventFrame = Type.Object({
 	 */
 	at: Type.Optional(Type.Integer({ minimum: 0 })),
 	event: SessionEventFrameBody,
+	/**
+	 * True when this frame is history the page never saw — a refresh or reconnect resuming from a cursor — rather
+	 * than a turn that just happened, so the page does not announce it as one. That also drops the late notices
+	 * this used to produce: a settle reached only as replay (the socket was down, or the page had let that chat
+	 * go) no longer notifies. Optional, so an older client is unaffected.
+	 */
+	replay: Type.Optional(Type.Boolean()),
 });
 
 /** A row in the sidebar. `firstMessage` is pi's own excerpt, so flypi stores nothing extra. */

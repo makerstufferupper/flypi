@@ -219,7 +219,9 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 			for (const entry of replay.events) {
 				if (entry.seq <= subscription.lastSent) continue;
 				subscription.lastSent = entry.seq;
-				send({ type: "event", conversationId, seq: entry.seq, at: entry.at, event: entry.event });
+				// Replay is history the page never saw: it resumes from its cursor, so this frame is not a turn
+				// that just happened, and the page must not treat it as one.
+				send({ type: "event", conversationId, seq: entry.seq, at: entry.at, event: entry.event, replay: true });
 			}
 		};
 
