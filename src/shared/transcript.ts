@@ -90,6 +90,13 @@ export interface Transcript {
 	 * so rather than showing a stale one. The goal itself lives in the tool cards for that reason.
 	 */
 	goalRound?: number;
+	/**
+	 * The last thing the turn was doing, from the retry/settle events: `retrying attempt N/M: …` or
+	 * `gave up after N attempts: …`, or null once the turn settled normally. The goal driver records a goal as
+	 * `blocked: turn-failed` when a goal round stops on a failed or aborted turn, so this is the reason a run
+	 * ended rather than its absence. `agent_settled` keeps it — pi emits `auto_retry_end` just before it.
+	 */
+	status: string | null;
 	running: boolean;
 	/** Usage/cost for the current turn, and for the whole conversation. */
 	turn: RenderedUsage;
@@ -105,6 +112,7 @@ export function emptyTranscript(): Transcript {
 		running: false,
 		turn: emptyUsage(),
 		total: emptyUsage(),
+		status: null,
 	};
 }
 
@@ -137,6 +145,17 @@ export function renderMessage(message: FlypiMessage): RenderedMessage {
 		} else if (Array.isArray(content)) {
 			for (const part of content) blocks.push(...renderBlock(part));
 		}
+	}
+
+	// A turn that errored or was aborted has no content blocks: pi puts the reason in `stopReason`/`errorMessage`,
+	// so render it as a text block — otherwise the chat stops with a blank bubble and the reason is lost. `pending`
+	// partials never reach here: they stream, and `message_end` replaces them with the final message.
+	const stopReason = record.stopReason;
+	if (stopReason === "error" || stopReason === "aborted") {
+		blocks.push({
+			kind: "text",
+			text: stopReason === "error" ? `(the model call failed: ${record.errorMessage ?? "no reason given"})` : "(the model call was aborted)",
+		});
 	}
 
 	const rendered: RenderedMessage = { role, blocks };
@@ -236,8 +255,10 @@ export function addUsage(base: RenderedUsage, addition: RenderedUsage): Rendered
 export function applyEvent(state: Transcript, event: AgentSessionEvent, now: () => number = Date.now, seq?: number): Transcript {
 	switch (event.type) {
 		case "agent_start":
-			return { ...state, running: true, turn: emptyUsage() };
+			return { ...state, running: true, turn: emptyUsage(), status: null };
 		case "agent_settled":
+			// `agent_settled` is emitted right after `auto_retry_end`, so it must not clear the status — clearing
+			// there would hide the give-up or the retry storm. Unknown event types stay ignored below.
 			return { ...state, running: false, streaming: null, queue: { steering: [], followUp: [] } };
 		case "message_start":
 			return isAssistant((event as MessageStartEvent).message)
@@ -338,6 +359,12 @@ export function applyEvent(state: Transcript, event: AgentSessionEvent, now: () 
 			const queue = event as QueueUpdateEvent;
 			return { ...state, queue: { steering: [...queue.steering], followUp: [...queue.followUp] } };
 		}
+		case "auto_retry_start":
+			// pi retries a failed or aborted turn (3 attempts, ~14s apart) and only settles after the last one.
+			return { ...state, status: `retrying attempt ${event.attempt}/${event.maxAttempts}: ${event.errorMessage}` };
+		case "auto_retry_end":
+			// `finalError` is optional: a route that gave up without saying why still has to be explained.
+			return { ...state, status: event.success ? null : `gave up after ${event.attempt} attempts: ${event.finalError ?? "no reason given"}` };
 		default:
 			return state;
 	}
@@ -393,6 +420,9 @@ export function renderTranscriptText(transcript: Transcript): string {
 		lines.push(`${message.role}:`);
 		for (const block of message.blocks) lines.push(...describeBlock(block, transcript));
 		if (message.usage) lines.push(`  usage ${formatUsage(message.usage)}`);
+	}
+	if (transcript.status) {
+		lines.push(`status: ${transcript.status}`);
 	}
 	if (transcript.streaming) {
 		lines.push("assistant (streaming):");

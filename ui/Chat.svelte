@@ -232,6 +232,9 @@
 			{#each queued as text}<li class="queued">{text}</li>{/each}
 		</ul>
 	{/if}
+	{#if app.transcript.status}
+		<p class="notice" role="status" data-role="transcript-status">{app.transcript.status}</p>
+	{/if}
 
 	<!-- What an extension command said. pi keeps this out of the session file — `ctx.ui.notify` is a UI call,
 	     not a message — so it is shown here rather than woven into the transcript it cannot be ordered against. -->

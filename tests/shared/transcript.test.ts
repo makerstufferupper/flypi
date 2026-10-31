@@ -126,6 +126,28 @@ describe("renderMessage()", () => {
 		expect(failed.blocks[0]).toMatchObject({ isError: true, output: "not found" });
 	});
 
+	// A turn that errored or was aborted has no content blocks: pi puts the reason in `stopReason`/
+	// `errorMessage`, so it must render as a text block rather than a blank bubble. `pending` partials never
+	// reach here — they stream and are replaced by the final message. (docs/transcript.md: the reducer is the
+	// single mapper, so this is the same contract the DOM and the golden fixture check.)
+	it("renders a failed or aborted turn's reason, and not a blank bubble", () => {
+		const failed = renderMessage({
+			role: "assistant",
+			content: [],
+			stopReason: "error",
+			errorMessage: "Request timed out.",
+		} as unknown as FlypiMessage);
+		expect(failed.blocks).toEqual([{ kind: "text", text: "(the model call failed: Request timed out.)" }]);
+		const aborted = renderMessage({
+			role: "assistant",
+			content: [],
+			stopReason: "aborted",
+		} as unknown as FlypiMessage);
+		expect(aborted.blocks).toEqual([{ kind: "text", text: "(the model call was aborted)" }]);
+		// A `pending` partial is streamed and never reaches the final message, so it must not render a reason.
+		expect(renderMessage({ role: "assistant", content: [], stopReason: "pending" } as unknown as FlypiMessage).blocks).toEqual([]);
+	});
+
 	it("ignores empty text, unknown block types and non-objects instead of guessing", () => {
 		const rendered = renderMessage({
 			role: "assistant",
@@ -249,6 +271,29 @@ describe("applyEvent()", () => {
 		const state = applyEvent(emptyTranscript(), { type: "queue_update", steering: ["use pnpm"], followUp: ["then run the tests"] } as AgentSessionEvent);
 		expect(state.queue).toEqual({ steering: ["use pnpm"], followUp: ["then run the tests"] });
 		expect(applyEvent(state, { type: "agent_settled" } as AgentSessionEvent).queue).toEqual({ steering: [], followUp: [] });
+	});
+
+	// The retry storm and the final give-up are transcript status, and `agent_settled` must keep it: pi emits
+	// `auto_retry_end` immediately before `agent_settled`, so clearing there would hide the reason a run ended.
+	it("records retry and give-up status, and keeps it across agent_settled", () => {
+		const start = { type: "agent_start" } as AgentSessionEvent;
+		const retryStart = { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 14000, errorMessage: "Request timed out." } as AgentSessionEvent;
+		const retryEnd = { type: "auto_retry_end", success: false, attempt: 3, finalError: "Request timed out." } as AgentSessionEvent;
+		let state = applyEvent(emptyTranscript(), start);
+		state = applyEvent(state, retryStart);
+		expect(state.status).toBe("retrying attempt 1/3: Request timed out.");
+		state = applyEvent(state, retryEnd);
+		expect(state.status).toBe("gave up after 3 attempts: Request timed out.");
+		// `agent_settled` is emitted right after `auto_retry_end`, so it must not clear the status.
+		state = applyEvent(state, { type: "agent_settled" } as AgentSessionEvent);
+		expect(state.status).toBe("gave up after 3 attempts: Request timed out.");
+		// A successful retry ends the status cleanly, and `agent_settled` keeps the null.
+		state = applyEvent(emptyTranscript(), start);
+		state = applyEvent(state, retryStart);
+		state = applyEvent(state, { type: "auto_retry_end", success: true, attempt: 1 } as AgentSessionEvent);
+		expect(state.status).toBeNull();
+		state = applyEvent(state, { type: "agent_settled" } as AgentSessionEvent);
+		expect(state.status).toBeNull();
 	});
 
 	// The goal round (docs/goals.md 9.4). The round prompt is `display: false`, so its entry is the only place
