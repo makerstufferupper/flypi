@@ -420,6 +420,31 @@ describe("the goal round driver", () => {
 		}
 	});
 
+	// A turn that errored stops the round driver: pi hands the settle handler an `outcome` (`completed` |
+	// `error` | `aborted`), so the driver records the goal `blocked: turn-failed` and starts no further round
+	// instead of burning rounds against a dead route. The error here is not retryable, so the turn settles on
+	// the error directly and the request count is exactly the three runs: create, answer, round 1.
+	it("starts no further round when the run ended with stopReason error", async () => {
+		const { session, stub } = await runDriver(
+			[
+				...roundScript([{ action: "create", objective: "stop on error" }], 1),
+				fauxAssistantMessage([], { stopReason: "error", errorMessage: "the provider rejected this request", timestamp: 0 }),
+			],
+			{ goalDriver: true },
+		);
+		try {
+			expect(stub.requests.length).toBe(3);
+			expect(roundsOnBranch(session)).toEqual([{ display: false, goalId: expect.any(String), round: 1 }]);
+			expect(readGoal(session.sessionManager)).toMatchObject({
+				phase: "blocked",
+				blockedReason: "turn-failed",
+				rounds: 1,
+			});
+		} finally {
+			session.dispose();
+		}
+	});
+
 	it("stops at the cap and records the goal blocked: round-limit", async () => {
 		const { session, stub } = await runDriver(roundScript([{ action: "create", objective: "loop", max_rounds: 2 }], 3), {
 			goalDriver: true,

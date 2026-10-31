@@ -283,6 +283,8 @@ export interface GoalsConfig {
 }
 
 export const ROUND_LIMIT = "round-limit";
+/** The same pattern as `ROUND_LIMIT`: a reason a round stopped, recorded in the goal's `blockedReason`. */
+export const TURN_FAILED = "turn-failed";
 
 /** Read once at session start, never per call: 9.0. A cap that can move mid-run is not a cap. */
 export function goalsConfig(paths: FlypiPaths): GoalsConfig {
@@ -320,11 +322,35 @@ export function parseGoalsConfig(settings: unknown): GoalsConfig {
  */
 export function createGoalDriverExtension(): ExtensionFactory {
 	return (pi) => {
-		pi.on("agent_before_settle", (_event, ctx) => {
+		pi.on("agent_before_settle", (event, ctx) => {
 			// One `readGoal` call: 9.2 derives the round count from the round prompts, so there is no counter
 			// of ours to keep in sync, and a goal a compaction dropped reads as no goal — the loop stops.
 			const goal = readGoal(ctx.sessionManager);
 			if (!goal || goal.phase !== "active") return undefined;
+			// The round driver only continues a turn that completed: pi hands the settle handler an `outcome`
+			// (`completed` | `error` | `aborted`), so a run that errored or was aborted stops here and records
+			// the reason in the transcript instead of burning rounds against a dead route.
+			if (event.outcome !== "completed") {
+				return {
+					entries: [
+						{
+							type: "custom",
+							customType: GOAL_ENTRY,
+							// The same snapshot shape the tool appends — including no `rounds`, which is derived.
+							data: {
+								id: goal.id,
+								objective: goal.objective,
+								maxRounds: goal.maxRounds,
+								revision: goal.revision + 1,
+								phase: "blocked",
+								at: new Date().toISOString(),
+								blockedReason: TURN_FAILED,
+							} satisfies GoalSnapshot,
+						},
+					],
+					continue: false,
+				};
+			}
 			if (goal.rounds >= goal.maxRounds) {
 				return {
 					entries: [
