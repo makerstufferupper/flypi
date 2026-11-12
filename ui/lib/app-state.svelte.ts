@@ -16,6 +16,7 @@ import { emptyTranscript, applyEvent, type Transcript } from "../../src/shared/t
 import { applyPerfEvent, emptyPerf, hasMeasurement, type Perf } from "../../src/shared/metrics.ts";
 import { loadLastAnswer, forgetLastAnswer, modelName, saveLastAnswer } from "./last-answer.ts";
 import type { ClientCommand, ConfigFileEdit, ConfigSnapshot, DebugInfo, DefaultsEdit, EndpointEdit, ExtensionUiFrame, McpEdit, McpStatusSnapshot, MemoryEdit, MemorySnapshot, PackagesSnapshot, PiVersions as PiVersionsSnapshot, SchedulerSnapshot, SecretEdit, SecretsSnapshot, ServerFrame, SessionSummary } from "../../src/server/protocol.ts";
+import type { ResourceName } from "../../src/shared/resources.ts";
 import type { View } from "./route.ts";
 import type { FlypiThinkingLevel } from "../../src/agent/runtime.ts";
 import type { Transport } from "./client.ts";
@@ -98,11 +99,6 @@ export class FlypiAppState {
 	/** Last thing the server said went wrong and that was not about one conversation — shown in the chat. */
 	pageError = $state<string | undefined>(undefined);
 	/**
-	 * A config edit the server refused. It belongs here rather than only in `pageError` because the settings
-	 * view is not the chat: a rejected row has to be said where the row is.
-	 */
-	configError = $state<string | undefined>(undefined);
-	/**
 	 * What the MCP servers answered when they were last asked (Phase 5). Asked by a button in the settings
 	 * view, never on a timer: answering means starting an stdio server. `mcpChecking` is why that button
 	 * cannot be pressed twice into a ten-second wait.
@@ -124,8 +120,6 @@ export class FlypiAppState {
 	 */
 	packages = $state<PackagesSnapshot | undefined>(undefined);
 	packagesBusy = $state(false);
-	/** What the scheduler section shows when the queue refused to answer (`npm run serve` has none). */
-	schedulerError = $state<string | undefined>(undefined);
 	/**
 	 * The update the daemon reported (docs/architecture.md Phase 7): what its "install now" is doing, and what
 	 * it refused. The line itself comes from `/healthz` (App.svelte), not from here.
@@ -137,8 +131,6 @@ export class FlypiAppState {
 	 * type has no value field, so a snapshot cannot carry one. Asked for when the Secrets view opens.
 	 */
 	secrets = $state<SecretsSnapshot | undefined>(undefined);
-	/** A vault this process could not open, or an edit it refused — said in the Secrets view, not on the chat. */
-	secretsError = $state<string | undefined>(undefined);
 	/**
 	 * One value the panel asked for by name, kept only while that view is showing it. Nothing writes it down:
 	 * it is a field in memory with no path to the socket, the transcript or storage, and leaving the view drops
@@ -151,8 +143,6 @@ export class FlypiAppState {
 	 * as the vault and the scheduler.
 	 */
 	memories = $state<MemorySnapshot | undefined>(undefined);
-	/** A store this process could not open, or an edit it refused — said in the Memory view, not on the chat. */
-	memoryError = $state<string | undefined>(undefined);
 	protocolMismatch = $state<string | undefined>(undefined);
 	/**
 	 * Which pi the server loaded (docs/pi-upgrades.md Phase 8.1) — the version it is really running, not the
@@ -185,7 +175,8 @@ export class FlypiAppState {
 	/** Which chat a `debug` request was asked for, so a late reply refreshes that chat and not the one on screen. */
 	#debugTargets = new Map<string, string>();
 	#pendingRequest = new Map<string, (result: { conversationId?: string; sessionPath?: string; sessions?: SessionSummary[]; debug?: DebugInfo; config?: ConfigSnapshot; scheduler?: SchedulerSnapshot }) => void>();
-	#updateRequests = new Set<string>();
+	// Not a resource: installUpdate keeps its own request Set next to the other Maps (`#requests` is the resource lanes).
+	#updateRequests: Set<string> = new Set();
 
 	constructor(
 		transport: Transport,
@@ -594,9 +585,7 @@ export class FlypiAppState {
 
 	/** What the daemon's queue is, and what it last did. Asked when the section opens; see ActivityPanel. */
 	loadScheduler(): void {
-		const requestId = nextId();
-		this.#schedulerRequests.add(requestId);
-		void this.request({ type: "scheduler", requestId });
+		void this.request({ type: "scheduler", requestId: this.#resourceRequest("scheduler") });
 	}
 
 	/**
@@ -650,21 +639,21 @@ export class FlypiAppState {
 	}
 
 	showConfig(): void {
-		void this.request({ type: "getConfig", requestId: this.#configRequest() });
+		void this.request({ type: "getConfig", requestId: this.#resourceRequest("config") });
 	}
 
 	/** Apply an edit; the refreshed files come back with the ack and repopulate the panel. */
 	saveConfig(edits: { endpoints?: EndpointEdit[]; mcpServers?: McpEdit[]; defaults?: DefaultsEdit; files?: ConfigFileEdit[] }): void {
-		void this.request({ type: "saveConfig", ...edits, requestId: this.#configRequest() });
+		void this.request({ type: "saveConfig", ...edits, requestId: this.#resourceRequest("config") });
 	}
 
 	/**
-	 * The extension packages, as the agent dir declares them. Its request id is a config one, like the probe's:
-	 * a refusal there — a `settings.json` pi will not read — is a sentence about the settings view, and
-	 * `configError` is the line that panel has for those.
+	 * The extension packages, as the agent dir declares them. Its request id registers on the config lane,
+	 * like the probe's: a refusal there — a `settings.json` pi will not read — is a sentence about the
+	 * settings view, and `resourceError("config")` is the line that panel has for those.
 	 */
 	showPackages(): void {
-		void this.request({ type: "packages", requestId: this.#configRequest() });
+		void this.request({ type: "packages", requestId: this.#resourceRequest("config") });
 	}
 
 	/**
@@ -674,17 +663,17 @@ export class FlypiAppState {
 	 */
 	savePackages(edits: { install?: string[]; remove?: string[]; update?: string[] }): void {
 		this.packagesBusy = true;
-		void this.request({ type: "savePackages", ...edits, requestId: this.#configRequest() });
+		void this.request({ type: "savePackages", ...edits, requestId: this.#resourceRequest("config") });
 	}
 
 	/** Which pi the server runs, and what it could move to. Reaches no network: the daemon's stamp answers. */
 	showPiVersions(): void {
-		void this.request({ type: "piVersions", requestId: this.#configRequest() });
+		void this.request({ type: "piVersions", requestId: this.#resourceRequest("config") });
 	}
 
 	/** Ask the registry for a newer pi now. The answer arrives as the same `pi` frame, so the stamp line moves. */
 	checkPi(): void {
-		void this.request({ type: "piCheck", requestId: this.#configRequest() });
+		void this.request({ type: "piCheck", requestId: this.#resourceRequest("config") });
 	}
 
 	/**
@@ -695,26 +684,27 @@ export class FlypiAppState {
 	 */
 	usePi(version: string): void {
 		this.piBusy = true;
-		void this.request({ type: "usePi", version, requestId: this.#configRequest() });
+		void this.request({ type: "usePi", version, requestId: this.#resourceRequest("config") });
 	}
 
 	/**
-	 * Ask the servers. Its request id is a config one on purpose: a probe that fails is a settings-view
-	 * problem, and `configError` is the line that panel already has for those (see the error case).
+	 * Ask the servers. Its request id registers on the config lane on purpose: a probe that fails is a
+	 * settings-view problem, and `resourceError("config")` is the line that panel already has for those
+	 * (see the error case).
 	 */
 	checkMcp(): void {
 		this.mcpChecking = true;
-		void this.request({ type: "mcpStatus", requestId: this.#configRequest() });
+		void this.request({ type: "mcpStatus", requestId: this.#resourceRequest("config") });
 	}
 
 	/**
-	 * Start an OAuth sign-in for one server. Its request id is a config one, like the probe's: a failed sign-in
-	 * is a sentence about the row it was started from, and `configError` is the line the panel has for those.
-	 * The request stays open until the sign-in ends (docs/protocol.md).
+	 * Start an OAuth sign-in for one server. Its request id registers on the config lane, like the probe's:
+	 * a failed sign-in is a sentence about the row it was started from, and `resourceError("config")` is the
+	 * line the panel has for those. The request stays open until the sign-in ends (docs/protocol.md).
 	 */
 	signInMcp(name: string): void {
 		this.mcpSigningIn = true;
-		void this.request({ type: "mcpSignIn", name, requestId: this.#configRequest() });
+		void this.request({ type: "mcpSignIn", name, requestId: this.#resourceRequest("config") });
 	}
 
 	/**
@@ -727,7 +717,7 @@ export class FlypiAppState {
 
 	/** The vault, masks only. Asked for when the Secrets view opens and after nothing else. */
 	showSecrets(): void {
-		void this.request({ type: "secrets", requestId: this.#secretsRequest() });
+		void this.request({ type: "secrets", requestId: this.#resourceRequest("secrets") });
 	}
 
 	/**
@@ -735,17 +725,17 @@ export class FlypiAppState {
 	 * comes back: the ack carries the refreshed snapshot, whose rows hold masks.
 	 */
 	saveSecrets(edits: SecretEdit[]): void {
-		void this.request({ type: "saveSecrets", secrets: edits, requestId: this.#secretsRequest() });
+		void this.request({ type: "saveSecrets", secrets: edits, requestId: this.#resourceRequest("secrets") });
 	}
 
 	/** The one request the protocol answers with a plaintext. Ask for one name at a time, never all of them. */
 	revealSecret(name: string): void {
-		void this.request({ type: "revealSecret", name, requestId: this.#secretsRequest() });
+		void this.request({ type: "revealSecret", name, requestId: this.#resourceRequest("secrets") });
 	}
 
 	/** The store, the turn log and the wiki. Asked for when the Memory view opens and after nothing else. */
 	showMemories(): void {
-		void this.request({ type: "memory", requestId: this.#memoryRequest() });
+		void this.request({ type: "memory", requestId: this.#resourceRequest("memory") });
 	}
 
 	/**
@@ -753,7 +743,7 @@ export class FlypiAppState {
 	 * write produced — including the audit row it wrote, which is what makes the next undo possible.
 	 */
 	saveMemories(edits: MemoryEdit[]): void {
-		void this.request({ type: "saveMemory", memories: edits, requestId: this.#memoryRequest() });
+		void this.request({ type: "saveMemory", memories: edits, requestId: this.#resourceRequest("memory") });
 	}
 
 	hideSecret(): void {
@@ -761,33 +751,28 @@ export class FlypiAppState {
 	}
 
 	/**
-	 * Config requests outstanding, by request id: a rejected one is answered with an `error` frame carrying
-	 * that id, and this is how the settings view knows the failure it must show is one of its own rows.
+	 * Requests outstanding, by request id, each registered under the error LANE whose view its refusal
+	 * belongs to: a rejected request is answered with an `error` frame carrying that id, and this is how
+	 * the failure is said where the row is rather than on the chat. packages/mcp/pi register under
+	 * `"config"` — their failures are settings-view sentences sharing config's lane, exactly as before one
+	 * Map replaced the per-resource Sets, so `resourceError("packages")` and friends legitimately never set.
 	 */
-	#configRequests = new Set<string>();
-	// So a vault failure is said in the Secrets view rather than on the chat (see the error case).
-	#secretsRequests = new Set<string>();
-	// So a memory failure is said in the Memory view rather than on the chat (see the error case).
-	#memoryRequests = new Set<string>();
-	// So a scheduler failure lands in the scheduler section instead of the chat (see the error case).
-	#schedulerRequests = new Set<string>();
+	#requests = new Map<string, ResourceName>();
+	/**
+	 * The last refusal per lane, shown by `resourceError()`: a rejected row has to be said where the row is
+	 * — the settings view, the Secrets view, the Memory view, the scheduler section — not on the chat.
+	 */
+	#errors = $state<Partial<Record<ResourceName, string>>>({});
 
-	#configRequest(): string {
+	#resourceRequest(lane: ResourceName): string {
 		const requestId = nextId();
-		this.#configRequests.add(requestId);
+		this.#requests.set(requestId, lane);
 		return requestId;
 	}
 
-	#secretsRequest(): string {
-		const requestId = nextId();
-		this.#secretsRequests.add(requestId);
-		return requestId;
-	}
-
-	#memoryRequest(): string {
-		const requestId = nextId();
-		this.#memoryRequests.add(requestId);
-		return requestId;
+	/** The last thing this lane's view has to apologise for, or nothing. */
+	resourceError(name: ResourceName): string | undefined {
+		return this.#errors[name];
 	}
 
 	// ---- Frames -------------------------------------------------------------------------------------------
@@ -869,6 +854,8 @@ export class FlypiAppState {
 				this.mcpSignIn = { name: frame.name, url: frame.url };
 				return;
 			case "result": {
+				// A snapshot answers its request, whatever field it arrives in: retire the lane registration.
+				if (frame.requestId) this.#requests.delete(frame.requestId);
 				// A result carrying a conversation *and* a session path is the server naming the conversation
 				// that answers a file — the answer to `newSession`, `switchSession` or `fork`. It is recognised
 				// structurally so a page recovering from a restart, which may not know the request it made,
@@ -888,10 +875,9 @@ export class FlypiAppState {
 				}
 				if (frame.sessions) this.sessions = frame.sessions;
 				if (frame.config) {
-					if (frame.requestId) this.#configRequests.delete(frame.requestId);
 					this.config = frame.config;
 					// Files as they are now, so a refusal that came before them stops being shown.
-					this.configError = undefined;
+					this.#errors.config = undefined;
 					// And the last answer describes servers that may no longer be in the file: drop it rather than
 					// showing a connection state for a server that was just renamed or deleted.
 					this.mcpStatus = undefined;
@@ -912,25 +898,21 @@ export class FlypiAppState {
 				}
 				if (frame.scheduler) this.scheduler = frame.scheduler;
 				if (frame.secrets) {
-					if (frame.requestId) this.#secretsRequests.delete(frame.requestId);
 					this.secrets = frame.secrets;
 					// A snapshot is the truth about the vault, so a refusal that came before it stops being shown.
-					this.secretsError = undefined;
+					this.#errors.secrets = undefined;
 				}
 				if (frame.revealed) {
-					if (frame.requestId) this.#secretsRequests.delete(frame.requestId);
 					// The value arrives here and nowhere else. Its row's use count is deliberately not refreshed
 					// for it: that would be a second round trip to show a number nobody is waiting for.
 					this.revealed = frame.revealed;
 				}
 				if (frame.memory) {
-					if (frame.requestId) this.#memoryRequests.delete(frame.requestId);
 					this.memories = frame.memory;
 					// A snapshot is the truth about the store, so a refusal that came before it stops being shown.
-					this.memoryError = undefined;
+					this.#errors.memory = undefined;
 				}
 				if (frame.mcpStatus) {
-					if (frame.requestId) this.#configRequests.delete(frame.requestId);
 					this.mcpStatus = frame.mcpStatus;
 					this.mcpChecking = false;
 					// A status this fresh was taken after a sign-in ended, so the URL and the paste box have
@@ -939,17 +921,15 @@ export class FlypiAppState {
 					this.mcpSigningIn = false;
 				}
 				if (frame.pi) {
-					if (frame.requestId) this.#configRequests.delete(frame.requestId);
 					this.piVersions = frame.pi;
 					this.piBusy = false;
 				}
 				if (frame.packages) {
-					if (frame.requestId) this.#configRequests.delete(frame.requestId);
 					this.packages = frame.packages;
 					this.packagesBusy = false;
 					// The list is what the last install or removal produced, so a refusal that came before it
 					// stops being shown.
-					this.configError = undefined;
+					this.#errors.config = undefined;
 				}
 				this.#pendingRequest.get(frame.requestId)?.(frame);
 				this.#pendingRequest.delete(frame.requestId);
@@ -962,8 +942,13 @@ export class FlypiAppState {
 					this.updateInstalling = false;
 					return;
 				}
-				if (frame.requestId && this.#schedulerRequests.delete(frame.requestId)) {
-					this.schedulerError = frame.message;
+				// Look the request's lane up once: this refusal is said in that lane's view.
+				const lane = frame.requestId ? this.#requests.get(frame.requestId) : undefined;
+				if (frame.requestId) this.#requests.delete(frame.requestId);
+				// A queue that refused to answer (`npm run serve` has none) is said in the scheduler section,
+				// not on the chat — and nothing else that failed conversation is.
+				if (lane === "scheduler") {
+					this.#errors.scheduler = frame.message;
 					return;
 				}
 				// A conversation the server has forgotten — a new process, or a session it evicted — would make
@@ -982,30 +967,26 @@ export class FlypiAppState {
 				const about = frame.conversationId ? this.chats.find((candidate) => candidate.conversationId === frame.conversationId) : undefined;
 				if (about) about.error = frame.message;
 				else this.pageError = frame.message;
-				if (frame.requestId && this.#configRequests.delete(frame.requestId)) {
-					this.configError = frame.message;
-					// A failed probe leaves nothing to show, so the button goes back to being pressable.
-					this.mcpChecking = false;
-					// Same for a sign-in that failed or was cancelled: the URL is only worth showing while the
-					// sign-in that produced it is alive.
-					this.mcpSignIn = undefined;
-					this.mcpSigningIn = false;
-					// And an install the server refused (a source it could not fetch) leaves the list as it was:
-					// the button goes back to being pressable. Same for a pi version the server would not move to.
-					this.packagesBusy = false;
-					this.piBusy = false;
-					return;
-				}
-				if (frame.requestId && this.#secretsRequests.delete(frame.requestId)) {
-					this.secretsError = frame.message;
-					// A reveal the vault refused (a name that is not there) leaves nothing to hide, and a failed
-					// write leaves the snapshot as it was — both are said once, in the panel that asked.
-					this.revealed = undefined;
-				}
-				if (frame.requestId && this.#memoryRequests.delete(frame.requestId)) {
-					// The store refused an edit (a row that is not there, an undo of a write) or this process has
-					// no memory database at all. Nothing changed, so the refusal has to be said where the row is.
-					this.memoryError = frame.message;
+				if (lane) {
+					// The refusal is said in its lane's view (settings, Secrets, Memory) on top of being the
+					// page's last error, exactly as the per-resource fields did.
+					this.#errors[lane] = frame.message;
+					if (lane === "config") {
+						// A failed probe leaves nothing to show, so the button goes back to being pressable.
+						this.mcpChecking = false;
+						// Same for a sign-in that failed or was cancelled: the URL is only worth showing while the
+						// sign-in that produced it is alive.
+						this.mcpSignIn = undefined;
+						this.mcpSigningIn = false;
+						// And an install the server refused (a source it could not fetch) leaves the list as it was:
+						// the button goes back to being pressable. Same for a pi version the server would not move to.
+						this.packagesBusy = false;
+						this.piBusy = false;
+					} else if (lane === "secrets") {
+						// A reveal the vault refused (a name that is not there) leaves nothing to hide, and a failed
+						// write leaves the snapshot as it was — both are said once, in the panel that asked.
+						this.revealed = undefined;
+					}
 				}
 				return;
 			}

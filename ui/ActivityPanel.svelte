@@ -283,8 +283,8 @@ this conversation: {formatCache(app.transcript.total)}</pre>
 			<!-- What the daemon has queued and what it last changed. Every maintenance job writes a
 			     `job_runs` row, so this is that record rather than a status the process remembers. -->
 			<h2>Scheduler</h2>
-			{#if app.schedulerError}
-				<p class="scheduler-empty" data-role="scheduler-error">{app.schedulerError}</p>
+			{#if app.resourceError("scheduler")}
+				<p class="scheduler-empty" data-role="scheduler-error">{app.resourceError("scheduler")}</p>
 			{:else if !app.scheduler}
 				<p class="scheduler-empty">no scheduler info yet</p>
 			{:else}

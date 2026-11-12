@@ -329,12 +329,12 @@
 		</ul>
 	{/if}
 
-	{#if app.configError}
+	{#if app.resourceError("config")}
 		<!-- The server refused an edit: a name it cannot use, an endpoint with no base URL, a default it could
 			not resolve. The files on disk are unchanged, so the refusal has to be said here — a list that
 			quietly still shows the old values reads as a save that worked. -->
 		<ul class="cfg-errors" role="alert" data-role="save-error">
-			<li class="error">{app.configError}</li>
+			<li class="error">{app.resourceError("config")}</li>
 		</ul>
 	{/if}
 

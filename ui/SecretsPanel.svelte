@@ -168,12 +168,12 @@
 		<button type="button" data-role="back-to-chat" onclick={() => app.openChat()}>Back to chat</button>
 	</header>
 
-	{#if app.secretsError}
+	{#if app.resourceError("secrets")}
 		<!-- The vault refused a write (a name it cannot use, a value already stored under another name) or could
 			 not be opened at all. Nothing on disk changed, so the refusal has to be said here: a list that still
 			 shows the old rows reads as a save that worked. -->
 		<ul class="cfg-errors" role="alert" data-role="save-error">
-			<li class="error">{app.secretsError}</li>
+			<li class="error">{app.resourceError("secrets")}</li>
 		</ul>
 	{/if}
 

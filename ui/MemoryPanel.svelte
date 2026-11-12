@@ -118,11 +118,11 @@
 		<button type="button" data-role="back-to-chat" onclick={() => app.openChat()}>Back to chat</button>
 	</header>
 
-	{#if app.memoryError}
+	{#if app.resourceError("memory")}
 		<!-- The store refused an edit, or this process has no memory database. Nothing changed, so the refusal
 			 has to be said here: a list that still shows the old rows reads as a save that worked. -->
 		<ul class="cfg-errors" role="alert" data-role="save-error">
-			<li class="error">{app.memoryError}</li>
+			<li class="error">{app.resourceError("memory")}</li>
 		</ul>
 	{/if}
 
