@@ -31,19 +31,22 @@ export type ResourceCommand = { type: string; requestId?: string };
  */
 export type ResourceHandler = (command: ResourceCommand) => unknown | Promise<unknown>;
 
-export interface ResourceImpl {
-	/**
-	 * Present only for optional capabilities, and always with `unavailable`: can this process serve
-	 * this direction? The agent-dir resources (config, packages, mcp) omit both — their process always can.
-	 */
-	available?: (direction: ResourceDirection) => boolean;
-	/** The verbatim refusal per direction. `pi` is the resource whose two sentences differ. */
-	unavailable?: { read: string; write: string };
+/**
+ * The guard and its verbatim refusal sentences per direction (`pi` is the resource whose two differ)
+ * arrive as one pair or not at all: an `available` without `unavailable` would answer a refusal with a
+ * TypeError instead of a sentence, so `refusal` never has to assert. The agent-dir resources (config,
+ * packages, mcp) take the second branch — their process always can serve every direction.
+ */
+type ResourceGuards =
+	| { available: (direction: ResourceDirection) => boolean; unavailable: { read: string; write: string } }
+	| { available?: undefined; unavailable?: undefined };
+
+export type ResourceImpl = {
 	read?: ResourceHandler;
 	/** "Check now": refreshes and replies on the same field as a read (pi's `piCheck`). */
 	check?: ResourceHandler;
 	apply?: ResourceHandler;
-}
+} & ResourceGuards;
 
 /** One row of the dispatcher: what a command type resolves to. */
 export interface ResourceEntry {
@@ -52,12 +55,23 @@ export interface ResourceEntry {
 	/**
 	 * Commands beyond the ones the shared table already names for this resource: `pi` adds its second
 	 * write (`rollbackPi`) and its check (`piCheck`) here, because `RESOURCES` names one write per
-	 * resource and no check at all. A fake resource declares all of its commands on these lists.
+	 * resource and no check at all. A fake resource declares all of its commands on these lists, which
+	 * is why the strings are only loose here — `BuiltInResourceEntry` pins the built-ins to the protocol.
 	 */
 	reads?: readonly string[];
 	checks?: readonly string[];
 	writes?: readonly string[];
 	impl: ResourceImpl;
+}
+
+/**
+ * A built-in's extra commands are protocol names, so renaming one in `protocol.ts` fails to compile
+ * here rather than leaving the command unmatched by both the dispatcher and the `switch` in index.ts.
+ */
+export interface BuiltInResourceEntry extends ResourceEntry {
+	reads?: readonly ClientCommand["type"][];
+	checks?: readonly ClientCommand["type"][];
+	writes?: readonly ClientCommand["type"][];
 }
 
 /** The process the impls run in: the agent dir's paths and the optional capability callbacks. */
@@ -84,11 +98,11 @@ export interface ResourceTarget {
 /** The refusal sentence for a direction this process cannot serve; null when it can. */
 export function refusal(impl: ResourceImpl, direction: ResourceDirection): string | null {
 	if (!impl.available || impl.available(direction)) return null;
-	return direction === "write" ? impl.unavailable!.write : impl.unavailable!.read;
+	return direction === "write" ? impl.unavailable.write : impl.unavailable.read;
 }
 
 /** The seven built-in resources, from the shared table's command names and this process's `deps`. */
-export function resourceEntries(deps: ResourceDeps): Record<ResourceName, ResourceEntry> {
+export function resourceEntries(deps: ResourceDeps): Record<ResourceName, BuiltInResourceEntry> {
 	// The commands and fields come from RESOURCES (src/shared/resources.ts), so the dispatcher and the
 	// protocol cannot drift; only the two commands the table cannot name (rollbackPi, piCheck) are added below.
 	return {

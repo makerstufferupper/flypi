@@ -138,7 +138,9 @@ describe("the resource dispatcher answers a fake eighth resource over a real soc
 			client.send({ type: "gizmoGet", requestId: "g1" });
 			// No resource lookup happens for a frame the protocol refuses: the message is the parse's own,
 			// and the frame carries no requestId because nothing parsed.
-			expect(((await client.anyError()) as { message?: string }).message).toMatch(/^not a flypi command/);
+			const refused = (await client.anyError()) as { message?: string; requestId?: string };
+			expect(refused.message).toMatch(/^not a flypi command/);
+			expect(refused.requestId).toBeUndefined();
 		} finally {
 			await client.close();
 			await server.close();

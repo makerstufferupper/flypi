@@ -76,6 +76,9 @@ export interface FlypiServerOptions {
 	 * Resource commands beyond the seven — only a test's fake resource needs them today
 	 * (tests/server/resources-server.test.ts): a parse schema that also accepts the fake commands, and
 	 * the fake implementations, merged over the built-ins so a name here replaces that resource's server side.
+	 * The schema must stay a union *over* `ClientCommandSchema` that only adds command names: the parse
+	 * casts its result to `ClientCommand`, so a union member that loosened an existing command would hand
+	 * unvalidated fields to the conversation arms below.
 	 */
 	clientCommandSchema?: TSchema;
 	resources?: Record<string, ResourceEntry>;

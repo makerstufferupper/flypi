@@ -39,5 +39,8 @@ describe("the resource table cannot drift from the protocol", () => {
 		const notResources = ["type", "requestId", "conversationId", "sessionPath", "sessions", "debug", "revealed", "interrupted"];
 		const snapshots = Object.keys(ResultFrame.properties).filter((f) => !notResources.includes(f));
 		expect(new Set(snapshots)).toEqual(new Set(Object.values(RESOURCES).map((r) => r.field)));
+		// Set equality alone would pass for two resources sharing one field, so the table's fields are distinct.
+		const fields = Object.values(RESOURCES).map((r) => r.field);
+		expect(new Set(fields).size).toBe(fields.length);
 	});
 });
