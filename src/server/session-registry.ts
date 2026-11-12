@@ -101,14 +101,14 @@ const DEFAULT_IDLE_TTL_MS = 15 * 60 * 1000;
 
 export class SessionRegistry {
 	private readonly conversations = new Map<string, Conversation>();
-	private readonly paths: FlypiPaths;
+	private readonly layout: FlypiPaths;
 	private readonly createSession: CreateSession;
 	private readonly idleTtlMs: number;
 	private readonly now: () => number;
 	private readonly onRunStatus: SessionRegistryOptions["onRunStatus"];
 
 	constructor(private readonly options: SessionRegistryOptions) {
-		this.paths = flypiPaths(options.root);
+		this.layout = flypiPaths(options.root);
 		this.createSession =
 			options.createSession ??
 			(({ sessionManager, conversationId, onMemoryBlock }) =>
@@ -120,6 +120,11 @@ export class SessionRegistry {
 
 	get size(): number {
 		return this.conversations.size;
+	}
+
+	/** The `.flypi` layout of this process, for the resource dispatcher (src/server/resources-server.ts). */
+	get paths(): FlypiPaths {
+		return this.layout;
 	}
 
 	async create(): Promise<Conversation> {

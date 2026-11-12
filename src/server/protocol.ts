@@ -7,7 +7,7 @@
  * nice-to-have). The frame around them is what this file owns: `seq`, `conversationId`,
  * `requestId`.
  */
-import { Type, type Static } from "typebox";
+import { Type, type Static, type TSchema } from "typebox";
 import { Check, Errors } from "typebox/value";
 import { MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES } from "../shared/attachments.ts";
 
@@ -1041,16 +1041,21 @@ export type WikiSectionRow = Static<typeof WikiSectionRow>;
 export type ModelEntry = Static<typeof ModelEntry>;
 export type ContextUsage = Static<typeof ContextUsage>;
 
-/** Parse a client frame. Never throws: a bad frame is an error message, not a stack trace. */
-export function parseClientCommand(raw: string): { ok: true; command: ClientCommand } | { ok: false; message: string } {
+/**
+ * Parse a client frame. Never throws: a bad frame is an error message, not a stack trace.
+ * `schema` is the closed union by default; a server hosting a test's extra resource commands passes
+ * a union over it (src/server/index.ts `clientCommandSchema`), which is how the resource dispatcher's
+ * seam is driven without a protocol version bump.
+ */
+export function parseClientCommand(raw: string, schema: TSchema = ClientCommandSchema): { ok: true; command: ClientCommand } | { ok: false; message: string } {
 	let value: unknown;
 	try {
 		value = JSON.parse(raw);
 	} catch (error) {
 		return { ok: false, message: `not JSON: ${(error as Error).message}` };
 	}
-	if (Check(ClientCommandSchema, value)) return { ok: true, command: value };
-	return { ok: false, message: `not a flypi command: ${describe(ClientCommandSchema, value)}` };
+	if (Check(schema, value)) return { ok: true, command: value as ClientCommand };
+	return { ok: false, message: `not a flypi command: ${describe(schema, value)}` };
 }
 
 export function encodeFrame(frame: ServerFrame): string {

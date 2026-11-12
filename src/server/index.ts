@@ -11,9 +11,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { extname, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
+import type { TSchema } from "typebox";
 import { MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES } from "../shared/attachments.ts";
 import { parsePath, VIEW_PATHS } from "../shared/views.ts";
 import { PROTOCOL_VERSION, encodeFrame, parseClientCommand, type InterruptedRun, type PiVersions, type ResultFrame, type SchedulerSnapshot, type ServerFrame } from "./protocol.ts";
+import { commandTargets, refusal, resourceEntries, type ResourceEntry } from "./resources-server.ts";
 import type { PiInfo } from "../daemon/pi.ts";
 import type { MemoryApi } from "./memory-api.ts";
 import type { SessionRegistry } from "./session-registry.ts";
@@ -70,6 +72,13 @@ export interface FlypiServerOptions {
 	 * session, so the chat can say so instead of showing a half-finished answer with no explanation.
 	 */
 	interruptedRun?: (sessionFile: string) => InterruptedRun | undefined;
+	/**
+	 * Resource commands beyond the seven — only a test's fake resource needs them today
+	 * (tests/server/resources-server.test.ts): a parse schema that also accepts the fake commands, and
+	 * the fake implementations, merged over the built-ins so a name here replaces that resource's server side.
+	 */
+	clientCommandSchema?: TSchema;
+	resources?: Record<string, ResourceEntry>;
 }
 
 export interface FlypiServerHandle {
@@ -106,6 +115,19 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 	const host = options.host ?? "127.0.0.1";
 	const token = options.token ?? randomUUID();
 	const registry = options.registry;
+	// The resource dispatcher (src/server/resources-server.ts): one command→resource lookup for the seven
+	// snapshots, so no `case` below guards, calls and replies for a resource by hand.
+	const builtResources = resourceEntries({
+		paths: registry.paths,
+		reloadExtensions: () => registry.reloadExtensions(),
+		piVersions: options.piVersions,
+		piCheck: options.piCheck,
+		usePi: options.usePi,
+		scheduler: options.scheduler,
+		secrets: options.secrets,
+		memory: options.memory,
+	});
+	const resourceCommands = commandTargets({ ...builtResources, ...options.resources });
 
 	const httpServer = createServer((request, response) => {
 		const path = new URL(request.url ?? "/", `http://${host}`).pathname;
@@ -239,7 +261,7 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 		send({ type: "hello", protocolVersion: PROTOCOL_VERSION, serverVersion: options.serverVersion ?? "dev", now: Date.now(), ...(options.pi ? { pi: options.pi() } : {}) });
 
 		const handle = async (raw: string): Promise<void> => {
-			const parsed = parseClientCommand(raw);
+			const parsed = parseClientCommand(raw, options.clientCommandSchema);
 			if (!parsed.ok) return fail(parsed.message);
 			const command = parsed.command;
 			const requestId = command.requestId;
@@ -251,6 +273,17 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 			};
 
 			try {
+				// One dispatcher for the seven resources: guard → call → reply the snapshot on its field.
+				// A string answer is a refused action (`usePi` says why rather than showing a snapshot) and a
+				// null one the bare ack the pi switch sends before it restarts.
+				const resource = resourceCommands.get(command.type);
+				if (resource) {
+					const refused = refusal(resource.impl, resource.direction);
+					if (refused) return fail(refused, { requestId });
+					const snapshot = await resource.run(command);
+					if (typeof snapshot === "string") return fail(snapshot, { requestId });
+					return reply(requestId, snapshot === null ? {} : ({ [resource.field]: snapshot } as Omit<ResultFrame, "type" | "requestId">));
+				}
 				switch (command.type) {
 					case "newSession": {
 						const conversation = await registry.create();
@@ -326,49 +359,6 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 						// The ack goes out before the restart, because the restart closes this socket.
 						if (!options.installUpdate) return fail("this flypi process does not manage its own updates — it is a checkout or a headless server", { requestId });
 						return options.installUpdate().then((why) => (why ? fail(why, { requestId }) : reply(requestId)));
-					case "scheduler":
-						// The queue belongs to the daemon, not to a conversation, so a process without one says so
-						// in an error frame the panel can show rather than rendering an empty table.
-						if (!options.scheduler) return fail("this flypi process has no scheduler — `flypi start` runs one", { requestId });
-						return reply(requestId, { scheduler: options.scheduler() });
-					case "getConfig":
-						// Config files, not conversations: the settings panel reads what is on disk.
-						return reply(requestId, { config: registry.configSnapshot() });
-					case "saveConfig":
-						// The refreshed files come back with the ack, as with deleteSession: the panel's next
-						// thing to show is what the write produced.
-						return reply(requestId, { config: registry.saveConfig(command) });
-					case "packages":
-						// The packages the agent loads, read from the agent dir. No network: what has an update
-						// waiting comes from the daemon's daily stamp (src/agent/packages.ts).
-						return reply(requestId, { packages: registry.packages() });
-					case "savePackages":
-						// npm or git does the work, so this is the slow one of the settings commands; the page shows a
-						// busy state while it is open. The refreshed list comes back with the ack, as with saveConfig.
-						return reply(requestId, { packages: await registry.applyPackages(command) });
-					case "piVersions":
-						// Which pi answers, and what could be moved to. The daemon's daily stamp, never a live
-						// check — the same rule `packages` follows.
-						if (!options.piVersions) return fail("this flypi process does not manage pi versions — it is a checkout or a headless server", { requestId });
-						return reply(requestId, { pi: options.piVersions() });
-					case "piCheck":
-						// The daily stamp, refreshed on request. Slow by nature (one registry call), and the fresh
-						// answer comes back as the same `pi` frame the `piVersions` command sends.
-						if (!options.piCheck) return fail("this flypi process does not manage pi versions — it is a checkout or a headless server", { requestId });
-						return options.piCheck().then((pi) => reply(requestId, { pi }));
-					case "usePi":
-					case "rollbackPi": {
-						// The pointer moves and the daemon restarts through the CLI, so the ack has to go out
-						// first: this socket is the one being replaced. What the page shows afterwards is the
-						// version the new process reports, not a promise about this one.
-						if (!options.usePi) return fail("this flypi process does not manage pi versions — in a checkout, `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`", { requestId });
-						return options.usePi(command.version).then((why) => (why ? fail(why, { requestId }) : reply(requestId)));
-					}
-					case "mcpStatus":
-						// Not config and not a conversation: the servers themselves are asked. Slow by nature (a
-						// stdio server has to start), which is why the panel asks once and shows a busy state
-						// rather than polling (src/agent/mcp-status.ts).
-						return reply(requestId, { mcpStatus: await registry.mcpStatus() });
 					case "mcpSignIn":
 						// The browser round-trip (risk 5). This request stays open for the whole sign-in: the URL is
 						// pushed as an `mcpAuth` frame, the redirect arrives as `mcpRedirect`, and the ack is the
@@ -383,28 +373,14 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 							return fail(`no sign-in is waiting for "${command.name}" — start one with "Sign in"`, { requestId });
 						}
 						return;
-					case "secrets":
-						if (!options.secrets) return fail("this flypi process has no vault open", { requestId });
-						return reply(requestId, { secrets: options.secrets.snapshot() });
-					case "saveSecrets":
-						if (!options.secrets) return fail("this flypi process has no vault open", { requestId });
-						// The refreshed list comes back with the ack, as with saveConfig: the page should show what
-						// the vault holds now, including the mask it chose for a value it never sends back.
-						return reply(requestId, { secrets: options.secrets.apply(command.secrets) });
 					case "revealSecret": {
-						if (!options.secrets) return fail("this flypi process has no vault open", { requestId });
-						const revealed = options.secrets.reveal(command.name);
+						// The vault sentence comes from the secrets resource's guard, so it is spelled once.
+						const refused = refusal(builtResources.secrets.impl, "read");
+						if (refused) return fail(refused, { requestId });
+						const revealed = options.secrets!.reveal(command.name);
 						if (revealed === undefined) return fail(`no secret named "${command.name}"`, { requestId });
 						return reply(requestId, { revealed });
 					}
-					case "memory":
-						if (!options.memory) return fail("this flypi process has no memory store open — `flypi start` runs the one that owns it", { requestId });
-						return reply(requestId, { memory: options.memory.snapshot() });
-					case "saveMemory":
-						if (!options.memory) return fail("this flypi process has no memory store open — `flypi start` runs the one that owns it", { requestId });
-						// The refreshed store comes back with the ack, as with saveSecrets: the panel's next thing to
-						// show is what the write produced, including the audit row it just wrote.
-						return reply(requestId, { memory: options.memory.apply(command.memories) });
 				}
 			} catch (error) {
 				onError(error as Error);
