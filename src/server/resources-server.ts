@@ -77,7 +77,7 @@ export interface BuiltInResourceEntry extends ResourceEntry {
 /** The process the impls run in: the agent dir's paths and the optional capability callbacks. */
 export interface ResourceDeps {
 	paths: FlypiPaths;
-	/** A package write reloads the open conversations (src/server/session-registry.ts `reloadExtensions`). */
+	/** A package write reloads the *idle* conversations: a turn in flight keeps the extensions it started with (src/server/session-registry.ts `reloadExtensions`). */
 	reloadExtensions: () => Promise<void>;
 	piVersions?: () => PiVersions;
 	piCheck?: () => Promise<PiVersions>;
@@ -111,6 +111,8 @@ export function resourceEntries(deps: ResourceDeps): Record<ResourceName, BuiltI
 			impl: {
 				read: () => readConfig(deps.paths),
 				apply: (command) => {
+					// No reload on purpose: a conversation already holds the model runtime it started with,
+					// and a new one reads the new files.
 					applyConfigEdits(deps.paths, command as CommandOf<"saveConfig">);
 					return readConfig(deps.paths);
 				},
