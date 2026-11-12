@@ -16,6 +16,8 @@ import { MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES } from "../shared/attachments.ts"
 import { parsePath, VIEW_PATHS } from "../shared/views.ts";
 import { PROTOCOL_VERSION, encodeFrame, parseClientCommand, type InterruptedRun, type PiVersions, type ResultFrame, type SchedulerSnapshot, type ServerFrame } from "./protocol.ts";
 import { commandTargets, refusal, resourceEntries, type ResourceEntry } from "./resources-server.ts";
+import { mcpStatus } from "../agent/mcp-status.ts";
+import { signIn, submitRedirect } from "../agent/mcp-signin.ts";
 import type { PiInfo } from "../daemon/pi.ts";
 import type { MemoryApi } from "./memory-api.ts";
 import type { SessionRegistry } from "./session-registry.ts";
@@ -366,13 +368,13 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 						// The browser round-trip (risk 5). This request stays open for the whole sign-in: the URL is
 						// pushed as an `mcpAuth` frame, the redirect arrives as `mcpRedirect`, and the ack is the
 						// refreshed status — the row the user was looking at, answering now that it has a token.
-						await registry.mcpSignIn(command.name, (url) => send({ type: "mcpAuth", name: command.name, url }));
-						return reply(requestId, { mcpStatus: await registry.mcpStatus() });
+						await signIn(registry.paths, command.name, (url) => send({ type: "mcpAuth", name: command.name, url }));
+						return reply(requestId, { mcpStatus: await mcpStatus(registry.paths) });
 					case "mcpRedirect":
 						// No ack of its own: the `mcpSignIn` still open is what answers this, and a sign-in that
 						// failed is an `error` frame for that request. Here there is only one thing to say: that
 						// nothing was waiting for this paste.
-						if (!registry.submitMcpRedirect(command.name, command.url)) {
+						if (!submitRedirect(command.name, command.url)) {
 							return fail(`no sign-in is waiting for "${command.name}" — start one with "Sign in"`, { requestId });
 						}
 						return;

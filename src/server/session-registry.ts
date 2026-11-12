@@ -12,17 +12,13 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { SessionManager, type AgentSessionEvent, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { flypiPaths, type FlypiPaths } from "../agent/paths.ts";
-import { applyConfigEdits, readConfig, type ConfigEdits } from "../agent/config-files.ts";
-import { applyPackageEdits, readPackages, type PackageEdits } from "../agent/packages.ts";
 import { createFlypiSession, type FlypiModel, type FlypiSession, type FlypiThinkingLevel } from "../agent/runtime.ts";
-import { mcpStatus } from "../agent/mcp-status.ts";
-import { signIn as startMcpSignIn, submitRedirect as submitMcpRedirect } from "../agent/mcp-signin.ts";
 import { redactSecrets } from "../secrets/redact.ts";
 import type { SecretStore } from "../secrets/vault.ts";
 import { isImage, type FlypiAttachment } from "../shared/attachments.ts";
 import { EventLog } from "./event-log.ts";
 import { createExtensionUiBridge } from "./extension-ui.ts";
-import type { CommandRow, DebugInfo, ExtensionUiFrame, SessionSummary, ConfigSnapshot, McpStatusSnapshot, PackagesSnapshot } from "./protocol.ts";
+import type { CommandRow, DebugInfo, ExtensionUiFrame, SessionSummary } from "./protocol.ts";
 import type { FlypiMessage } from "../shared/transcript.ts";
 
 /** `at` is when this process saw the event (src/server/event-log.ts); a listener that does not need the
@@ -292,41 +288,6 @@ export class SessionRegistry {
 	}
 
 	/**
-	 * The config files the settings panel edits — the agent dir's `models.json` and `mcp.json`, read through
-	 * flypi's own paths so the panel can never reach the host `~/.pi` (risk 1). Not conversation-scoped:
-	 * a conversation already holds the model runtime it started with, and a new one reads the new files.
-	 */
-	configSnapshot(): ConfigSnapshot {
-		return readConfig(this.paths);
-	}
-
-	/** Apply the panel's edits and hand back the refreshed files, so the panel shows what is on disk. */
-	saveConfig(edits: ConfigEdits): ConfigSnapshot {
-		applyConfigEdits(this.paths, edits);
-		return readConfig(this.paths);
-	}
-
-	/**
-	 * The extension packages `.flypi/agent/settings.json` declares (src/agent/packages.ts). Not
-	 * conversation-scoped: the list is the agent dir's, and what a conversation holds is the set of extensions
-	 * it loaded when it started — which `applyPackages` replaces, below.
-	 */
-	packages(): PackagesSnapshot {
-		return readPackages(this.paths);
-	}
-
-	/**
-	 * Install, remove or update a package, then put the new set into the conversations that are open, so the
-	 * tool someone just installed is in the chat in front of them and not only in the next one. A turn in
-	 * flight is never reloaded — that conversation keeps the extensions it started the turn with.
-	 */
-	async applyPackages(edits: PackageEdits): Promise<PackagesSnapshot> {
-		const snapshot = await applyPackageEdits(this.paths, edits);
-		await this.reloadExtensions();
-		return snapshot;
-	}
-
-	/**
 	 * Re-run each idle conversation's extensions against the packages on disk now. `reload()` swaps the extension
 	 * runtime but does not re-emit `session_start` for a headless session, and that event is what connects the
 	 * MCP servers — so without the `bindExtensions` that follows, reloading for an extension would silently drop
@@ -343,30 +304,6 @@ export class SessionRegistry {
 				console.error(`flypi: conversation ${conversation.id} kept its old extensions: ${(error as Error).message}`);
 			}
 		}
-	}
-
-	/**
-	 * The MCP servers asked directly whether they are up, for the settings view (src/agent/mcp-status.ts).
-	 * Deliberately not the registry's own sessions: a running conversation holds the connections it made when
-	 * it started, and the question the panel answers is whether a server named in the file answers now.
-	 */
-	mcpStatus(): Promise<McpStatusSnapshot> {
-		return mcpStatus(this.paths);
-	}
-
-	/**
-	 * Start an OAuth sign-in for one configured server (docs/architecture.md Phase 5, risk 5): the URL goes out
-	 * through `onAuthorizationUrl` as an `mcpAuth` frame, the redirect comes back on `submitRedirect`, and the
-	 * returned promise settles when the tokens are stored. Not a conversation's business — the next conversation
-	 * is the one that gets the connection.
-	 */
-	mcpSignIn(name: string, onAuthorizationUrl: (url: string) => void): Promise<void> {
-		return startMcpSignIn(this.paths, name, onAuthorizationUrl);
-	}
-
-	/** The pasted redirect URL. False when no sign-in is waiting for that name, which the WS layer reports. */
-	submitMcpRedirect(name: string, redirectUrl: string): boolean {
-		return submitMcpRedirect(name, redirectUrl);
 	}
 
 	/**

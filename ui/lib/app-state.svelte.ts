@@ -854,7 +854,7 @@ export class FlypiAppState {
 				this.mcpSignIn = { name: frame.name, url: frame.url };
 				return;
 			case "result": {
-				// A snapshot answers its request, whatever field it arrives in: retire the lane registration.
+				// A snapshot retires its request id — the dispatcher answers each id exactly once, so one frame is enough to drop the lane registration.
 				if (frame.requestId) this.#requests.delete(frame.requestId);
 				// A result carrying a conversation *and* a session path is the server naming the conversation
 				// that answers a file — the answer to `newSession`, `switchSession` or `fork`. It is recognised
