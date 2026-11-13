@@ -15,7 +15,7 @@ import { FlypiConfigError, createFlypiSession, type FlypiSession } from "../../s
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { startMemoryServer, type MemoryServerHandle } from "../../src/memory/mcp.ts";
-import { createTempFlypiRoot } from "../helpers/flypi-root.ts";
+import { createTempFlypiRoot, hostPiRoot } from "../helpers/flypi-root.ts";
 import { activeToolNames } from "../helpers/flypi-harness.ts";
 import { createStubModel } from "../helpers/stub-model.ts";
 import { openTestDb, wordEmbedder } from "../helpers/memory-db.ts";
@@ -106,6 +106,22 @@ describe("the packages a flypi checkout declares", () => {
 		// Nothing was installed, and the broken file is still the operator's to fix.
 		expect(existsSync(join(paths.agentDir, "npm"))).toBe(false);
 		expect(readFileSync(paths.settingsPath, "utf8")).toBe("{ packages: ]");
+	});
+
+	// The panel's install is a writer of the agent-dir files like the settings save is: pi's package manager
+	// puts the code under `<agentDir>/npm` and records the source in `<agentDir>/settings.json`, so a root
+	// inside the host `~/.pi` has to be refused before either lands (docs/risks.md risk 1).
+	it("refuses to install under the host pi directory, before the code or the declaration lands", async () => {
+		const host = hostPiRoot();
+		try {
+			// The package itself lives in an ordinary temp checkout, so a run without the guard shows what it
+			// prevents rather than failing for want of a source.
+			const { dir } = rootWithPackage();
+			await expect(applyPackageEdits(flypiPaths(host.root), { install: [dir] })).rejects.toThrow(/host pi directory/);
+			expect(existsSync(join(host.root, ".flypi"))).toBe(false);
+		} finally {
+			host.restore();
+		}
 	});
 
 	it("keeps the update stamp as the answer the panel shows, and says when it is stale", () => {

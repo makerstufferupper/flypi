@@ -15,7 +15,7 @@
  * (src/agent/mcp-status.ts).
  */
 import type { McpServerEntry } from "@earendil-works/pi-coding-agent";
-import type { FlypiPaths } from "./paths.ts";
+import { assertFlypiOwned, type FlypiPaths } from "./paths.ts";
 import { loadPiMcpRuntime, mcpCredentials, usesMcpOAuth, type PiMcpOAuthSettings, type PiMcpRuntime } from "./pi-mcp.ts";
 import { readFlypiMcpConfig } from "./runtime.ts";
 
@@ -55,6 +55,10 @@ export async function signIn(
 	onAuthorizationUrl: (url: string) => void,
 	timeoutMs = SIGN_IN_TIMEOUT_MS,
 ): Promise<void> {
+	// Tokens land in `paths.mcpAuthPath`, which is exactly the file pi would otherwise put in the host
+	// `~/.pi/agent` (docs/risks.md risk 1) — so a hostile root is refused here, before the flow starts and
+	// before anything is written.
+	assertFlypiOwned(paths);
 	const entry = readFlypiMcpConfig(paths).servers.find((server) => server.name === name);
 	if (!entry) throw new Error(`no MCP server named "${name}" in ${paths.mcpPath}`);
 	const target = signInTarget(entry, paths.mcpPath);

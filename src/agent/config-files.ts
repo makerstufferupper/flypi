@@ -273,9 +273,13 @@ export function ensureAgentConfig(paths: FlypiPaths): string[] {
  * different files and different intents, and there is no transaction across three files.
  */
 export function applyConfigEdits(paths: FlypiPaths, edits: ConfigEdits): void {
-	// Every writer of the agent-dir files comes through here (the panel's save, the daemon's memory entry),
-	// so this is where risk 1 is enforced for writes: a root inside the host `~/.pi` is refused before a file
-	// is opened, not after. docs/risks.md risk 1.
+	// Risk 1 for writes: a root inside the host `~/.pi` is refused before a file is opened, not after.
+	// The three writers of the agent-dir files each assert on their own `FlypiPaths`: this function (the panel's
+	// save, the daemon's memory entry), `applyPackageEdits` (src/agent/packages.ts, the panel's install) and
+	// `signIn` (src/agent/mcp-signin.ts, whose tokens land in mcp-auth.json). The helpers that take a bare
+	// `root: string` cannot assert — `readPackageCheck`/`writePackageCheck`, `daemon/update.ts`, `daemon/pi.ts` —
+	// and are covered by the assert at the top of `startFlypiDaemon`, the one process that reaches them.
+	// docs/risks.md risk 1.
 	assertFlypiOwned(paths);
 	if (edits.files?.length) {
 		// First, so an endpoint edit or a default in the same request is checked against the file as the raw

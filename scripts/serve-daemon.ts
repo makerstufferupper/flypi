@@ -18,7 +18,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { flypiPaths, memoryMcpUrl } from "../src/agent/paths.ts";
+import { assertFlypiOwned, flypiPaths, memoryMcpUrl } from "../src/agent/paths.ts";
 import { builtUi, startFlypiDaemon } from "../src/daemon/index.ts";
 import { memoryConfig } from "../src/memory/config.ts";
 import { openMemoryDb } from "../src/memory/db.ts";
@@ -35,6 +35,10 @@ const flagValue = (name: string): string | undefined => {
 };
 
 const paths = flypiPaths(resolve(flagValue("--root") ?? process.cwd()));
+// Before the first write of the process, which is not inside `startFlypiDaemon`: `scripts/flypi.mjs` has already
+// made `<root>/.flypi` and written `daemon-flags.json`, and the embedder below can download ~1 GB into
+// `<root>/.flypi/models`. docs/risks.md risk 1.
+assertFlypiOwned(paths);
 const config = memoryConfig(paths);
 if (flagValue("--embeddings")) config.embeddings.provider = flagValue("--embeddings") === "none" ? "none" : "transformers";
 if (flagValue("--judge")) config.judge.provider = flagValue("--judge") === "none" ? "none" : "transformers";

@@ -9,7 +9,7 @@
  * shape it invented.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mcpStatus } from "../../src/agent/mcp-status.ts";
 import { signIn, signInIsWaiting, submitRedirect } from "../../src/agent/mcp-signin.ts";
@@ -17,7 +17,7 @@ import { mcpCredentials } from "../../src/agent/pi-mcp.ts";
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
 import { startMemoryServer, type MemoryServerHandle } from "../../src/memory/mcp.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
-import { createTempFlypiRoot } from "../helpers/flypi-root.ts";
+import { createTempFlypiRoot, hostPiRoot } from "../helpers/flypi-root.ts";
 import { FAKE_ACCESS_TOKEN, startFakeOAuth, type FakeOAuth } from "../helpers/fake-oauth.ts";
 import { openTestDb, wordEmbedder } from "../helpers/memory-db.ts";
 
@@ -73,6 +73,23 @@ describe("signing an MCP server in from the settings view", () => {
 		const stored = JSON.parse(readFileSync(paths.mcpAuthPath, "utf8"));
 		const state = Object.values(stored)[0] as { tokens?: { access_token?: string } };
 		expect(state.tokens?.access_token).toBe(FAKE_ACCESS_TOKEN);
+	});
+
+	// The token file is the one risk 1 is about: pi's default store is `<agent-dir>/mcp-auth.json` of *its* own
+	// agent dir, which for a hostile root is `~/.pi/agent`. The entry below is a sign-in that would succeed, so
+	// the refusal cannot be the missing or broken entry talking. The fake server is loopback HTTP — the same one
+	// every test in this file uses — so the guardless run writes into the temp home and the guard stops it first.
+	it("refuses a root inside the host pi directory before it can store a token there", async () => {
+		const host = hostPiRoot();
+		try {
+			const paths = flypiPaths(host.root);
+			mkdirSync(paths.agentDir, { recursive: true });
+			writeFileSync(paths.mcpPath, JSON.stringify({ mcpServers: { sentry: oauthEntry() } }));
+			await expect(signInWithPaste(paths).done).rejects.toThrow(/host pi directory/);
+			expect(existsSync(paths.mcpAuthPath)).toBe(false);
+		} finally {
+			host.restore();
+		}
 	});
 
 	it("asks the server's own authorization server, and registers a client when the entry names none", async () => {

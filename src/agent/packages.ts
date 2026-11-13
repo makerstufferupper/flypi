@@ -26,7 +26,7 @@ import { dirname, join } from "node:path";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { isNewer, published } from "../daemon/update.ts";
 import { FlypiConfigError } from "./runtime.ts";
-import type { FlypiPaths } from "./paths.ts";
+import { assertFlypiOwned, type FlypiPaths } from "./paths.ts";
 
 /** How long the package answer stays good — the daemon's day, the same rhythm as flypi's own update check. */
 export const PACKAGE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -162,6 +162,10 @@ export function readPackages(paths: FlypiPaths): PackageSnapshot {
  * and then decline to record it, which is an install that never lands.
  */
 export async function applyPackageEdits(paths: FlypiPaths, edits: PackageEdits): Promise<PackageSnapshot> {
+	// The panel's install writes the agent-dir files too — pi's package manager puts the code under
+	// `<agentDir>/npm` and the declaration in `<agentDir>/settings.json` — so risk 1 is enforced here as well,
+	// before the first npm/git call lands anything. docs/risks.md risk 1.
+	assertFlypiOwned(paths);
 	const { manager, settings } = packages(paths);
 	const unreadable = settingsErrors(settings);
 	if (unreadable.length > 0) throw new FlypiConfigError(unreadable.join("; "));
