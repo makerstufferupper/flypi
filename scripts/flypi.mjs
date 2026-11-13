@@ -34,6 +34,7 @@ const serveDaemon = resolve(fileURLToPath(import.meta.url), "..", "serve-daemon.
 const secretCli = resolve(fileURLToPath(import.meta.url), "..", "secret.ts");
 const updateCli = resolve(fileURLToPath(import.meta.url), "..", "update.ts");
 const piCli = resolve(fileURLToPath(import.meta.url), "..", "pi.ts");
+// shortcut: the CLI is plain .mjs and cannot import paths.ts; tests/daemon/daemon-file.test.ts pins the shared shape.
 const infoPath = resolve(root, ".flypi", "daemon.json");
 const logPath = resolve(root, ".flypi", "daemon.log");
 /**
@@ -161,6 +162,7 @@ async function waitForStartup(stalePid, died, logFrom, timeoutMs = STARTUP_TIMEO
 function report(info, status) {
 	console.log(`flypi: running (pid ${info.pid}) — root ${root}`);
 	console.log(`flypi: agent   http://${info.host}:${info.port}  (token ${info.token})`);
+	// shortcut: the CLI is plain .mjs and cannot import paths.ts; tests/daemon/daemon-file.test.ts pins the shared shape.
 	console.log(`flypi: memory  http://127.0.0.1:${info.memoryPort}/mcp`);
 	if (status) console.log(`flypi: started ${status.startedAt}, version ${status.version}, ${status.jobs} job(s) queued`);
 	// Which pi it loaded (src/daemon/pi.ts) — not the range package.json declares, which is the point.
