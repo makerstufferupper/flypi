@@ -150,6 +150,32 @@ describe("session registry", () => {
 		}
 	});
 
+	// The settle is written *before* `agent_settled` is pushed, so the row's seq is the last event of the turn
+	// and not the settle frame itself. A listener can only see the settle after the push, so the one-seq gap
+	// between the two numbers is the whole ordering, and a `markRun` that moved into the listener would erase it.
+	it("writes the settle run row one seq before the settle event is recorded", async () => {
+		let settleSeq = -1;
+		const h = await harness(toolTurn(), {
+			onRunStatus: (_id, status, info) => {
+				if (status === "idle") settleSeq = info.seq;
+			},
+		});
+		try {
+			const conversation = await h.registry.create();
+			let settledSeq = 0;
+			h.registry.attach(conversation.id, (seq, event) => {
+				if (event.type === "agent_settled") settledSeq = seq;
+			});
+			void h.registry.prompt(conversation.id, "go");
+			await settled(conversation.id, h.registry);
+
+			expect(settledSeq).toBeGreaterThan(0);
+			expect(settleSeq).toBe(settledSeq - 1);
+		} finally {
+			h.cleanup();
+		}
+	});
+
 	it("queues a follow-up instead of interrupting the running turn", async () => {
 		// Two long answers: the first is still streaming when the follow-up arrives.
 		const h = await harness(

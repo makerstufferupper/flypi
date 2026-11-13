@@ -1,11 +1,13 @@
 /**
  * One `AgentSession` per conversationId (docs/architecture.md Phase 1).
  *
- * The registry owns lifecycle and the event fan-out; the WS layer never touches a session.
+ * The registry owns lifecycle and the event fan-out; the WS layer never touches a session. Driving a turn is
+ * `src/agent/turn.ts` (docs/deepening.md Phase 11.3): this file keeps the conversation — its log, its
+ * listeners, its memory block, its run row — and asks the driver to run a turn of it.
  * Sessions keep running with no client attached — the event log is per conversation, not per
  * socket, so a closed tab loses nothing. Phase 4.5 widens this (daemon, `runs` table); the
- * rule that matters already lives here: **a session whose turn is still running is never
- * evicted** — `session.isIdle` covers runs, compaction, retries and queued work.
+ * rule that matters already lives here: **a conversation whose turn is still running is never
+ * evicted** — `isIdle` covers runs, compaction, retries and queued work.
  */
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -13,9 +15,9 @@ import { join, resolve } from "node:path";
 import { SessionManager, type AgentSessionEvent, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { flypiPaths, type FlypiPaths } from "../agent/paths.ts";
 import { createFlypiSession, type FlypiModel, type FlypiSession, type FlypiThinkingLevel } from "../agent/runtime.ts";
-import { redactSecrets } from "../secrets/redact.ts";
+import { createTurnDriver, turnInput, type TurnDriver } from "../agent/turn.ts";
 import type { SecretStore } from "../secrets/vault.ts";
-import { isImage, type FlypiAttachment } from "../shared/attachments.ts";
+import type { FlypiAttachment } from "../shared/attachments.ts";
 import { EventLog } from "./event-log.ts";
 import { createExtensionUiBridge } from "./extension-ui.ts";
 import type { CommandRow, DebugInfo, ExtensionUiFrame, SessionSummary } from "./protocol.ts";
@@ -67,9 +69,9 @@ export interface Conversation {
 	extensionUi: ReturnType<typeof createExtensionUiBridge>;
 	/** Sockets watching this conversation's extension output. Detached with the socket, like event listeners. */
 	uiListeners: Set<ExtensionUiListener>;
-	unsubscribe: () => void;
+	/** The turn this conversation is driving, and the one subscription behind it. Bound in `bind()`. */
+	turn: TurnDriver;
 	lastSettledAt: number;
-	disposed: boolean;
 }
 
 export interface SessionRegistryOptions {
@@ -191,27 +193,10 @@ export class SessionRegistry {
 	}
 
 	prompt(conversationId: string, text: string, mode?: "steer" | "followUp", attachments: FlypiAttachment[] = []): Promise<void> {
-		// Images are the model's input; any other file is written to disk and named by path, so the agent
-		// opens it with its own tools. flypi never decides what a PDF or a spreadsheet contains.
-		const images = attachments.filter(isImage).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
-		const files = attachments.filter((attachment) => !isImage(attachment)).map((attachment) => this.saveUpload(attachment));
-		const body = [text.trim(), ...files.map((path) => `[attached file: ${path}]`)].filter(Boolean).join("\n");
-		if (!body && images.length === 0) throw new Error("a prompt needs text or an attachment");
-		// A new turn has not injected anything yet: the panel must not show last turn's block as this one's.
-		this.get(conversationId).memory.block = null;
-		// The daemon needs to know a turn is in flight before the first event of it can fire: a process that
-		// dies mid-turn leaves the row `running`, and that is what a restart reconciles (Phase 4.5). pi's
-		// `preflightResult` is where that is knowable — it fires once the run's messages are prepared, before
-		// its first request and before any event — and it answers "handled" for input that starts no run at
-		// all, which is what an extension command is, and what a refused prompt is.
-		// No mode + already streaming ⇒ pi rejects rather than guessing. That rejection is the error frame.
-		return this.get(conversationId).session.prompt(body, {
-			...(images.length ? { images } : {}),
-			...(mode ? { streamingBehavior: mode } : {}),
-			preflightResult: (disposition) => {
-				if (disposition !== "handled") this.markRun(conversationId, "running");
-			},
-		});
+		// Only the file write is the registry's: `turnInput` composes the body and the images, `start` drives it.
+		// A rejection (no mode while streaming, no model) propagates — that rejection is the socket's error frame.
+		const input = turnInput(text, attachments, (attachment) => this.saveUpload(attachment));
+		return this.get(conversationId).turn.start({ ...input, mode });
 	}
 
 	/**
@@ -228,9 +213,7 @@ export class SessionRegistry {
 	}
 
 	abort(conversationId: string): Promise<void> {
-		// Recorded before the abort lands: if the process dies on the way, the row says why the turn stopped.
-		this.markRun(conversationId, "aborted");
-		return this.get(conversationId).session.abort();
+		return this.get(conversationId).turn.abort();
 	}
 
 	async setModel(conversationId: string, provider: string, modelId: string): Promise<void> {
@@ -262,7 +245,7 @@ export class SessionRegistry {
 			modified: session.modified.toISOString(),
 			messageCount: session.messageCount,
 			firstMessage: session.firstMessage,
-			running: this.findByFile(session.path)?.session.isIdle === false,
+			running: this.findByFile(session.path)?.turn.idle === false,
 		}));
 	}
 
@@ -280,7 +263,7 @@ export class SessionRegistry {
 		const target = this.sessionFileIn(sessionPath);
 		const holder = this.findByFile(target);
 		if (holder) {
-			if (!holder.session.isIdle) throw new Error(`session ${target} is mid-turn; abort it first`);
+			if (!holder.turn.idle) throw new Error(`session ${target} is mid-turn; abort it first`);
 			this.teardown(holder);
 			this.conversations.delete(holder.id);
 		}
@@ -295,7 +278,7 @@ export class SessionRegistry {
 	 */
 	async reloadExtensions(): Promise<void> {
 		for (const conversation of this.conversations.values()) {
-			if (!conversation.session.isIdle) continue;
+			if (!conversation.turn.idle) continue;
 			try {
 				await conversation.session.reload();
 				await conversation.session.bindExtensions({});
@@ -380,7 +363,7 @@ export class SessionRegistry {
 		const now = this.now();
 		const evicted: string[] = [];
 		for (const conversation of [...this.conversations.values()]) {
-			if (conversation.listeners.size > 0 || !conversation.session.isIdle) continue;
+			if (conversation.listeners.size > 0 || !conversation.turn.idle) continue;
 			if (now - conversation.lastSettledAt < this.idleTtlMs) continue;
 			this.teardown(conversation);
 			this.conversations.delete(conversation.id);
@@ -401,12 +384,15 @@ export class SessionRegistry {
 		const extensionUi = createExtensionUiBridge((frame) => {
 			for (const listener of uiListeners) listener({ type: "extensionUi", conversationId: id, ...frame });
 		});
+		// The same clock eviction uses, so a scripted clock in a test stamps the events it drives.
+		const log = new EventLog<AgentSessionEvent>(this.options.logCapacity, this.now);
+		const listeners = new Set<EventListener>();
+		const messages = new Map<number, FlypiMessage>();
 		const conversation: Conversation = {
 			id,
-			// The same clock eviction uses, so a scripted clock in a test stamps the events it drives.
-			log: new EventLog<AgentSessionEvent>(this.options.logCapacity, this.now),
-			listeners: new Set(),
-			messages: new Map(),
+			log,
+			listeners,
+			messages,
 			session: await this.createSession({
 				sessionManager,
 				conversationId: id,
@@ -416,12 +402,25 @@ export class SessionRegistry {
 			extensionUi,
 			uiListeners,
 			memory,
-			unsubscribe: () => {},
+			// Bound on the next line, once the conversation is in the map: the driver subscribes as it is
+			// created, and the run status it reports is recorded against a conversation `markRun` finds there.
+			turn: undefined as unknown as TurnDriver,
 			lastSettledAt: this.now(),
-			disposed: false,
 		};
 		this.conversations.set(conversation.id, conversation);
-		this.watch(conversation);
+		// One driver, and so one subscription, for the whole life of the conversation — never one per turn.
+		// It is created before the history is seeded so an event of a live turn cannot land in the gap.
+		conversation.turn = createTurnDriver({
+			session: conversation.session,
+			log,
+			onEvent: (seq, event, at) => {
+				if (event.type === "message_end") messages.set(seq, event.message);
+				for (const listener of listeners) listener(seq, event, at);
+			},
+			onRun: (status) => this.markRun(id, status),
+			// A new turn has not injected anything yet: the panel must not show last turn's block as this one's.
+			onTurnStart: () => (memory.block = null),
+		});
 		this.seedHistory(conversation);
 		return conversation;
 	}
@@ -440,62 +439,13 @@ export class SessionRegistry {
 		}
 	}
 
-	/**
-	 * The last-resort filter on the live stream (docs/secrets.md Phase 5.5). The `message_end` hook in
-	 * `src/secrets/extension.ts` is what keeps the session file clean, but the UI renders the frames that
-	 * arrive *before* that, and whatever is pushed here is what a reconnect replays — so a value the model
-	 * repeats would be on screen for a second and in the replay log for the life of the conversation.
-	 *
-	 * Every text field of the frame is rewritten, not just the one the reducer reads: the frame also carries
-	 * pi's in-progress `message`, the finished block at `text_end.content` and this chunk's `delta`, and a
-	 * value left in any of those is a copy of it sitting in the browser. The partials are the accumulated text,
-	 * which is why the filter reads them rather than the deltas: a value split across two chunks is caught as
-	 * soon as its last piece lands. The gap that stays open is the part of the value that has not streamed yet,
-	 * and the Secrets view says so.
-	 *
-	 * The rewrite also *copies*. pi grows one mutable message object across the whole turn and hands every frame
-	 * the same reference, so a frame that was filtered while its text was still short would later be read back
-	 * from the log holding the finished value — which is exactly what a reconnect replays.
-	 *
-	 * shortcut: re-snapshots the partial on every delta, so a long streamed answer costs one copy per chunk; if
-	 * that ever shows up in the timings, copy only from the last text block onwards.
-	 */
-	private redactStream(event: AgentSessionEvent): AgentSessionEvent {
-		if (event.type !== "message_update") return event;
-		const streamed = event.assistantMessageEvent;
-		// A streamed frame carries the in-progress `partial`; pi's own `done`/`error` frame carries the finished
-		// `message` under that key instead. Both are copies of the same mutable object, so both are rewritten.
-		const partial = "partial" in streamed ? { partial: redactText(streamed.partial) } : {};
-		// `text_end`/`thinking_end` carry their block as one string, and `*_delta` carries a chunk: a chunk that
-		// happens to hold a whole value would otherwise be the one place it survives the frame.
-		const text = "content" in streamed ? { content: redactSecrets(streamed.content) } : {};
-		const delta = "delta" in streamed ? { delta: redactSecrets(streamed.delta) } : {};
-		return {
-			...event,
-			message: redactText(event.message),
-			assistantMessageEvent: { ...streamed, ...partial, ...text, ...delta },
-		} as AgentSessionEvent;
-	}
-
-	/** The one subscription per conversation: sequence, record, fan out. */
-	private watch(conversation: Conversation): void {
-		conversation.unsubscribe = conversation.session.subscribe((raw) => {
-			const event = this.redactStream(raw);
-			if (event.type === "agent_settled") {
-				conversation.lastSettledAt = this.now();
-				this.markRun(conversation.id, "idle");
-			}
-			const buffered = conversation.log.push(event);
-			if (event.type === "message_end") conversation.messages.set(buffered.seq, event.message);
-			for (const listener of conversation.listeners) listener(buffered.seq, event, buffered.at);
-		});
-	}
-
 	/** Write the run row, when anything is listening for it. Never lets bookkeeping break a turn. */
 	private markRun(conversationId: string, status: "running" | "idle" | "aborted"): void {
-		if (!this.onRunStatus) return;
 		const conversation = this.conversations.get(conversationId);
 		if (!conversation) return;
+		// Eviction's idle clock restarts here, whether or not anyone is keeping a run row.
+		if (status === "idle") conversation.lastSettledAt = this.now();
+		if (!this.onRunStatus) return;
 		try {
 			this.onRunStatus(conversationId, status, { seq: conversation.log.lastSeq, sessionFile: conversation.session.sessionFile });
 		} catch (error) {
@@ -504,12 +454,10 @@ export class SessionRegistry {
 	}
 
 	private teardown(conversation: Conversation): void {
-		if (conversation.disposed) return;
-		conversation.disposed = true;
 		// An extension waiting on a dialog nobody will ever answer would hold its handler open forever.
 		conversation.extensionUi.close();
-		conversation.unsubscribe();
-		conversation.session.dispose();
+		// Exactly-once, on the driver's own latch: it drops the subscription and disposes the session.
+		conversation.turn.dispose();
 	}
 }
 
@@ -533,18 +481,3 @@ function commandsOf(session: FlypiSession): CommandRow[] {
 	];
 }
 
-/**
- * A copy of an in-progress assistant message with its text and thinking blocks redacted. The copy is made even
- * when nothing matched, because the object pi gave us is mutable and shared by every frame of the turn — see
- * `redactStream`. Anything that is not such a message (no `content` array) comes back as it was.
- */
-function redactText(message: unknown): unknown {
-	const content = (message as { content?: unknown } | undefined)?.content;
-	if (!Array.isArray(content)) return message;
-	return { ...(message as object), content: content.map((block) => {
-		const part = block as { type?: string; text?: string; thinking?: string };
-		const field = part?.type === "text" ? "text" : part?.type === "thinking" ? "thinking" : undefined;
-		if (field === undefined || typeof part[field] !== "string") return block;
-		return { ...part, [field]: redactSecrets(part[field]!) };
-	}) };
-}

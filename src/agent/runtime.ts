@@ -24,6 +24,7 @@ import { createPermissionGateExtension } from "./permission-gate.ts";
 import { createGoalDriverExtension, createGoalExtension, createTaskExtension, goalsConfig } from "./goals.ts";
 import { createSecretsExtension } from "../secrets/extension.ts";
 import type { SecretStore } from "../secrets/vault.ts";
+import { runSilentTurn } from "./turn.ts";
 
 /** Derived from pi's own option types, so no transitive pi-ai / pi-agent-core import is needed here. */
 export type FlypiModel = NonNullable<CreateAgentSessionOptions["model"]>;
@@ -274,7 +275,7 @@ async function runReviewFork(
 		// the parent's: a different request, and a cold cache. Bounded, because a server that never answers must
 		// not hang a fork nobody is waiting on.
 		if (await toolsArrived(session, memoryTool(deps.memoryServer.name, "memory_write"))) {
-			await session.prompt(reviewPrompt(deps.memoryServer.name));
+			await runSilentTurn(session, reviewPrompt(deps.memoryServer.name));
 		}
 	} finally {
 		session.dispose();
