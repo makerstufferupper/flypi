@@ -114,6 +114,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 async function health(port) {
 	try {
+		// shortcut: the CLI is plain .mjs and cannot import paths.ts; tests/scripts/health-url.test.ts pins the shared shape.
 		const response = await fetch(`http://127.0.0.1:${port}/healthz`);
 		return response.ok ? await response.json() : null;
 	} catch {

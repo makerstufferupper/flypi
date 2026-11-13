@@ -36,7 +36,7 @@ describe("flypiPaths", () => {
 	// to remove. `localhost` counts as drift too — it can resolve to ::1 and miss a server bound to
 	// 127.0.0.1. src/memory/mcp.ts is absent on purpose (risk R9: it reports the host it actually bound)
 	// and scripts/start.mjs is absent because it cannot import paths.ts —
-	// tests/scripts/health-url.test.ts pins its copy.
+	// tests/scripts/health-url.test.ts pins the /mcp copy its ensureConfig writes into mcp.json.
 	it("leaves no loopback URL literal at the four sites that now call paths.ts", () => {
 		for (const file of ["src/agent/config-files.ts", "src/daemon/index.ts", "scripts/serve-daemon.ts", "scripts/pi.ts"]) {
 			expect(readFileSync(file, "utf8"), file).not.toMatch(/http:\/\/(127\.0\.0\.1|localhost):\$\{/);
