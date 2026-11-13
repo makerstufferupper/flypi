@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +11,25 @@ export function createTempFlypiRoot(prefix = "flypi-test-"): string {
 	mkdirSync(join(dir, ".flypi", "agent"), { recursive: true });
 	writeFileSync(join(dir, ".flypi", "agent", "settings.json"), "{}\n");
 	return dir;
+}
+
+/**
+ * A root under the host `~/.pi` (docs/risks.md risk 1), with HOME pointed at a temp dir so the test cannot
+ * touch the real one: `assertFlypiOwned` reads `os.homedir()`, which takes `$HOME` at call time. Restore both
+ * in the `finally` of the one `it` that uses it — `USERPROFILE` is what Windows reads.
+ */
+export function hostPiRoot(prefix = "flypi-hostpi-"): { root: string; restore(): void } {
+	const home = mkdtempSync(join(tmpdir(), prefix));
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	return {
+		root: join(home, ".pi", "state"),
+		restore: () => {
+			for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+			rmSync(home, { recursive: true, force: true });
+		},
+	};
 }
 
 export function sessionFiles(root: string): string[] {

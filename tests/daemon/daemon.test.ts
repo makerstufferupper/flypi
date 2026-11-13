@@ -5,7 +5,7 @@
  * jobs.test.ts, the run record in tests/server/run-store.test.ts); this file tests that they are wired to
  * each other — including that the run record is written to the backend's own database, not the memory one.
  */
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +19,7 @@ import type { ClientCommand, ServerFrame } from "../../src/server/protocol.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { openTempFileDb, refusingEmbedder, wordEmbedder } from "../helpers/memory-db.ts";
 import { stubCreateSession, toolTurn } from "../helpers/flypi-harness.ts";
-import { createTempFlypiRoot } from "../helpers/flypi-root.ts";
+import { createTempFlypiRoot, hostPiRoot } from "../helpers/flypi-root.ts";
 
 /** A WS client small enough to read: connect, send a command, wait for the frame that answers it. */
 async function connect(url: string, token: string) {
@@ -139,6 +139,22 @@ describe("the daemon", () => {
 			delete process.env.FLYPI_MEMORY_TOKEN;
 		} finally {
 			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses a root inside the host pi directory, before its first write", async () => {
+		// The daemon is the process that writes `daemon.json`, `mcp.json` and the empty config pair, so the
+		// guard runs at its top (docs/risks.md risk 1). `startOn` opens the run store first, which legitimately
+		// creates `<root>/.flypi/backend/` under the temp home — the assertion is about the daemon's own first
+		// write, `ensureAgentConfig`'s `settings.json`, which must not happen.
+		const host = hostPiRoot();
+		const store = memory();
+		try {
+			await expect(startOn(host.root, store)).rejects.toThrow(/host pi directory/);
+			expect(existsSync(join(host.root, ".flypi", "agent", "settings.json"))).toBe(false);
+		} finally {
+			host.restore();
+			store.db.dispose();
 		}
 	});
 

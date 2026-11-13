@@ -18,7 +18,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { FlypiConfigError } from "./runtime.ts";
-import { memoryMcpUrl, type FlypiPaths } from "./paths.ts";
+import { assertFlypiOwned, memoryMcpUrl, type FlypiPaths } from "./paths.ts";
 
 /** pi's own rule for MCP server names (docs/mcp.md "Configuration rules"), which tools are named after. */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
@@ -273,6 +273,10 @@ export function ensureAgentConfig(paths: FlypiPaths): string[] {
  * different files and different intents, and there is no transaction across three files.
  */
 export function applyConfigEdits(paths: FlypiPaths, edits: ConfigEdits): void {
+	// Every writer of the agent-dir files comes through here (the panel's save, the daemon's memory entry),
+	// so this is where risk 1 is enforced for writes: a root inside the host `~/.pi` is refused before a file
+	// is opened, not after. docs/risks.md risk 1.
+	assertFlypiOwned(paths);
 	if (edits.files?.length) {
 		// First, so an endpoint edit or a default in the same request is checked against the file as the raw
 		// editor just wrote it.

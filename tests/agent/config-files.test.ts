@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { applyConfigEdits, ensureAgentConfig, ensureMemoryEntry, memoryEndpoint, readConfig } from "../../src/agent/config-files.ts";
 import { flypiPaths } from "../../src/agent/paths.ts";
-import { createTempFlypiRoot } from "../helpers/flypi-root.ts";
+import { createTempFlypiRoot, hostPiRoot } from "../helpers/flypi-root.ts";
 
 interface Fixture {
 	endpoints?: Record<string, unknown>;
@@ -306,6 +306,20 @@ describe("config files: writing", () => {
 		expect(readConfig(h.paths).mcpServers).toEqual([
 			{ name: "flypi-memory", url: "http://127.0.0.1:8790/mcp", command: "", args: [], authorization: "Bearer ${FLYPI_MEMORY_TOKEN}", env: {}, cwd: "", description: "", exposure: "codemode", toolExposure: {}, oauth: { clientId: "", clientSecret: "", callbackUrl: "", scope: "" }, enabled: true },
 		]);
+	});
+
+	it("refuses to write agent config under the host pi directory (risk 1)", () => {
+		// The panel's save is the writer that reached `~/.pi/agent` unguarded: `assertFlypiOwned` ran only where
+		// a session was created. A hostile `FLYPI_ROOT` inside `~/.pi` now fails before the first file is opened.
+		const host = hostPiRoot();
+		try {
+			expect(() =>
+				applyConfigEdits(flypiPaths(host.root), { mcpServers: [{ name: "flypi-memory", url: "http://127.0.0.1:8790/mcp" }] }),
+			).toThrow(/host pi directory/);
+			expect(existsSync(join(host.root, ".flypi"))).toBe(false);
+		} finally {
+			host.restore();
+		}
 	});
 });
 
