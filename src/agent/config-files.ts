@@ -18,7 +18,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { FlypiConfigError } from "./runtime.ts";
-import type { FlypiPaths } from "./paths.ts";
+import { memoryMcpUrl, type FlypiPaths } from "./paths.ts";
 
 /** pi's own rule for MCP server names (docs/mcp.md "Configuration rules"), which tools are named after. */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
@@ -231,7 +231,7 @@ export function ensureMemoryEntry(paths: FlypiPaths, port: number, token: string
 	applyConfigEdits(paths, {
 		mcpServers: [{
 			name: "flypi-memory",
-			url: `http://127.0.0.1:${port}/mcp`,
+			url: memoryMcpUrl(port),
 			authorization: `Bearer ${token}`,
 			// The same entry `scripts/start.mjs` writes for a checkout — that one cannot import this file,
 			// because it runs before `npm install` — so both writers produce one shape.

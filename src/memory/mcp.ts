@@ -480,6 +480,7 @@ export async function startMemoryServer(options: MemoryServerOptions): Promise<M
 		port,
 		host,
 		token,
+		// The host this server actually bound (`options.host ?? "127.0.0.1"`), not the loopback default of paths.ts's memoryMcpUrl().
 		url: `http://${host}:${port}/mcp`,
 		close: () =>
 			new Promise<void>((resolveClose, rejectClose) => {

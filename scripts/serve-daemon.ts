@@ -18,7 +18,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { flypiPaths } from "../src/agent/paths.ts";
+import { flypiPaths, memoryMcpUrl } from "../src/agent/paths.ts";
 import { builtUi, startFlypiDaemon } from "../src/daemon/index.ts";
 import { memoryConfig } from "../src/memory/config.ts";
 import { openMemoryDb } from "../src/memory/db.ts";
@@ -79,7 +79,7 @@ const daemon = await startFlypiDaemon({
 });
 console.log(`flypi: daemon pid ${process.pid}`);
 console.log(`flypi: agent server ${daemon.url}`);
-console.log(`flypi: memory MCP   http://127.0.0.1:${daemon.memoryPort}/mcp`);
+console.log(`flypi: memory MCP   ${memoryMcpUrl(daemon.memoryPort)}`);
 console.log(`flypi: embeddings   ${embedder.identity ? embedder.identity.model : "none (FTS-only)"}`);
 console.log(`flypi: judge        ${judge.classify ? config.judge.model : "none (token rule only)"}`);
 if (!uiDir) console.log("flypi: dist/ui is not built — running headless (`npm run build` for the UI)");

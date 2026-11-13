@@ -15,6 +15,7 @@
 import { readFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
+import { healthUrl } from "../src/agent/paths.ts";
 import { readDaemonInfo } from "../src/daemon/index.ts";
 import {
 	bundledPiVersion,
@@ -54,7 +55,7 @@ const piFromHealth = async () => {
 	const info = readDaemonInfo(root);
 	if (!info) return null;
 	try {
-		return ((await (await fetch(`http://127.0.0.1:${info.port}/healthz`)).json()) as { pi?: { version: string; pinned: boolean; bundled?: string } }).pi ?? null;
+		return ((await (await fetch(healthUrl(info.port))).json()) as { pi?: { version: string; pinned: boolean; bundled?: string } }).pi ?? null;
 	} catch {
 		return null;
 	}

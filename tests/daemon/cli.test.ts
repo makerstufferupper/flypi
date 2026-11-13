@@ -11,7 +11,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DAEMON_FILE } from "../../src/daemon/index.ts";
+import { DAEMON_FILE } from "../../src/agent/paths.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
 const cli = join(repo, "scripts", "flypi.mjs");

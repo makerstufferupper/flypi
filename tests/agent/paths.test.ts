@@ -1,7 +1,8 @@
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { assertFlypiOwned, flypiPaths } from "../../src/agent/paths.ts";
+import { DAEMON_FILE, assertFlypiOwned, flypiPaths, healthUrl, memoryMcpUrl } from "../../src/agent/paths.ts";
 
 describe("flypiPaths", () => {
 	it("puts every flypi path under .flypi/", () => {
@@ -22,6 +23,22 @@ describe("flypiPaths", () => {
 
 	it("resolves a relative root against the working directory", () => {
 		expect(flypiPaths(".").agentDir).toBe(join(resolve("."), ".flypi", "agent"));
+	});
+
+	it("owns the daemon pid file name and the two URLs", () => {
+		const paths = flypiPaths("/repo");
+		expect(paths.daemonFile).toBe(join("/repo", DAEMON_FILE));
+		expect(memoryMcpUrl(8790)).toBe("http://127.0.0.1:8790/mcp");
+		expect(healthUrl(8791)).toBe("http://127.0.0.1:8791/healthz");
+	});
+
+	// One owner, asserted on the source: a second literal in a file that can import paths.ts is the drift
+	// this task exists to remove. scripts/start.mjs is deliberately absent — it cannot import, and
+	// tests/scripts/health-url.test.ts pins its copy.
+	it("leaves no loopback URL literal in a file that can import paths.ts", () => {
+		for (const file of ["src/agent/config-files.ts", "src/daemon/index.ts", "scripts/serve-daemon.ts", "scripts/pi.ts"]) {
+			expect(readFileSync(file, "utf8"), file).not.toMatch(/http:\/\/127\.0\.0\.1:\$\{/);
+		}
 	});
 });
 

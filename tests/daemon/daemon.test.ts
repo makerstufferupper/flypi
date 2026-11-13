@@ -9,10 +9,10 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:f
 import { join, resolve } from "node:path";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
+import { DAEMON_FILE, flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
 import { memoryEndpoint, readConfig } from "../../src/agent/config-files.ts";
 import { readPackageCheck, readPackages } from "../../src/agent/packages.ts";
-import { builtUi, readDaemonInfo, startFlypiDaemon, DAEMON_FILE, type DaemonHandle } from "../../src/daemon/index.ts";
+import { builtUi, readDaemonInfo, startFlypiDaemon, type DaemonHandle } from "../../src/daemon/index.ts";
 import { startMemoryServer } from "../../src/memory/mcp.ts";
 import { openRunStore, type RunStore } from "../../src/server/run-store.ts";
 import type { ClientCommand, ServerFrame } from "../../src/server/protocol.ts";

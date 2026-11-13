@@ -15,7 +15,7 @@ import { existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type { FlypiPaths } from "../agent/paths.ts";
+import { DAEMON_FILE, memoryMcpUrl, type FlypiPaths } from "../agent/paths.ts";
 import { applyConfigEdits, ensureAgentConfig, ensureMemoryEntry, memoryEndpoint } from "../agent/config-files.ts";
 import { applyPackageEdits, autoExtensions, checkPackageUpdates, dueForPackageCheck, readPackageCheck, writePackageCheck } from "../agent/packages.ts";
 import { CONSOLIDATE_JOB, consolidate, sweepDue } from "../memory/consolidate.ts";
@@ -45,8 +45,6 @@ export interface DaemonInfo {
 	startedAt: string;
 	version: string;
 }
-
-export const DAEMON_FILE = join(".flypi", "daemon.json");
 
 export interface DaemonOptions {
 	paths: FlypiPaths;
@@ -159,7 +157,7 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		// Only the url, and only when the port it named was taken: the token, the exposure and everything
 		// else in the entry are the operator's, and rewriting one of those is how a `${VAR}` reference
 		// becomes a plaintext secret.
-		if (moved) applyConfigEdits(paths, { mcpServers: [{ name: "flypi-memory", url: `http://127.0.0.1:${memory.port}/mcp` }] });
+		if (moved) applyConfigEdits(paths, { mcpServers: [{ name: "flypi-memory", url: memoryMcpUrl(memory.port) }] });
 	} catch (error) {
 		// A file that will not parse belongs to the operator to fix; the daemon still serves everything else.
 		log(`flypi: cannot write the flypi-memory entry: ${(error as Error).message}`);
@@ -255,7 +253,7 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		server = await startFlypiServer(serverOptions);
 	}
 
-	const infoPath = join(paths.root, DAEMON_FILE);
+	const infoPath = paths.daemonFile;
 	const info: DaemonInfo = {
 		pid: process.pid,
 		host: server.host,

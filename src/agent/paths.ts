@@ -1,6 +1,21 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+/** `.flypi/daemon.json`, relative to a root. Owned here so a plain-.mjs caller and the daemon cannot
+ *  disagree; tests/daemon/daemon-file.test.ts pins the CLI's copy of the spelling. */
+export const DAEMON_FILE = join(".flypi", "daemon.json");
+
+/** The memory MCP surface as `mcp.json` names it. Loopback on purpose: same machine, token is the auth. */
+export function memoryMcpUrl(port: number): string {
+	return `http://127.0.0.1:${port}/mcp`;
+}
+
+/** `flypi status`, the Docker HEALTHCHECK and the CLI's startup poll all ask this one URL. Always loopback,
+ *  even when the daemon is bound to 0.0.0.0 — the probe runs on the same machine. */
+export function healthUrl(port: number): string {
+	return `http://127.0.0.1:${port}/healthz`;
+}
+
 /**
  * Every path flypi owns lives under `<repo>/.flypi/`. Nothing here may resolve
  * inside the host `~/.pi` (docs/risks.md risk 1). Pass these to pi explicitly —
@@ -19,6 +34,8 @@ export interface FlypiPaths {
 	memoryDbPath: string;
 	/** The backend's own database: the run record (Phase 4.5). Never opened by the memory component. */
 	runDbPath: string;
+	/** `.flypi/daemon.json`: pid, host, port, token, memoryPort, startedAt, version. 0600 — it carries the token. */
+	daemonFile: string;
 	/** Embedding-model cache (Phase 3). */
 	modelsDir: string;
 	/** Files pasted into the web UI, which the agent then opens by path (docs/protocol.md). */
@@ -52,6 +69,7 @@ export function flypiPaths(root: string = process.cwd()): FlypiPaths {
 		memoryDir: join(dir, "memory"),
 		memoryDbPath: join(dir, "memory", "flypi.db"),
 		runDbPath: join(dir, "backend", "runs.db"),
+		daemonFile: join(base, DAEMON_FILE),
 		modelsDir: join(dir, "models"),
 		uploadsDir: join(dir, "uploads"),
 		authPath: join(agentDir, "auth.json"),
