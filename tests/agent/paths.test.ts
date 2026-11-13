@@ -32,12 +32,14 @@ describe("flypiPaths", () => {
 		expect(healthUrl(8791)).toBe("http://127.0.0.1:8791/healthz");
 	});
 
-	// One owner, asserted on the source: a second literal in a file that can import paths.ts is the drift
-	// this task exists to remove. scripts/start.mjs is deliberately absent — it cannot import, and
+	// One owner, asserted on the source: a second literal in these four sites is the drift this task exists
+	// to remove. `localhost` counts as drift too — it can resolve to ::1 and miss a server bound to
+	// 127.0.0.1. src/memory/mcp.ts is absent on purpose (risk R9: it reports the host it actually bound)
+	// and scripts/start.mjs is absent because it cannot import paths.ts —
 	// tests/scripts/health-url.test.ts pins its copy.
-	it("leaves no loopback URL literal in a file that can import paths.ts", () => {
+	it("leaves no loopback URL literal at the four sites that now call paths.ts", () => {
 		for (const file of ["src/agent/config-files.ts", "src/daemon/index.ts", "scripts/serve-daemon.ts", "scripts/pi.ts"]) {
-			expect(readFileSync(file, "utf8"), file).not.toMatch(/http:\/\/127\.0\.0\.1:\$\{/);
+			expect(readFileSync(file, "utf8"), file).not.toMatch(/http:\/\/(127\.0\.0\.1|localhost):\$\{/);
 		}
 	});
 });
