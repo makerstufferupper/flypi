@@ -27,10 +27,10 @@ import type { FlypiSession } from "./runtime.ts";
 export type TurnSession = Pick<FlypiSession, "prompt" | "abort" | "subscribe" | "isIdle" | "dispose">;
 
 /** Sequencing sink for the redacted stream. Structurally satisfied by `EventLog<AgentSessionEvent>`; declared
- *  here so `src/agent` never imports `src/server`. `push` stays the only place a `seq` is ever assigned. */
+ *  here so `src/agent` never imports `src/server`. `push` stays the only place a `seq` is ever assigned, and
+ *  the only member the seam reads — a caller that wants the cursor keeps it on its own log. */
 export interface TurnLog {
 	push(event: AgentSessionEvent): { seq: number; at: number };
-	readonly lastSeq: number;
 }
 
 export type TurnEventListener = (seq: number, event: AgentSessionEvent, at: number) => void;
@@ -55,12 +55,16 @@ export interface TurnHost {
 	onRun: (status: "running" | "idle" | "aborted") => void;
 	/** Fires first thing in `start()`: the panel must not show last turn's memory block as this turn's. */
 	onTurnStart: () => void;
+	/** Fires inside `dispose()`, under the same latch, before the subscription drops: the conversation is going
+	 *  away, so anything of the host's that is still waiting must be released rather than left hanging. */
+	onDispose: () => void;
 }
 
 export interface TurnDriver {
 	start(input: TurnInput): Promise<void>;
 	abort(): Promise<void>;
-	/** Drop the subscription and dispose the session. Exactly-once — this is the latch `teardown()` is today. */
+	/** Release the host, drop the subscription and dispose the session. Exactly-once — this is the latch
+	 *  `teardown()` is today, and the one action that says this conversation is going away. */
 	dispose(): void;
 	/** pi's own `isIdle`, forwarded: no run, compaction, retry or queued work. Not "no turn started by me". */
 	readonly idle: boolean;
@@ -105,6 +109,7 @@ export function createTurnDriver(host: TurnHost): TurnDriver {
 		dispose(): void {
 			if (disposed) return;
 			disposed = true;
+			host.onDispose();
 			unsubscribe();
 			host.session.dispose();
 		},

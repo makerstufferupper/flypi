@@ -407,6 +407,10 @@ export class SessionRegistry {
 			turn: undefined as unknown as TurnDriver,
 			lastSettledAt: this.now(),
 		};
+		// Invariant, and it is the two lines below that hold it: **no `await` may be introduced between them**,
+		// and the driver is created after this insert and before `seedHistory`. `turn` is a placeholder in the
+		// gap, so an `await` there would let a socket message, a timer or an `evictIdle` pass reach a
+		// conversation with no turn — silently, and nothing downstream would catch it.
 		this.conversations.set(conversation.id, conversation);
 		// One driver, and so one subscription, for the whole life of the conversation — never one per turn.
 		// It is created before the history is seeded so an event of a live turn cannot land in the gap.
@@ -420,6 +424,9 @@ export class SessionRegistry {
 			onRun: (status) => this.markRun(id, status),
 			// A new turn has not injected anything yet: the panel must not show last turn's block as this one's.
 			onTurnStart: () => (memory.block = null),
+			// An extension waiting on a dialog nobody will ever answer would hold its handler open forever. Inside
+			// the driver's latch, so it runs once per conversation and cannot be reached outside the teardown.
+			onDispose: () => extensionUi.close(),
 		});
 		this.seedHistory(conversation);
 		return conversation;
@@ -454,9 +461,9 @@ export class SessionRegistry {
 	}
 
 	private teardown(conversation: Conversation): void {
-		// An extension waiting on a dialog nobody will ever answer would hold its handler open forever.
-		conversation.extensionUi.close();
-		// Exactly-once, on the driver's own latch: it drops the subscription and disposes the session.
+		// The driver's latch is the whole teardown: it closes the extension UI, drops the subscription and
+		// disposes the session, once. Nothing of it may sit outside the latch — on a second teardown the latch
+		// returns early, and whatever stood next to it would run again against a conversation that is gone.
 		conversation.turn.dispose();
 	}
 }
