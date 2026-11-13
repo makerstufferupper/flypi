@@ -36,7 +36,9 @@ async function freePort(): Promise<number> {
 function declaredFields(): string[] {
 	const source = readFileSync(join(repo, "src", "daemon", "index.ts"), "utf8");
 	const body = /export interface DaemonInfo \{([\s\S]*?)\n\}/.exec(source)?.[1];
-	return [...(body?.matchAll(/^\t(\w+):/gm) ?? [])].map((m) => m[1]!);
+	// A failed parse would otherwise reach the caller as `[]` and report a confusing diff against SAMPLE.
+	expect(body, "DaemonInfo not found in src/daemon/index.ts").toBeDefined();
+	return [...body!.matchAll(/^\t(\w+):/gm)].map((m) => m[1]!);
 }
 
 /**
@@ -49,8 +51,8 @@ const SAMPLE = {
 	host: "0.0.0.0",
 	port: 0,
 	token: "sample-token",
-	/** Printed, never probed, so any unused number is an honest sample here. */
-	memoryPort: 45039,
+	/** Printed, never probed; an ephemeral number nobody runs, so the sample can never name a live instance's port. */
+	memoryPort: 59_999,
 	startedAt: "2026-10-12T09:00:00.000Z",
 	version: "0.0.0-contract",
 };
@@ -63,7 +65,7 @@ function tempRoot(): string {
 
 /** The real CLI under bare node — it runs a command at import, so it is spawned, never imported. */
 function status(root: string) {
-	const result = spawnSync(process.execPath, [cli, "--root", root, "status"], { cwd: repo, encoding: "utf8", timeout: 30_000 });
+	const result = spawnSync(process.execPath, [cli, "--root", root, "status"], { cwd: repo, encoding: "utf8", timeout: 4_000 });
 	return { code: result.status, out: `${result.stdout ?? ""}${result.stderr ?? ""}` };
 }
 
@@ -86,8 +88,9 @@ describe("the CLI/daemon contract on .flypi/daemon.json", () => {
 		const declared = declaredFields();
 		// A new or renamed daemon field lands here first: the sample table has to be updated with it.
 		expect(Object.keys(SAMPLE).sort()).toEqual(declared.sort());
-		const root = tempRoot();
+		// The port first: `listen` failing must not leave a temp root behind for want of a `finally`.
 		const port = await freePort();
+		const root = tempRoot();
 		// `status` only prints the URLs when `alive(info.pid)` says yes; the test process is the cheapest live pid.
 		writeFileSync(join(root, DAEMON_FILE), JSON.stringify({ ...SAMPLE, pid: process.pid, port }));
 		try {
