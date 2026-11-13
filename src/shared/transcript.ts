@@ -16,6 +16,7 @@
  * and this design never looks at them.
  */
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { GOAL_ROUND_ENTRY } from "./goal-phase.ts";
 
 /** Derived from pi's own event types, so no transitive pi-ai / pi-agent-core import is needed here. */
 type MessageEndEvent = Extract<AgentSessionEvent, { type: "message_end" }>;
@@ -26,12 +27,6 @@ type ToolUpdateEvent = Extract<AgentSessionEvent, { type: "tool_execution_update
 type ToolEndEvent = Extract<AgentSessionEvent, { type: "tool_execution_end" }>;
 type QueueUpdateEvent = Extract<AgentSessionEvent, { type: "queue_update" }>;
 type EntryAppendedEvent = Extract<AgentSessionEvent, { type: "entry_appended" }>;
-
-/**
- * `GOAL_ROUND_ENTRY` in `src/agent/goals.ts`, spelled out rather than imported: that module reads
- * `node:crypto` and `node:fs`, and this file is in the browser bundle.
- */
-const GOAL_ROUND_ENTRY = "flypi-goal-round";
 
 export type FlypiMessage = MessageEndEvent["message"];
 

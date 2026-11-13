@@ -138,6 +138,10 @@ describe("renderMessage()", () => {
 			errorMessage: "Request timed out.",
 		} as unknown as FlypiMessage);
 		expect(failed.blocks).toEqual([{ kind: "text", text: "(the model call failed: Request timed out.)" }]);
+		// A route that failed without saying why still failed: the reason is lost, the fact is not.
+		expect(renderMessage({ role: "assistant", content: [], stopReason: "error" } as unknown as FlypiMessage).blocks).toEqual([
+			{ kind: "text", text: "(the model call failed: no reason given)" },
+		]);
 		const aborted = renderMessage({
 			role: "assistant",
 			content: [],
@@ -287,6 +291,9 @@ describe("applyEvent()", () => {
 		// `agent_settled` is emitted right after `auto_retry_end`, so it must not clear the status.
 		state = applyEvent(state, { type: "agent_settled" } as AgentSessionEvent);
 		expect(state.status).toBe("gave up after 3 attempts: Request timed out.");
+		// A route that gave up without naming a reason still has to be explained.
+		state = applyEvent(emptyTranscript(), { type: "auto_retry_end", success: false, attempt: 3 } as AgentSessionEvent);
+		expect(state.status).toBe("gave up after 3 attempts: no reason given");
 		// A successful retry ends the status cleanly, and `agent_settled` keeps the null.
 		state = applyEvent(emptyTranscript(), start);
 		state = applyEvent(state, retryStart);
@@ -463,5 +470,17 @@ describe("renderTranscriptText()", () => {
 			message: { role: "user", content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }] },
 		} as unknown as AgentSessionEvent);
 		expect(renderTranscriptText(state)).toBe("user:\n  image: image/png\ntotal 0 in / 0 out · $0.0000\n");
+	});
+
+	// A turn that was retried or gave up has a status rather than a message, and the text form is what the smoke
+	// script prints and the golden compares — an interrupted run would otherwise render as a clean empty turn.
+	it("prints the status a retried turn leaves behind", () => {
+		const state = applyEvent(emptyTranscript(), {
+			type: "auto_retry_start",
+			attempt: 1,
+			maxAttempts: 3,
+			errorMessage: "Request timed out.",
+		} as unknown as AgentSessionEvent);
+		expect(renderTranscriptText(state)).toBe("status: retrying attempt 1/3: Request timed out.\ntotal 0 in / 0 out · $0.0000\n");
 	});
 });

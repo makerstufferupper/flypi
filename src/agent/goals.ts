@@ -22,6 +22,13 @@ import { readFileSync } from "node:fs";
 import { type ExtensionFactory, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { FlypiPaths } from "./paths.ts";
+import { applies, GOAL_ACTIONS, GOAL_ENTRY, GOAL_ROUND_ENTRY, nextPhase, ROUND_LIMIT, TURN_FAILED, type GoalAction, type GoalPhase } from "../shared/goal-phase.ts";
+
+// The phase machine moved to `src/shared/goal-phase.ts` so `ui/` could share it without importing node builtins.
+// These names stay public from here: the package ships `src`, and this is the published surface callers already
+// read from — `GOAL_ENTRY` in `scripts/probe-turn-boundary.ts`, `GOAL_ROUND_ENTRY` in `tests/agent/goals.test.ts`.
+export { GOAL_ENTRY, GOAL_ROUND_ENTRY, GOAL_PHASES, GOAL_ACTIONS, ROUND_LIMIT, TURN_FAILED } from "../shared/goal-phase.ts";
+export type { GoalAction, GoalPhase } from "../shared/goal-phase.ts";
 
 export const TASK_TOOL = "task_write";
 
@@ -99,16 +106,6 @@ function counts(list: TaskItem[]): string {
 // --- 9.2: the `goal` tool -----------------------------------------------------------------------------
 
 export const GOAL_TOOL = "goal";
-/** The session entry the goal lives in: durable, excluded from model context, and the only record. */
-export const GOAL_ENTRY = "flypi-goal";
-/** The round prompt 9.3 appends. Counting the ones that name a goal is how its round number is derived. */
-export const GOAL_ROUND_ENTRY = "flypi-goal-round";
-
-export const GOAL_PHASES = ["active", "paused", "blocked", "complete"] as const;
-export type GoalPhase = (typeof GOAL_PHASES)[number];
-
-export const GOAL_ACTIONS = ["create", "edit", "pause", "resume", "complete", "blocked", "clear"] as const;
-export type GoalAction = (typeof GOAL_ACTIONS)[number];
 
 /** dh ships 256, which is 256 paid runs. `goals.maxRounds` in settings.json overrides this default. */
 export const DEFAULT_MAX_ROUNDS = 16;
@@ -215,23 +212,16 @@ type GoalResult = { content: { type: "text"; text: string }[]; details: { goal: 
 const says = (text: string, entry: GoalEntry): Decision => ({ says: text, entry });
 const refuses = (error: string): Decision => ({ error });
 
-/** Which phases each action may act on; anything else is refused with the phase it found. */
-const GOAL_ACTION_PHASES: Record<Exclude<GoalAction, "create">, readonly GoalPhase[]> = {
-	edit: ["active", "paused", "blocked", "complete"],
-	pause: ["active"],
-	resume: ["paused", "blocked"],
-	complete: ["active", "paused", "blocked"],
-	blocked: ["active"],
-	clear: ["active", "paused", "blocked", "complete"],
-};
-
 /** One goal per conversation, and the transitions between its phases. `undefined` current means none yet. */
 function decide(current: GoalState | undefined, args: GoalArgs, defaultMaxRounds: number): Decision {
 	const at = new Date().toISOString();
 	if (args.action === "create") {
 		const objective = args.objective?.trim();
 		if (!objective) return refuses("`create` needs an `objective`: say what will be true once it is done");
-		if (current && current.phase !== "complete") {
+		// `current &&` first, so "no goal" stays the absence of a state rather than a state without a phase:
+		// `readGoal` checks only the id, so a `flypi-goal` entry can be missing its `phase`, and such an entry is
+		// replaced by a `create` rather than refusing it — `applies` reads "no phase" as nothing in the way.
+		if (current && !applies("create", current.phase)) {
 			return refuses(`this conversation already has a goal that is ${current.phase}: "${current.objective}" — complete, pause or clear it before starting another`);
 		}
 		const maxRounds = args.max_rounds ?? defaultMaxRounds;
@@ -240,23 +230,26 @@ function decide(current: GoalState | undefined, args: GoalArgs, defaultMaxRounds
 	}
 
 	if (!current) return refuses(`there is no goal to ${args.action}`);
-	if (!GOAL_ACTION_PHASES[args.action].includes(current.phase)) {
+	if (!applies(args.action, current.phase)) {
 		return refuses(`the goal is ${current.phase}, so ${args.action} does not apply`);
 	}
+	// `clear` appends a `GoalCleared` rather than a snapshot, so it is not a phase transition (see `nextPhase`).
+	if (args.action === "clear") return says(`goal cleared: "${current.objective}"`, { cleared: true, at });
+	const phase = nextPhase(args.action, current.phase);
 	// Same id, one revision newer, and no leftover `blockedReason`: only `blocked` puts one back.
 	const kept = { id: current.id, objective: current.objective, maxRounds: current.maxRounds, revision: current.revision + 1, at };
 	switch (args.action) {
 		case "edit": {
 			const objective = args.objective?.trim();
 			if (!objective) return refuses("`edit` needs the new `objective`");
-			return says(`goal edited: "${objective}"`, { ...kept, objective, phase: current.phase });
+			return says(`goal edited: "${objective}"`, { ...kept, objective, phase });
 		}
 		case "pause":
-			return says(`goal paused: "${current.objective}" — nothing continues until it is resumed`, { ...kept, phase: "paused" });
+			return says(`goal paused: "${current.objective}" — nothing continues until it is resumed`, { ...kept, phase });
 		case "resume":
-			return says(`goal active: "${current.objective}" — round ${current.rounds}/${current.maxRounds}`, { ...kept, phase: "active" });
+			return says(`goal active: "${current.objective}" — round ${current.rounds}/${current.maxRounds}`, { ...kept, phase });
 		case "complete":
-			return says(`goal complete: "${current.objective}"`, { ...kept, phase: "complete" });
+			return says(`goal complete: "${current.objective}"`, { ...kept, phase });
 		case "blocked": {
 			const reason = args.blocked_reason?.trim();
 			if (!reason) return refuses("`blocked` needs a `blocked_reason`: say what makes the objective unreachable");
@@ -265,10 +258,8 @@ function decide(current: GoalState | undefined, args: GoalArgs, defaultMaxRounds
 			if (current.rounds < BLOCKED_MIN_ROUNDS) {
 				return refuses(`round ${current.rounds} of ${current.maxRounds}: a goal is not blocked before ${BLOCKED_MIN_ROUNDS} rounds — say what you tried and keep going, or clear it`);
 			}
-			return says(`goal blocked: ${reason}`, { ...kept, phase: "blocked", blockedReason: reason });
+			return says(`goal blocked: ${reason}`, { ...kept, phase, blockedReason: reason });
 		}
-		case "clear":
-			return says(`goal cleared: "${current.objective}"`, { cleared: true, at });
 	}
 }
 
@@ -281,10 +272,6 @@ export interface GoalsConfig {
 	/** The cap a `create` with no `max_rounds` gets. A round is a paid model run. */
 	maxRounds: number;
 }
-
-export const ROUND_LIMIT = "round-limit";
-/** The same pattern as `ROUND_LIMIT`: a reason a round stopped, recorded in the goal's `blockedReason`. */
-export const TURN_FAILED = "turn-failed";
 
 /** Read once at session start, never per call: 9.0. A cap that can move mid-run is not a cap. */
 export function goalsConfig(paths: FlypiPaths): GoalsConfig {

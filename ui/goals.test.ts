@@ -10,6 +10,7 @@ import { cleanup, render } from "@testing-library/svelte";
 import { tick } from "svelte";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import App from "./App.svelte";
+import { GOAL_ACTIONS, nextPhase } from "../src/shared/goal-phase.ts";
 import type { ClientCommand, ServerFrame } from "../src/server/protocol.ts";
 import type { Transport } from "./lib/client.ts";
 
@@ -178,17 +179,22 @@ describe("the goal and task view", () => {
 
 	// What the view does with a card that carries nothing it can read: pi can end a call before its arguments
 	// arrive, and a session file written by an older flypi can hold a status this one has never heard of.
-	it("reads nothing from a card that carried no arguments, and no glyph from a status it does not know", async () => {
+	it("reads nothing from a card it cannot read, and no glyph from a status it does not know", async () => {
 		const transport = await mountWithGoal();
 		await send(transport, [
 			...call("bad1", "goal", undefined, ""),
 			...call("bad2", "goal", {}, ""),
 			...call("bad3", "task_write", undefined, ""),
 			...call("bad4", "task_write", {}, ""),
+			// A `done` card is what the tool recorded, so a card rebuilt from another build's session file can name an
+			// action this one has never heard of. It has to leave the phase alone rather than answer `undefined`, which
+			// would empty the chip and keep it empty, since the actions after it are painted from the same walk.
+			...call("bad5", "goal", { action: "verify" }, ""),
 			...taskCall("t", [{ content: "something from an older build", status: "skipped" }]),
 		]);
 		// The goal the conversation created is still the goal: a card with nothing readable in it changes nothing.
 		expect(text(".goal-objective")).toBe("ship the goal view");
+		expect(text("[data-role='goal-phase']")).toBe("active");
 		expect(taskRows()).toEqual(["○ something from an older build"]);
 	});
 
@@ -232,4 +238,22 @@ describe("the goal and task view", () => {
 		// number the reopened conversation cannot know.
 		expect(document.querySelector("[data-role='goal-round']")).toBeNull();
 	});
+});
+
+/**
+ * The phase shown for each action is the shared machine's answer rather than a table the panel keeps (T25): a
+ * copy of the rule that drifted from `src/shared/goal-phase.ts` fails here. The panel trusts a `done` card, and
+ * these rows tie that trust to the table — which is not the same as the tool accepting all seven from an active
+ * goal at round 0: it refuses `create` and `blocked` there, and a refusal never arrives as a `done` card at all
+ * (the test above covers what a refused write leaves alone).
+ */
+describe("every phase the panel shows is the shared machine's answer", () => {
+	for (const action of GOAL_ACTIONS) {
+		it(`${action} from an active goal leaves it where the shared table says`, async () => {
+			const transport = await mountWithGoal();
+			await send(transport, goalCall("g2", { action }, `goal ${action}`));
+			if (action === "clear") expect(document.querySelector("[data-role='goal']")).toBeNull();
+			else expect(text("[data-role='goal-phase']")).toBe(nextPhase(action, "active"));
+		});
+	}
 });

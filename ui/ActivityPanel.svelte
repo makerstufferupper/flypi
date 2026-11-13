@@ -2,6 +2,7 @@
 	import type { FlypiAppState } from "./lib/app-state.svelte.ts";
 	import { FollowNewest } from "./lib/follow.ts";
 	import { formatCache, type RenderedMessage, type Transcript, type ToolCard } from "../src/shared/transcript.ts";
+	import { nextPhase, type GoalAction, type GoalPhase } from "../src/shared/goal-phase.ts";
 	import type { TaskItem, TaskStatus } from "../src/agent/goals.ts";
 
 	// `GOAL_TOOL`/`TASK_TOOL` in `src/agent/goals.ts`, spelled out rather than imported: that module reads
@@ -132,20 +133,21 @@
 	const goal = $derived(goalOf(app.transcript));
 	const tasks = $derived(tasksOf(app.transcript));
 
-	/** The phase each action leaves the goal in. `edit` is absent — it rewords without moving — and `clear`
-	 *  drops the goal before the lookup. The driver's cap-block is an entry rather than a card, so a goal the
-	 *  round limit stopped still reads `active` here (docs/goals.md risk 10). */
-	const PHASE: Record<string, string> = { create: "active", pause: "paused", resume: "active", complete: "complete", blocked: "blocked" };
 	const GLYPH: Record<TaskStatus, string> = { completed: "✓", in_progress: "◐", pending: "○" };
 
-	/** Where the conversation's own `goal` calls left it: the last objective, and the last phase it moved to. */
+	/** Where the conversation's own `goal` calls left it: the last objective, and the last phase it moved to.
+	 *  The driver's cap-block is an entry rather than a card, so a goal the round limit stopped still reads
+	 *  `active` here (docs/goals.md risk 10). */
 	function goalOf(transcript: Transcript): { objective: string; phase: string; round: string } | undefined {
 		let objective = "";
 		let phase = "";
 		let maxRounds: number | undefined;
 		for (const card of Object.values(transcript.tools)) {
 			if (card.name !== GOAL_TOOL || card.state !== "done") continue;
-			const args = card.args as { action?: string; objective?: string; max_rounds?: number } | undefined;
+			// Only a `done` card is counted. The typebox schema (`goals.ts`, `enum: [...GOAL_ACTIONS]`) guards a live
+			// call, not a replay: a session file written elsewhere can carry a card whose action this build never saw,
+			// and `nextPhase` leaves such a goal where it found it.
+			const args = card.args as { action?: GoalAction; objective?: string; max_rounds?: number } | undefined;
 			if (!args?.action) continue;
 			if (args.action === "clear") {
 				objective = "";
@@ -155,7 +157,9 @@
 			}
 			if (args.objective) objective = args.objective;
 			if (args.max_rounds !== undefined) maxRounds = args.max_rounds;
-			phase = PHASE[args.action] ?? phase;
+			// The cast describes where the walk starts: `""` is "no goal yet", and an action that does not move the
+			// goal — `edit`, or one this build does not know — answers with the phase it was given, `""` included.
+			phase = nextPhase(args.action, phase as GoalPhase);
 		}
 		if (!objective) return undefined;
 		return { objective, phase, round: roundLine(transcript.goalRound, maxRounds) };
