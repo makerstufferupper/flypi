@@ -88,6 +88,34 @@ describe("the run record", () => {
 		expect(runs.interruptedFor("/tmp/s1.jsonl")).toBeUndefined();
 		db.close();
 	});
+	it("answers a second connection to the same file, which is how anything outside this process reads it", () => {
+		// The row is written by the process that owns the file and read by another one: `flypi status`, and the
+		// `sqlite3` an operator opens, are separate connections to a database whose writer is still holding it
+		// open. That the read works anyway is the property — it is what `tests/daemon/daemon.test.ts` used to
+		// prove by opening a connection of its own to a store it was already handed.
+		const root = mkdtempSync(join(tmpdir(), "flypi-run-cross-"));
+		try {
+			const paths = flypiPaths(root);
+			const runs = openRunStore(paths);
+			runs.setRunStatus("c1", "running", { seq: 0, sessionFile: "/tmp/s1.jsonl" });
+
+			const reader = new DatabaseSync(paths.runDbPath, { readOnly: true });
+			const status = () => (reader.prepare("SELECT status FROM runs").get() as { status: string } | undefined)?.status;
+			expect(status()).toBe("running");
+			// The writer moves the row and the reader sees the move — one file, not two copies of it.
+			runs.setRunStatus("c1", "idle", { seq: 7, sessionFile: "/tmp/s1.jsonl" });
+			expect(status()).toBe("idle");
+			reader.close();
+
+			// The same answer through the store, for the caller that has it: the newest row for the session file it
+			// names, and nothing for a chat that never ran.
+			expect(runs.statusOf("/tmp/s1.jsonl")).toBe("idle");
+			expect(runs.statusOf("/tmp/other.jsonl")).toBeUndefined();
+			runs.close();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("the store split", () => {

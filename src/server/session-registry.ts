@@ -88,6 +88,12 @@ export interface SessionRegistryOptions {
 	 */
 	onRunStatus?: (conversationId: string, status: "running" | "idle" | "aborted", info: { seq: number; sessionFile?: string }) => void;
 	/**
+	 * A conversation is gone: its session is disposed and nothing will answer for it again. Called once per
+	 * conversation, inside `teardown()`'s latch, for whoever is counting disposals — the eviction tests, and any
+	 * bookkeeping that must not run twice for one conversation. Absent means nobody is watching.
+	 */
+	onTeardown?: (conversationId: string) => void;
+	/**
 	 * The vault, when this process opened one (docs/secrets.md Phase 5.5). Every conversation then gets the
 	 * secret tools and the redaction; without it the sessions have neither, which is the honest state of a
 	 * process that does not hold the vault's key.
@@ -104,6 +110,7 @@ export class SessionRegistry {
 	private readonly idleTtlMs: number;
 	private readonly now: () => number;
 	private readonly onRunStatus: SessionRegistryOptions["onRunStatus"];
+	private readonly onTeardown: SessionRegistryOptions["onTeardown"];
 
 	constructor(private readonly options: SessionRegistryOptions) {
 		this.layout = flypiPaths(options.root);
@@ -114,6 +121,7 @@ export class SessionRegistry {
 		this.idleTtlMs = options.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
 		this.now = options.now ?? Date.now;
 		this.onRunStatus = options.onRunStatus;
+		this.onTeardown = options.onTeardown;
 	}
 
 	get size(): number {
@@ -465,6 +473,9 @@ export class SessionRegistry {
 		// disposes the session, once. Nothing of it may sit outside the latch — on a second teardown the latch
 		// returns early, and whatever stood next to it would run again against a conversation that is gone.
 		conversation.turn.dispose();
+		// After the latch, and reachable only from the three call sites that tear a conversation out of the map,
+		// so "once per conversation" is held by the same thing that holds it for the session.
+		this.onTeardown?.(conversation.id);
 	}
 }
 

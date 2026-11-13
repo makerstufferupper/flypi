@@ -96,6 +96,7 @@ export async function harness(
 	root: string;
 	registry: SessionRegistry;
 	sessions: StubSession[];
+	/** Conversations the registry has torn down, counted through its own `onTeardown` seam. */
 	disposeCount: () => number;
 	/** Only with `withVault`: the vault the sessions are wired to, on this checkout's own database. */
 	vault: SecretStore;
@@ -135,6 +136,11 @@ export async function harness(
 	const registry = new SessionRegistry({
 		root,
 		...registryOptions,
+		// "exactly once" is observable through the registry's own seam: the count is of conversations torn down,
+		// which is what the eviction tests ask. No `session.dispose` is shadowed to learn it.
+		onTeardown: () => {
+			disposes += 1;
+		},
 		createSession: stubCreateSession(root, script, {
 			...(tokensPerSecond === undefined ? {} : { tokensPerSecond }),
 			...(tools === undefined ? {} : { tools }),
@@ -143,12 +149,6 @@ export async function harness(
 			...(vault ? { vault } : {}),
 			authPath,
 			onSession: (session, stub) => {
-				// Shadow dispose on the instance so "exactly once" is observable.
-				const disposeOriginal = session.dispose.bind(session);
-				session.dispose = () => {
-					disposes += 1;
-					disposeOriginal();
-				};
 				sessions.push({ session, stub });
 			},
 		}),

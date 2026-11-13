@@ -89,6 +89,21 @@ export class RunStore {
 	}
 
 	/**
+	 * The status of the last turn recorded for one session file, newest first — the one question `flypi status`
+	 * and a caller that is not this process ask. Nothing recorded for it is `undefined`.
+	 *
+	 * It exists so a reader goes through the store that owns the file: a second `DatabaseSync` on a database this
+	 * process already holds open buys nothing, and a test that reaches for one is reading past the module. (That a
+	 * *separate process* can read the row anyway is proved in tests/server/run-store.test.ts.)
+	 */
+	statusOf(sessionFile: string): "running" | "idle" | "aborted" | "interrupted" | undefined {
+		const row = this.db
+			.prepare("SELECT status FROM runs WHERE session_file = ? ORDER BY updated_at DESC LIMIT 1")
+			.get(sessionFile) as unknown as { status: "running" | "idle" | "aborted" | "interrupted" } | undefined;
+		return row?.status;
+	}
+
+	/**
 	 * Is a turn in flight in this process right now? The daemon's sweep trigger asks, because a sweep
 	 * reorganises the store a live conversation is being answered from (docs/memory.md Phase 6).
 	 */

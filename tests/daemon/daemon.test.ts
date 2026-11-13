@@ -7,7 +7,6 @@
  */
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
@@ -92,19 +91,6 @@ async function startOn(
 	});
 	return { ...started, runs };
 }
-
-/**
- * The status of the one run row, read through a second connection to the backend's file: the writer holds it
- * open, and reading it anyway is what `sqlite3` and `flypi status` depend on.
- */
-const runStatus = (root: string) => {
-	const db = new DatabaseSync(flypiPaths(root).runDbPath, { readOnly: true });
-	try {
-		return (db.prepare("SELECT status FROM runs").get() as { status: string } | undefined)?.status;
-	} finally {
-		db.close();
-	}
-};
 
 async function daemon(options: { log?: (line: string) => void } = {}) {
 	const root = createTempFlypiRoot();
@@ -301,8 +287,8 @@ describe("the daemon", () => {
 			sessionPath = created.sessionPath;
 			client.send({ type: "prompt", conversationId: created.conversationId, text: "go" });
 			// Wait for the turn to be genuinely in flight: the record is the evidence, not an event we hope to see.
-			for (let waited = 0; waited < 3000 && runStatus(root) !== "running"; waited += 20) await sleep(20);
-			expect(runStatus(root)).toBe("running");
+			for (let waited = 0; waited < 3000 && first.runs.statusOf(sessionPath) !== "running"; waited += 20) await sleep(20);
+			expect(first.runs.statusOf(sessionPath)).toBe("running");
 		} finally {
 			await client.close();
 			// Take the process away without letting the turn finish — the state a crash leaves. The turn is
@@ -310,7 +296,7 @@ describe("the daemon", () => {
 			// a message still streaming is nothing (see the `message_end` note in docs/pi-api.md).
 			await first.close();
 		}
-		expect(runStatus(root)).toBe("running");
+		expect(first.runs.statusOf(sessionPath)).toBe("running");
 
 		// The same store, a new process: what starting again after a crash does.
 		const log: string[] = [];
@@ -318,7 +304,7 @@ describe("the daemon", () => {
 		const client2 = await connect(second.url, second.token);
 		try {
 			expect(log.join("\n")).toMatch(/1 turn\(s\) were interrupted by the previous shutdown/);
-			expect(runStatus(root)).toBe("interrupted");
+			expect(second.runs.statusOf(sessionPath)).toBe("interrupted");
 
 			client2.send({ type: "newSession", requestId: "r1" });
 			const fresh = await client2.next((frame) => frame.type === "result" && frame.requestId === "r1");
