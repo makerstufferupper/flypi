@@ -126,6 +126,7 @@ export function ensureConfig(root, env = process.env) {
 	if (!entry) {
 		token = randomBytes(24).toString("hex");
 		servers["flypi-memory"] = {
+			// shortcut: plain .mjs that runs before npm install, so it cannot import paths.ts; tests/scripts/health-url.test.ts pins the shared shape.
 			url: `http://127.0.0.1:${MEMORY_PORT}/mcp`,
 			description: "flypi memory store: memory_search, memory_write, memory_read, memory_supersede, memory_forget",
 			headers: { Authorization: `Bearer ${token}` },

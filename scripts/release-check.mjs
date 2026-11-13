@@ -78,6 +78,7 @@ async function health(port, seconds = 180) {
 	const deadline = Date.now() + seconds * 1000;
 	while (Date.now() < deadline) {
 		try {
+			// shortcut: this is plain .mjs and cannot import paths.ts; tests/scripts/health-url.test.ts pins the shared shape.
 			const response = await fetch(`http://127.0.0.1:${port}/healthz`);
 			if (response.ok) return await response.json();
 		} catch {}

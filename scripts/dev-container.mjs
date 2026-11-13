@@ -101,6 +101,7 @@ try {
 		// The image's own CMD downloads the memory models on a fresh state root, so "unhealthy" for the
 		// first quarter hour is the download, not a broken build.
 		"--health-cmd",
+		// shortcut: this is plain .mjs and cannot import paths.ts; tests/scripts/health-url.test.ts pins the shared shape (the container's health-cmd).
 		`node -e "fetch('http://127.0.0.1:${PORT}/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"`,
 		"--health-interval",
 		"30s",
@@ -113,11 +114,13 @@ try {
 		tag,
 	]);
 
+	// shortcut: this is plain .mjs and cannot import paths.ts; tests/scripts/health-url.test.ts pins the shared shape. Only a log line — it prints what the poll below fetches.
 	step(`serve — waiting on http://127.0.0.1:${PORT}/healthz`);
 	const deadline = Date.now() + 180_000;
 	let body = null;
 	while (Date.now() < deadline && !body) {
 		try {
+			// shortcut: this is plain .mjs and cannot import paths.ts; tests/scripts/health-url.test.ts pins the shared shape.
 			const response = await fetch(`http://127.0.0.1:${PORT}/healthz`);
 			if (response.ok) body = await response.json();
 		} catch {}

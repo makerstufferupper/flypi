@@ -38,5 +38,6 @@ CMD ["flypi", "start", "--foreground", "--port", "8791", "--host", "0.0.0.0"]
 
 # /healthz needs no token, so the check needs none either. The first start fetches ~900 MB of memory models
 # before it is listening, hence the long grace period; a volume on /data makes that once per machine.
+# shortcut: an image cannot import paths.ts; tests/scripts/health-url.test.ts pins the copy spelled below.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15m --retries=3 \
 	CMD node -e "fetch('http://127.0.0.1:8791/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
