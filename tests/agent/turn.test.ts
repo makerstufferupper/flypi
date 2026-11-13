@@ -6,8 +6,14 @@
  * `tests/server/server.test.ts` streams over a socket and `tests/secrets/session.test.ts` redacts through a real
  * session. The difference is what the seam is *for*: those need pi, a model and a server, so the properties below
  * were only ever provable expensively. Here they are milliseconds, and they are provable at all because the seam
- * takes a session rather than building one — the file imports no `createFlypiSession`, no `ModelRuntime` and no
- * stub model, and nothing here can spawn a pi process.
+ * takes a session rather than building one.
+ *
+ * What it does not do is *construct* pi: no session, no model, no provider, no network call and no pi process —
+ * `createStubModel` and `ModelRuntime.create` never run. It does **load** pi: `scripted-turn.ts` →
+ * `recorded-turn.ts` → `stub-model.ts` value-imports `ModelRuntime` and `fauxProvider`, so pi's module graph is
+ * in the process. `stub-model.ts` is deliberately not restructured to chase those imports out of it — one script
+ * shared by the fixture, `npm run record` and the model-backed tests is worth more than an import graph with
+ * nothing pi in it.
  */
 import { rmSync } from "node:fs";
 import { join } from "node:path";
@@ -31,6 +37,8 @@ type ScriptedHost = TurnHost & {
 	runs: string[];
 	/** `log.lastSeq` as it stood at each of those calls — the ordering the run row is written against. */
 	seqAtRun: number[];
+	/** `session.isIdle` as it stood at each of those calls — pi's, not "no turn started by me". */
+	idleAtRun: boolean[];
 	turnStarts: number;
 	/** `session.prompts.length` when `onTurnStart` fired: 0 means the prompt had not been handed over yet. */
 	promptsAtTurnStart: number;
@@ -45,6 +53,7 @@ function scriptedHost(turn: ScriptedTurn): ScriptedHost {
 		seen: [],
 		runs: [],
 		seqAtRun: [],
+		idleAtRun: [],
 		turnStarts: 0,
 		promptsAtTurnStart: -1,
 		disposes: 0,
@@ -52,6 +61,7 @@ function scriptedHost(turn: ScriptedTurn): ScriptedHost {
 		onRun: (status) => {
 			host.runs.push(status);
 			host.seqAtRun.push(log.lastSeq);
+			host.idleAtRun.push(turn.session.isIdle);
 		},
 		onTurnStart: () => {
 			host.turnStarts += 1;
@@ -195,6 +205,11 @@ describe("the turn seam, driven without pi", () => {
 		// `idle` is written *before* `agent_settled` is pushed, so the row's seq is the last event of the turn and
 		// not the settle itself — the number `tests/server/session-registry.test.ts` pins through the registry.
 		expect(host.seqAtRun[1]).toBe(host.log.lastSeq - 1);
+		// pi marks the run active before it answers `started` and clears it before it delivers the settle
+		// (`agent-session.js:1424, 684-690`), so `isIdle` is false at the first write and already true at the second.
+		// The adapter answers both the same way; a double that said otherwise is one a steer or eviction test would
+		// believe, and pi would not.
+		expect(host.idleAtRun).toEqual([false, true]);
 	});
 
 	it("run status: an abort mid-replay is running, aborted, idle, and the replay stops where the abort landed", async () => {
@@ -212,6 +227,51 @@ describe("the turn seam, driven without pi", () => {
 		expect(turn.replayed.length).toBeLessThan(recordedEvents().length);
 		expect(turn.replayed.slice(-2).map((event) => event.type)).toEqual(["agent_end", "agent_settled"]);
 		expect((turn.replayed.at(-1) as { aborted?: boolean }).aborted).toBe(true);
+	});
+
+	// A steer starts no run of its own — pi queues it and answers the disposition `queued` (`agent-session.js:1675`)
+	// — but the turn it joined is still in flight, so the crash record has to say `running` again. Only `handled`
+	// really starts nothing, and `tests/server/extension-commands.test.ts:182` pins that against real pi. This is
+	// the assertion that keeps the driver's predicate honest: `disposition === "started"` would pass every other
+	// test in the suite, because `queued` is the disposition a steered turn actually has.
+	it("run status: input that only queues is `queued`, not `handled`, so the row still says a turn is in flight", async () => {
+		const { turn, host, driver } = scriptedTurn();
+
+		const running = driver.start({ body: SCRIPTED_PROMPT });
+		await until("the turn to start", () => host.seen.length >= 3);
+		// The turn is really still going, or `queued` would not be the disposition pi answers here.
+		expect(driver.idle).toBe(false);
+		// pi resolves a queued prompt as soon as it is queued (`:1670-1676`), not when the turn answers it.
+		await driver.start({ body: "and then this", mode: "steer" });
+		await running;
+
+		expect(host.runs).toEqual(["running", "running", "idle"]);
+		// It joined the turn that was already going instead of starting a second replay: one recording, once.
+		expect(turn.prompts).toEqual([SCRIPTED_PROMPT, "and then this"]);
+		expect(turn.replayed).toEqual(recordedEvents());
+	});
+
+	// pi refuses a prompt that arrives while one streams with no `streamingBehavior` — `Agent is already
+	// processing. Specify streamingBehavior…` (`agent-session.js:1667`) — and `src/server/index.ts` turns that
+	// rejection into the socket's error frame, so the double refuses too. The mode-less prompt must also leave
+	// the running turn alone: a replay restarted from here reassigns the one `finish` resolver, and the first
+	// caller — the client that is really waiting — would hang rather than fail.
+	it("a second prompt with no mode is refused, and one with a mode leaves the running turn alone", async () => {
+		const { turn, host, driver } = scriptedTurn();
+
+		const running = driver.start({ body: SCRIPTED_PROMPT });
+		await until("the turn to start", () => host.seen.length >= 3);
+
+		await expect(driver.start({ body: "no mode here" })).rejects.toThrow(/Agent is already processing/);
+		// A refusal answered no disposition at all, so it records no run: nothing new is in flight.
+		expect(host.runs).toEqual(["running"]);
+
+		await driver.start({ body: "queued instead", mode: "followUp" });
+		expect(turn.prompts).toEqual([SCRIPTED_PROMPT, "no mode here", "queued instead"]);
+		await running;
+
+		// The first caller's promise resolved, and the turn it was waiting on is the recording, once over.
+		expect(turn.replayed).toEqual(recordedEvents());
 	});
 
 	it("onTurnStart fires before the prompt is handed to the session", async () => {
@@ -281,14 +341,9 @@ describe("the turn seam, driven without pi", () => {
 	});
 
 	it("turnInput refuses a prompt with neither text nor attachment", () => {
-		const written: string[] = [];
-		const refuse = () => turnInput("   ", [], (file) => {
-			written.push(file.name);
-			return `/tmp/${file.name}`;
-		});
 		// The sentence is protocol: the UI shows it and a test quotes it (tests/server/session-registry.test.ts).
-		expect(refuse).toThrow("a prompt needs text or an attachment");
-		expect(written).toEqual([]);
+		// Anchored, because `toThrow(string)` is only a substring match in vitest and this claims the whole sentence.
+		expect(() => turnInput("   ", [], () => "unused")).toThrow(/^a prompt needs text or an attachment$/);
 
 		// An image alone is a prompt: the model has something to look at even with no text.
 		const png: FlypiAttachment = { name: "screenshot.png", mimeType: "image/png", data: "cG5n" };

@@ -296,7 +296,14 @@ describe("the daemon", () => {
 			// a message still streaming is nothing (see the `message_end` note in docs/pi-api.md).
 			await first.close();
 		}
-		expect(first.runs.statusOf(sessionPath)).toBe("running");
+		// Read the row the crash left behind through a connection that did not write it. `startFlypiDaemon` does
+		// not close the store it was handed and `close()` does not either, so `first.runs` here is the writer
+		// reading its own row; `flypi status` and the next process are separate connections, and that the row is
+		// committed for them is the thing worth proving. (A reader while the writer still holds the file is
+		// proved in tests/server/run-store.test.ts.)
+		const afterCrash = openRunStore(flypiPaths(root));
+		openedRuns.push(afterCrash);
+		expect(afterCrash.statusOf(sessionPath)).toBe("running");
 
 		// The same store, a new process: what starting again after a crash does.
 		const log: string[] = [];

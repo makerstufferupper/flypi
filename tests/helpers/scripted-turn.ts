@@ -3,8 +3,14 @@
  *
  * `src/agent/turn.ts` takes a `TurnSession` — `prompt`, `abort`, `subscribe`, `isIdle`, `dispose`. With only the
  * real pi session as its adapter, that seam is a hypothesis; this file is the other one: a session that *is* a
- * recording. No pi runtime, no model, no provider and no process — the events are the ones `npm run record`
- * captured from one real turn (tests/fixtures/transcript-log), replayed as they were sent.
+ * recording. It constructs no pi session, model or provider, makes no network call and spawns no pi process —
+ * pi's modules are in the process (the script comes through `stub-model.ts`, which value-imports them) and none
+ * of them is built. The events are the ones `npm run record` captured from one real turn
+ * (tests/fixtures/transcript-log), replayed as they were sent.
+ *
+ * Where pi has a behaviour the double could skip, the double has it: `prompt` answers the disposition pi answers
+ * (`started`, or `queued` for input that joins a running turn) and rejects the second mode-less prompt pi
+ * rejects. The point of a second adapter is to be as demanding as the first.
  *
  * The turn replayed is `tests/helpers/recorded-turn.ts`'s: the same script the fixture was recorded from and the
  * same one `scripts/record-transcript.ts` drives, so the fixture and the script cannot drift.
@@ -50,7 +56,7 @@ export interface ScriptedTurn {
 	readonly session: TurnSession;
 	/** Every event it emitted, in the order it emitted them: what the log is expected to hold. */
 	readonly replayed: AgentSessionEvent[];
-	/** The text of each `prompt()` it was handed, in order. */
+	/** The text of each `prompt()` call it was handed, in order — including a second one it refused. */
 	readonly prompts: string[];
 	/** How many times `dispose()` ran. The driver's latch makes this 1 after two calls, not 2. */
 	disposeCalls: number;
@@ -79,7 +85,14 @@ export function scriptedSession(events: AgentSessionEvent[] = recordedEvents()):
 
 	const emit = (event: AgentSessionEvent): void => {
 		replayed.push(event);
-		// A copy of the set, as pi's emitter does: a listener that unsubscribes itself must not skip its neighbour.
+		// pi clears `_isAgentRunActive` *before* it emits `agent_settled` (`agent-session.js:684-690`), so a listener
+		// that asks `isIdle` while the settle is being delivered already gets true. Matched rather than approximated:
+		// a double still reporting busy would let code that polls `isIdle` from a settle listener pass here, on the
+		// one run-status write the crash record depends on, and fail against pi.
+		if (event.type === "agent_settled") replaying = false;
+		// A copy of the set, which makes this double *stricter* than pi: pi's `_emit` (`agent-session.js:649`) walks
+		// the live listener list, so a listener that unsubscribes one behind it makes that one miss the event.
+		// The seam's subscription is dropped by `dispose()` mid-life, so it should not depend on that happening.
 		for (const listener of [...listeners]) listener(event);
 	};
 
@@ -99,14 +112,27 @@ export function scriptedSession(events: AgentSessionEvent[] = recordedEvents()):
 	};
 
 	const session: TurnSession = {
-		prompt: (text, options) => {
+		prompt: async (text, options) => {
 			prompts.push(text);
-			// pi answers the disposition once the run's messages are prepared — before its first request and before
-			// any event. That is the only moment early enough for the crash record (docs/architecture.md 4.5), so
-			// the adapter has to answer it at the same moment or the seam would be tested against a laxer pi.
-			options?.preflightResult?.("started");
+			if (replaying) {
+				// pi's dispositions while it is already streaming: no mode is a refusal — `Agent is already
+				// processing…` (`agent-session.js:1667`), and `src/server/index.ts` turns that rejection into the
+				// socket's error frame — and a mode queues into the running turn and answers `queued` (`:1675`),
+				// resolving once queued rather than once answered. Either way the replay keeps its cursor: restarting
+				// it here would reassign `finish` and leave the *first* caller's promise unresolved, so a steer test
+				// written against this double would time out instead of failing.
+				if (!options?.streamingBehavior) throw new Error("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.");
+				options.preflightResult?.("queued");
+				return;
+			}
+			// pi marks the run active first (`_startRun` sets `_isAgentRunActive = true` at :1424) and answers the
+			// disposition once the run's messages are prepared (`:1441` `onStarted`), before its first request and
+			// before any event. That is the only moment early enough for the crash record (docs/architecture.md 4.5),
+			// so the adapter answers it at the same moment — with the replay already flagged as running, because
+			// `isIdle` is already false at that point on pi and a double that said idle would hide a read of it there.
 			replaying = true;
 			stopped = false;
+			options?.preflightResult?.("started");
 			running = new Promise<void>((resolve) => {
 				finish = resolve;
 			});

@@ -88,9 +88,14 @@ export interface SessionRegistryOptions {
 	 */
 	onRunStatus?: (conversationId: string, status: "running" | "idle" | "aborted", info: { seq: number; sessionFile?: string }) => void;
 	/**
-	 * A conversation is gone: its session is disposed and nothing will answer for it again. Called once per
-	 * conversation, inside `teardown()`'s latch, for whoever is counting disposals — the eviction tests, and any
-	 * bookkeeping that must not run twice for one conversation. Absent means nobody is watching.
+	 * A conversation has been **torn down** — its session disposed, its extension UI closed, nothing will answer
+	 * for it again. Once per conversation, from inside the driver's dispose latch; it counts teardowns and nothing
+	 * else. Absent means nobody is watching.
+	 *
+	 * Said out loud: it has no production caller. Production learns a conversation ended from the `runs` row
+	 * (`onRunStatus`, wired in `src/daemon/index.ts` and `scripts/serve.ts`); this one exists so `harness()` can
+	 * count conversations torn down without shadowing `session.dispose` (docs/deepening.md 11.3 T31), which is the
+	 * thing the phase doc forbade. An option only tests pass is the cost of removing that patch.
 	 */
 	onTeardown?: (conversationId: string) => void;
 	/**
@@ -433,8 +438,12 @@ export class SessionRegistry {
 			// A new turn has not injected anything yet: the panel must not show last turn's block as this one's.
 			onTurnStart: () => (memory.block = null),
 			// An extension waiting on a dialog nobody will ever answer would hold its handler open forever. Inside
-			// the driver's latch, so it runs once per conversation and cannot be reached outside the teardown.
-			onDispose: () => extensionUi.close(),
+			// the driver's latch, so it runs once per conversation and cannot be reached outside the teardown —
+			// which is also where the teardown count belongs, next to the close rather than beside `turn.dispose()`.
+			onDispose: () => {
+				extensionUi.close();
+				this.onTeardown?.(id);
+			},
 		});
 		this.seedHistory(conversation);
 		return conversation;
@@ -469,13 +478,11 @@ export class SessionRegistry {
 	}
 
 	private teardown(conversation: Conversation): void {
-		// The driver's latch is the whole teardown: it closes the extension UI, drops the subscription and
-		// disposes the session, once. Nothing of it may sit outside the latch — on a second teardown the latch
-		// returns early, and whatever stood next to it would run again against a conversation that is gone.
+		// The driver's latch is the whole teardown: it closes the extension UI, reports the teardown, drops the
+		// subscription and disposes the session, once. Nothing of it may sit outside the latch — on a second
+		// teardown the latch returns early, and whatever stood next to it would run again against a conversation
+		// that is gone.
 		conversation.turn.dispose();
-		// After the latch, and reachable only from the three call sites that tear a conversation out of the map,
-		// so "once per conversation" is held by the same thing that holds it for the session.
-		this.onTeardown?.(conversation.id);
 	}
 }
 
