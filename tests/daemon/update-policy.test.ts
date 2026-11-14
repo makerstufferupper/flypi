@@ -17,8 +17,8 @@
  * asserted here rather than only reachable behind a running daemon in a checkout.
  *
  * And it pins the sentence the daily flypi check leaves in the log (`updateNotice`), ladder tail and all: it is
- * the only place a reader learns a release is waiting, and nothing else in the suite would notice a reword,
- * because the daemon's own tests run in a checkout, where that check never runs at all.
+ * the only place the daemon's log says a release is waiting, and nothing else in the suite would notice a
+ * reword, because the daemon's own tests run in a checkout, where that check never runs at all.
  */
 import { describe, expect, it } from "vitest";
 import { PACKAGE_CHECK_INTERVAL_MS, type PackageCheck } from "../../src/agent/packages.ts";

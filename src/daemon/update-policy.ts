@@ -19,7 +19,9 @@
  * The page's "install now" is the same guards asked a second way (`packageToFetch`, `installNowPolicy`). The
  * two sentences it answers with when it cannot install live here too, so the refusal a person reads has one
  * owner and a row that goes red when either is reworded. So does the sentence the daily flypi check leaves in
- * the log (`updateNotice`) — the one place it is said out loud that the ladder is more than one rung deep.
+ * the log (`updateNotice`) — the one place the daemon says out loud that the ladder is more than one rung deep.
+ * (`scripts/update.ts` prints the same fact its own way, and `/healthz` carries the version; this is the
+ * daemon's own sentence, the one its log line is made of.)
  */
 import { dueForPackageCheck, type PackageCheck } from "../agent/packages.ts";
 import { dueForPiCheck, type PiCheck } from "./pi.ts";
@@ -108,9 +110,10 @@ export function updatePolicy(pass: UpdatePass): UpdateAction[] {
 	return actions;
 }
 
-/** The package "install now" has to fetch: the step the registry named, while nothing newer than what is
- *  running is already staged — `stagedUpdate` owns that test, and a step on disk must not be refetched for
- *  a restart. "Now" can arrive before the daily check fetched anything: the step, never the top of the ladder. */
+/** The package the daily check and "install now" have to fetch: the step the registry named, while nothing
+ *  newer than what is running is already staged — `stagedUpdate` owns that test, and a step on disk must not be
+ *  refetched for a restart. "Now" can arrive before the daily check fetched anything: the step, never the top
+ *  of the ladder. */
 export function packageToFetch(stamp: UpdateCheck | null, current: string): { version: string; dist: UpdateDist } | null {
 	return stamp?.next && stamp.dist && !stagedUpdate(stamp, current) ? { version: stamp.next, dist: stamp.dist } : null;
 }

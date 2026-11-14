@@ -288,8 +288,8 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 			stamp.download = keepDownload(stamp, previous);
 			// The same rule "install now" uses, and on this stamp the very one this call used to spell by hand:
 			// `keepDownload` has just emptied `download` unless it is the step, and the registry only ever names a
-			// `next` above this version. The D5 row of tests/daemon/update-policy.test.ts pins where the two
-			// spellings stop agreeing, which is why neither caller collapses into the other.
+			// `next` above this version. `installStaged` is where the two spellings can differ (the D5 row of
+			// tests/daemon/update-policy.test.ts pins that); this call site could not tell them apart.
 			const toFetch = packageToFetch(stamp, version);
 			if (toFetch) {
 				const downloaded = await downloadUpdate({ root: paths.root, version: toFetch.version, dist: toFetch.dist });
