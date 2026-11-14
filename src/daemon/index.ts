@@ -31,8 +31,8 @@ import { SessionRegistry, type CreateSession } from "../server/session-registry.
 import type { RunStore } from "../server/run-store.ts";
 import { JobQueue, startJobLoop, type JobHandler } from "./jobs.ts";
 import { PI_PACKAGE, loadedPi, piTrees, readPiCheck, writePiCheck } from "./pi.ts";
-import { isIdle, installNowPolicy, packageToFetch, updatePolicy, type UpdateAction, type UpdatePass } from "./update-policy.ts";
-import { checkForUpdate, clearUpdateCheck, downloadUpdate, installArgs, isGlobalInstall, isNewer, keepDownload, packageDir, packageInfo, readUpdateCheck, stagedUpdate, updateAvailable, writeUpdateCheck } from "./update.ts";
+import { isIdle, installNowPolicy, packageToFetch, updateNotice, updatePolicy, type UpdateAction, type UpdatePass } from "./update-policy.ts";
+import { checkForUpdate, clearUpdateCheck, downloadUpdate, installArgs, isGlobalInstall, keepDownload, packageDir, packageInfo, readUpdateCheck, stagedUpdate, updateAvailable, writeUpdateCheck } from "./update.ts";
 
 /** What `.flypi/daemon.json` holds: enough for `flypi status` to find a running daemon again. */
 export interface DaemonInfo {
@@ -286,19 +286,20 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 			const stamp = await checkForUpdate({ current: version, name: pkg.name });
 			// A package already on disk stays unless the step it was fetched for has changed.
 			stamp.download = keepDownload(stamp, previous);
-			if (stamp.next && stamp.dist && !stamp.download) {
-				const downloaded = await downloadUpdate({ root: paths.root, version: stamp.next, dist: stamp.dist });
-				if (downloaded.file) stamp.download = { version: stamp.next, file: downloaded.file, at: new Date().toISOString() };
-				else log(`flypi: ${stamp.next} is available but could not be downloaded: ${downloaded.error}`);
+			// The same rule "install now" uses, and on this stamp the very one this call used to spell by hand:
+			// `keepDownload` has just emptied `download` unless it is the step, and the registry only ever names a
+			// `next` above this version. The D5 row of tests/daemon/update-policy.test.ts pins where the two
+			// spellings stop agreeing, which is why neither caller collapses into the other.
+			const toFetch = packageToFetch(stamp, version);
+			if (toFetch) {
+				const downloaded = await downloadUpdate({ root: paths.root, version: toFetch.version, dist: toFetch.dist });
+				if (downloaded.file) stamp.download = { version: toFetch.version, file: downloaded.file, at: new Date().toISOString() };
+				else log(`flypi: ${toFetch.version} is available but could not be downloaded: ${downloaded.error}`);
 			}
 			writeUpdateCheck(paths.root, stamp);
-			const step = updateAvailable(stamp, version);
-			if (step) {
-				// One step, and the reader is told when more than one is waiting: the ladder is walked a release
-				// at a time so each version's own schema upgrade runs against the schema it expects.
-				const further = stamp.latest && isNewer(step, stamp.latest) ? `; one step at a time — ${stamp.latest} is the newest published` : "";
-				log(`flypi: ${step} is available — this is ${version}; ${stamp.download ? "downloaded, and it installs the next time the daemon is idle (`flypi update` does it now)" : "not downloaded — `flypi update` installs it"}${further}`);
-			} else if (stamp.error) log(`flypi: no update check: ${stamp.error}`);
+			// What the answer is worth saying, in one sentence or nothing; the `flypi: ` prefix belongs to this line.
+			const notice = updateNotice(stamp, version);
+			if (notice) log(`flypi: ${notice}`);
 		} finally {
 			checking = false;
 		}
