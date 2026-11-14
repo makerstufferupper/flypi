@@ -17,7 +17,7 @@ import { join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { assertFlypiOwned, DAEMON_FILE, memoryMcpUrl, type FlypiPaths } from "../agent/paths.ts";
 import { applyConfigEdits, ensureAgentConfig, ensureMemoryEntry, memoryEndpoint } from "../agent/config-files.ts";
-import { applyPackageEdits, autoExtensions, checkPackageUpdates, dueForPackageCheck, readPackageCheck, writePackageCheck } from "../agent/packages.ts";
+import { applyPackageEdits, autoExtensions, checkPackageUpdates, readPackageCheck, writePackageCheck } from "../agent/packages.ts";
 import { CONSOLIDATE_JOB, consolidate, sweepDue } from "../memory/consolidate.ts";
 import { startMemoryServer, type MemoryServerHandle } from "../memory/mcp.ts";
 import type { MemoryStore } from "../memory/store.ts";
@@ -30,8 +30,9 @@ import { startFlypiServer, type FlypiServerHandle, type FlypiServerOptions } fro
 import { SessionRegistry, type CreateSession } from "../server/session-registry.ts";
 import type { RunStore } from "../server/run-store.ts";
 import { JobQueue, startJobLoop, type JobHandler } from "./jobs.ts";
-import { PI_PACKAGE, dueForPiCheck, loadedPi, piTrees, readPiCheck, writePiCheck } from "./pi.ts";
-import { IDLE_BEFORE_INSTALL_MS, checkForUpdate, clearUpdateCheck, downloadUpdate, dueForCheck, installArgs, isGlobalInstall, isNewer, keepDownload, packageDir, packageInfo, readUpdateCheck, stagedUpdate, updateAvailable, writeUpdateCheck } from "./update.ts";
+import { PI_PACKAGE, loadedPi, piTrees, readPiCheck, writePiCheck } from "./pi.ts";
+import { isIdle, updatePolicy, type UpdateAction, type UpdatePass } from "./update-policy.ts";
+import { checkForUpdate, clearUpdateCheck, downloadUpdate, installArgs, isGlobalInstall, isNewer, keepDownload, packageDir, packageInfo, readUpdateCheck, stagedUpdate, updateAvailable, writeUpdateCheck } from "./update.ts";
 
 /** What `.flypi/daemon.json` holds: enough for `flypi status` to find a running daemon again. */
 export interface DaemonInfo {
@@ -355,13 +356,9 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		return installPackage(staged, stamp.download.file);
 	};
 
-	// One pass of the update rule, from the job loop: re-check when the answer is stale, and install when the
-	// package is on disk and the daemon has been idle for a stretch — the sweep's idle (no page attached, no
-	// turn in flight) held for IDLE_BEFORE_INSTALL_MS, so a brief lull is never a restart.
-	let idleSince = 0;
-	// The same idle stretch installs extension packages (src/agent/packages.ts). They need no restart — the code
-	// is loaded per conversation — so the one difference is what happens afterwards: the conversations that are
-	// open are reloaded instead of the process.
+	// The idle stretch `updatePolicy` waits for also installs extension packages (src/agent/packages.ts). They
+	// need no restart — the code is loaded per conversation — so the one difference is what happens afterwards:
+	// the conversations that are open are reloaded instead of the process.
 	let updatingPackages = false;
 	const updatePackages = async (sources: string[]) => {
 		if (updatingPackages) return;
@@ -393,35 +390,45 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		else if (check.error) log(`flypi: no pi version check: ${check.error}`);
 	};
 
-	const updatePass = (idle: boolean) => {
-		const stamp = readUpdateCheck(paths.root);
-		const pkgStamp = readPackageCheck(paths.root);
-		// A checkout is not an installed package, but the extensions it loads are: only flypi's own ladder is
-		// skipped there.
-		if (!pkg.checkout && dueForCheck(stamp)) void checkUpdates();
-		if (!pkg.checkout && dueForPiCheck(readPiCheck(paths.root))) void checkPiVersions();
-		if (dueForPackageCheck(pkgStamp)) void checkPackages();
-		const staged = pkg.checkout ? null : stagedUpdate(stamp, version);
-		const pending = pkgStamp?.updates ?? [];
-		if ((!staged && pending.length === 0) || !idle) {
-			idleSince = 0;
-			return;
-		}
-		if (!idleSince) idleSince = Date.now();
-		if (Date.now() - idleSince < IDLE_BEFORE_INSTALL_MS) return;
-		// Packages first: they need no restart, and the flypi install below may take this process away.
-		// The choice is the user's (`updates.autoExtensions` in settings.json): an unattended extension
-		// update is how an incompatible one arrives.
-		if (pending.length && autoExtensions(paths)) void updatePackages(pending);
-		if (staged && stamp?.download?.file) installPackage(staged, stamp.download.file);
-		// Start the clock again either way: a failed install retries after another idle stretch, not every pass.
-		idleSince = 0;
+	// One pass of the update rule, from the job loop and once at startup. The decisions are `updatePolicy`'s
+	// (src/daemon/update-policy.ts); this is the reading, the effects, and the one piece of state the rule has —
+	// when the current idle stretch began.
+	let idleSince = 0;
+	const updatePass = (input: { first: boolean; idle: UpdatePass["idle"] }) => {
+		const pass: UpdatePass = {
+			version,
+			checkout: pkg.checkout,
+			// The user's choice about unattended extension updates, read the way every other setting here is.
+			autoExtensions: autoExtensions(paths),
+			first: input.first,
+			stamp: readUpdateCheck(paths.root),
+			packages: readPackageCheck(paths.root),
+			// Which pi this is; `pinned` decides nothing here — moving pi never happens unattended
+			// (docs/pi-upgrades.md:91), and `updatePolicy` says so in its own comment.
+			pi: { check: readPiCheck(paths.root), pinned: loadedPi(paths.root).pinned },
+			idle: input.idle,
+			idleSince,
+			now: Date.now(),
+		};
+		// One handler per action kind, reached by indexing the kind, so the dispatcher itself decides nothing.
+		// The map's keys are the kinds, so the handler a pass reaches already holds its action's shape; `tsc`
+		// cannot see that through the index, so the one call states it.
+		const run: { [K in UpdateAction["kind"]]: (action: Extract<UpdateAction, { kind: K }>) => void } = {
+			checkRegistry: () => void checkUpdates(),
+			checkPi: () => void checkPiVersions(),
+			stagePackages: () => void checkPackages(),
+			reloadExtensions: (action) => void updatePackages(action.sources),
+			installFlypi: (action) => void installPackage(action.version, action.file),
+			notify: (action) => log(action.text),
+			beginIdle: () => { idleSince = pass.now; },
+			endIdle: () => { idleSince = 0; },
+		};
+		for (const action of updatePolicy(pass)) (run[action.kind] as (action: UpdateAction) => void)(action);
 	};
-	if (!pkg.checkout) {
-		void checkUpdates();
-		void checkPiVersions();
-	}
-	if (dueForPackageCheck(readPackageCheck(paths.root))) void checkPackages();
+	// Once at startup, whatever the stamps say: a daemon that has just started asks rather than waiting out a
+	// day it may have missed. It installs nothing (`first` returns before the install band), and its idle is
+	// measured rather than assumed — a daemon that starts with a page attached is not idle.
+	updatePass({ first: true, idle: { clients: server.clients(), runningTurns: options.runs.runningTurns() } });
 
 	const handlers: Record<string, JobHandler> = {
 		// The kinds this build can run. `secrets.reencrypt` landed in Phase 5.5; `memory.consolidate` and
@@ -462,11 +469,12 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		// would simply not run.
 		beforePass: () => {
 			// The update rule and the sweep's trigger ask the same question — is the daemon idle? — so one
-			// answer per pass. The update installs only after a stretch of that idle (src/daemon/update.ts).
-			const idle = server.clients() === 0 && options.runs.runningTurns() === 0;
-			updatePass(idle);
+			// measurement per pass feeds both. The update installs only after a stretch of that idle
+			// (src/daemon/update-policy.ts).
+			const idle = { clients: server.clients(), runningTurns: options.runs.runningTurns() };
+			updatePass({ first: false, idle });
 			const state = options.store.sweepState();
-			if (!sweepDue({ ...state, at: new Date().toISOString(), idle })) return;
+			if (!sweepDue({ ...state, at: new Date().toISOString(), idle: isIdle(idle) })) return;
 			options.store.queueJob(CONSOLIDATE_JOB, { payload: { reason: `${state.newRows} row(s) since the last sweep${state.lastSweepAt ? `, last ${state.lastSweepAt}` : ", never swept"}` } });
 		},
 		onPass: (ran) => ran.forEach((attempt) => log(`flypi: job ${attempt.kind} ${attempt.status}${attempt.detail ? `: ${attempt.detail}` : ""}`)),
