@@ -197,6 +197,12 @@ describe("what \"install now\" answers with", () => {
 		const stamp = flypiStamp({ dist });
 		expect(packageToFetch(stamp, "0.1.0")).toBeNull();
 		expect(installNowPolicy(stamp, "0.1.0")).toEqual(install);
+		// A stamp the daily check moved under: `next` went up to 0.3.0 while the 0.2.0 download stayed. Something
+		// newer than this process is already staged, so "now" installs that rung — 0.2.0, never 0.3.0 over 0.1.0;
+		// `keepDownload` (update.ts:237) is what normally drops the stale download on the next check.
+		const moved = flypiStamp({ next: "0.3.0", latest: "0.3.0", dist, download: { version: "0.2.0", file: "/root/.flypi/updates/flypi-0.2.0.tgz", at: iso(now - 60_000) } });
+		expect(packageToFetch(moved, "0.1.0")).toBeNull();
+		expect(installNowPolicy(moved, "0.1.0")).toEqual(install);
 	});
 
 	it("refuses a staged package that is not newer than this one", () => {

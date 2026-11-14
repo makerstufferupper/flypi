@@ -107,11 +107,10 @@ export function updatePolicy(pass: UpdatePass): UpdateAction[] {
 	return actions;
 }
 
-/** The package "install now" has to fetch: the step the registry named that is not on disk. */
+/** The package "install now" has to fetch: the step the registry named, while nothing newer than what is
+ *  running is already staged — `stagedUpdate` owns that test, and a step on disk must not be refetched for
+ *  a restart. "Now" can arrive before the daily check fetched anything: the step, never the top of the ladder. */
 export function packageToFetch(stamp: UpdateCheck | null, current: string): { version: string; dist: UpdateDist } | null {
-	// "Now" can arrive before the daily check has fetched the package: fetch the step, not the top of the
-	// ladder. And not a step that is already on disk — fetching the tarball of a version that is installed
-	// would end in a restart for nothing.
 	return stamp?.next && stamp.dist && !stagedUpdate(stamp, current) ? { version: stamp.next, dist: stamp.dist } : null;
 }
 

@@ -336,16 +336,17 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		return null;
 	};
 
-	// What the page's "install now" asks for: the staged package, or the newest published one if the daily
-	// check has not fetched it yet. Same guards, no idle wait — someone is attached, which is exactly the state
-	// the idle rule will not restart in, so this restart is asked for rather than stumbled into.
+	// What the page's "install now" asks for: the staged package, or the step the registry named if the daily
+	// check has not fetched it yet. The same guards except `checkout` — only `installPackage`'s `isGlobalInstall`
+	// check covers that here — and no idle wait: someone is attached, which is exactly the state the idle rule
+	// will not restart in, so this restart is asked for rather than stumbled into.
 	const installStaged = async (): Promise<string | null> => {
 		let stamp = readUpdateCheck(paths.root);
-		const fetch = packageToFetch(stamp, version);
-		if (fetch) {
-			const downloaded = await downloadUpdate({ root: paths.root, version: fetch.version, dist: fetch.dist });
+		const toFetch = packageToFetch(stamp, version);
+		if (toFetch) {
+			const downloaded = await downloadUpdate({ root: paths.root, version: toFetch.version, dist: toFetch.dist });
 			if (downloaded.file) {
-				stamp = { ...stamp!, download: { version: fetch.version, file: downloaded.file, at: new Date().toISOString() } };
+				stamp = { ...stamp!, download: { version: toFetch.version, file: downloaded.file, at: new Date().toISOString() } };
 				writeUpdateCheck(paths.root, stamp);
 			}
 		}
