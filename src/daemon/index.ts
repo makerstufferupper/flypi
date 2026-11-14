@@ -31,7 +31,7 @@ import { SessionRegistry, type CreateSession } from "../server/session-registry.
 import type { RunStore } from "../server/run-store.ts";
 import { JobQueue, startJobLoop, type JobHandler } from "./jobs.ts";
 import { PI_PACKAGE, loadedPi, piTrees, readPiCheck, writePiCheck } from "./pi.ts";
-import { isIdle, updatePolicy, type UpdateAction, type UpdatePass } from "./update-policy.ts";
+import { isIdle, installNowPolicy, packageToFetch, updatePolicy, type UpdateAction, type UpdatePass } from "./update-policy.ts";
 import { checkForUpdate, clearUpdateCheck, downloadUpdate, installArgs, isGlobalInstall, isNewer, keepDownload, packageDir, packageInfo, readUpdateCheck, stagedUpdate, updateAvailable, writeUpdateCheck } from "./update.ts";
 
 /** What `.flypi/daemon.json` holds: enough for `flypi status` to find a running daemon again. */
@@ -341,19 +341,17 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 	// the idle rule will not restart in, so this restart is asked for rather than stumbled into.
 	const installStaged = async (): Promise<string | null> => {
 		let stamp = readUpdateCheck(paths.root);
-		if (stamp?.next && stamp.dist && !stagedUpdate(stamp, version)) {
-			// "Now" can arrive before the daily check has fetched the package: fetch the step, not the top of
-			// the ladder.
-			const downloaded = await downloadUpdate({ root: paths.root, version: stamp.next, dist: stamp.dist });
+		const fetch = packageToFetch(stamp, version);
+		if (fetch) {
+			const downloaded = await downloadUpdate({ root: paths.root, version: fetch.version, dist: fetch.dist });
 			if (downloaded.file) {
-				stamp = { ...stamp, download: { version: stamp.next, file: downloaded.file, at: new Date().toISOString() } };
+				stamp = { ...stamp!, download: { version: fetch.version, file: downloaded.file, at: new Date().toISOString() } };
 				writeUpdateCheck(paths.root, stamp);
 			}
 		}
-		const staged = stagedUpdate(stamp, version);
-		if (!staged) return "there is nothing downloaded to install — and the registry named no package to fetch";
-		if (!stamp?.download?.file) return "the downloaded update is not on disk any more";
-		return installPackage(staged, stamp.download.file);
+		const action = installNowPolicy(stamp, version);
+		if (action.kind === "notify") return action.text;
+		return installPackage(action.version, action.file);
 	};
 
 	// The idle stretch `updatePolicy` waits for also installs extension packages (src/agent/packages.ts). They

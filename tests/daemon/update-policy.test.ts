@@ -11,11 +11,15 @@
  * using it. It installs the one published release it downloaded, never the newest. A failed registry check
  * leaves it silent. pi is only ever shown, pinned or not. Extension packages install unattended only when
  * `updates.autoExtensions` says so, and before flypi rather than after.
+ *
+ * The file pins the asked-for install too — the page's "install now", which takes the same guards with no
+ * idle wait — so the package it would fetch and the two sentences it answers with when it cannot install are
+ * asserted here rather than only reachable behind a running daemon in a checkout.
  */
 import { describe, expect, it } from "vitest";
 import { PACKAGE_CHECK_INTERVAL_MS, type PackageCheck } from "../../src/agent/packages.ts";
 import { CHECK_INTERVAL_MS, IDLE_BEFORE_INSTALL_MS, type UpdateCheck } from "../../src/daemon/update.ts";
-import { updatePolicy, type UpdatePass } from "../../src/daemon/update-policy.ts";
+import { installNowPolicy, packageToFetch, updatePolicy, type UpdatePass } from "../../src/daemon/update-policy.ts";
 
 // A fixed clock: the pass is handed `now` rather than reading one, so the boundary arithmetic below is exact.
 const now = 1_777_000_000_000;
@@ -143,5 +147,79 @@ describe("what one update pass decides", () => {
 		expect(updatePolicy(pass({ stamp: flypiStamp({ next: null, latest: null, download: undefined }) }))).toEqual([{ kind: "endIdle" }]);
 		// The same for a daemon that has never had an answer at all: it asks, it waits, it installs nothing.
 		expect(updatePolicy(pass({ stamp: null, packages: null }))).toEqual([{ kind: "checkRegistry" }, { kind: "stagePackages" }, { kind: "endIdle" }]);
+	});
+});
+
+describe("what \"install now\" answers with", () => {
+	// The page's Install button, which is `installStaged` (its comment says why this restart waits for nobody).
+	// What is asserted here is the decision around the download: which package to fetch, and what to answer
+	// when there is nothing to install.
+	const dist = { tarball: "https://registry.npmjs.org/@makerstufferupper/flypi/-/flypi-0.2.0.tgz" };
+	// The two answers a person reads when nothing can be installed; the last row pins both word for word.
+	const nothing = { kind: "notify", text: "there is nothing downloaded to install — and the registry named no package to fetch" };
+	const gone = { kind: "notify", text: "the downloaded update is not on disk any more" };
+
+	it("answers that nothing is downloaded when the stamp names no package at all", () => {
+		// A daemon that never reached the registry has no step to fetch and no tarball on disk, so "install
+		// now" has nothing it could install and says exactly that.
+		expect(packageToFetch(null, "0.1.0")).toBeNull();
+		expect(installNowPolicy(null, "0.1.0")).toEqual(nothing);
+	});
+
+	it("answers that nothing is downloaded when the registry named a package and the fetch never ran", () => {
+		// The registry named the step, so this is the one case "install now" fetches for itself. When the
+		// download comes back with no file the stamp is left exactly as it was — there is no `else` there — so
+		// the answer is the same first sentence even though the registry did name a package. That is today's
+		// fall-through, kept as it is rather than improved into "the download failed".
+		const stamp = flypiStamp({ dist, download: undefined });
+		expect(packageToFetch(stamp, "0.1.0")).toEqual({ version: "0.2.0", dist });
+		expect(installNowPolicy(stamp, "0.1.0")).toEqual(nothing);
+	});
+
+	it("answers that the staged file has gone", () => {
+		// The version is newer and the stamp says it was downloaded, but the path is gone: a tarball deleted
+		// from under the daemon, or a stamp this process did not write — `readUpdateCheck` validates nothing it
+		// parses (update.ts:200-206), which is why `file` is checked here rather than trusted.
+		const stamp = flypiStamp({ download: { version: "0.2.0", at: iso(now) } as unknown as UpdateCheck["download"] });
+		expect(installNowPolicy(stamp, "0.1.0")).toEqual(gone);
+	});
+
+	it("fetches the step and not the top of the ladder", () => {
+		// 0.3.0 is the newest published and 0.2.0 is the rung above this one. "Now" can arrive before the daily
+		// check has fetched anything, and what it fetches is still one step (docs/architecture.md: one schema
+		// upgrade per start), never the top of the ladder.
+		expect(packageToFetch(flypiStamp({ dist, download: undefined }), "0.1.0")?.version).toBe("0.2.0");
+	});
+
+	it("does not fetch what is already on disk", () => {
+		// The daily check downloaded 0.2.0 already. Fetching the same tarball again would rewrite the stamp and
+		// hand the page a restart for nothing, so the answer is the file that is already sitting there.
+		const stamp = flypiStamp({ dist });
+		expect(packageToFetch(stamp, "0.1.0")).toBeNull();
+		expect(installNowPolicy(stamp, "0.1.0")).toEqual(install);
+	});
+
+	it("refuses a staged package that is not newer than this one", () => {
+		// The install already happened: the tarball on disk is the version running now (update.ts:125) and
+		// the registry has named no further step, so there is nothing to fetch and nothing to install.
+		const stamp = flypiStamp({ next: null, dist, download: { version: "0.1.0", file: "/root/.flypi/updates/flypi-0.1.0.tgz", at: iso(now) } });
+		expect(packageToFetch(stamp, "0.1.0")).toBeNull();
+		expect(installNowPolicy(stamp, "0.1.0")).toEqual(nothing);
+	});
+
+	it("does not fetch a step the registry named without a package to download", () => {
+		// `next` and `dist` are written together by a fresh check, but a stamp is whatever was on disk: a step
+		// with no tarball to fetch is not a download, and the answer is the first sentence rather than a call
+		// with an undefined url (update.ts:160 writes `dist` only when the registry gave one).
+		const stamp = flypiStamp({ download: undefined });
+		expect(packageToFetch(stamp, "0.1.0")).toBeNull();
+		expect(installNowPolicy(stamp, "0.1.0")).toEqual(nothing);
+	});
+
+	it("answers a person reads with these two sentences", () => {
+		// Both spellings, pinned in one place: the UI and the server tests assert refusals of their own making,
+		// so nothing else in the suite would notice one of these being reworded. The em-dash is part of the text.
+		expect(installNowPolicy(null, "0.1.0")).toEqual({ kind: "notify", text: "there is nothing downloaded to install — and the registry named no package to fetch" });
+		expect(installNowPolicy(flypiStamp({ download: { version: "0.2.0", at: iso(now) } as unknown as UpdateCheck["download"] }), "0.1.0")).toEqual({ kind: "notify", text: "the downloaded update is not on disk any more" });
 	});
 });

@@ -15,10 +15,14 @@
  * the idle constant belong to `update.ts`, `pi.ts` and `packages.ts` and are imported, never re-spelled, so
  * there stays one answer to "is this answer stale". The only state the rule has — when the current idle
  * stretch began — stays with the daemon, which is told to start it and to start again by these actions.
+ *
+ * The page's "install now" is the same guards asked a second way (`packageToFetch`, `installNowPolicy`). The
+ * two sentences it answers with when it cannot install live here too, so the refusal a person reads has one
+ * owner and a row that goes red when either is reworded.
  */
 import { dueForPackageCheck, type PackageCheck } from "../agent/packages.ts";
 import { dueForPiCheck, type PiCheck } from "./pi.ts";
-import { IDLE_BEFORE_INSTALL_MS, dueForCheck, stagedUpdate, type UpdateCheck } from "./update.ts";
+import { IDLE_BEFORE_INSTALL_MS, dueForCheck, stagedUpdate, type UpdateCheck, type UpdateDist } from "./update.ts";
 
 /** What one pass of the update rule was asked about. Every field is a read the daemon already does. */
 export interface UpdatePass {
@@ -101,4 +105,24 @@ export function updatePolicy(pass: UpdatePass): UpdateAction[] {
 	// Start the clock again either way: a failed install retries after another idle stretch, not every pass.
 	actions.push({ kind: "endIdle" });
 	return actions;
+}
+
+/** The package "install now" has to fetch: the step the registry named that is not on disk. */
+export function packageToFetch(stamp: UpdateCheck | null, current: string): { version: string; dist: UpdateDist } | null {
+	// "Now" can arrive before the daily check has fetched the package: fetch the step, not the top of the
+	// ladder. And not a step that is already on disk — fetching the tarball of a version that is installed
+	// would end in a restart for nothing.
+	return stamp?.next && stamp.dist && !stagedUpdate(stamp, current) ? { version: stamp.next, dist: stamp.dist } : null;
+}
+
+/** What "install now" answers with once the package is on disk or there is nothing to fetch: the install, or
+ *  the sentence to show instead. The guards are the pass's; `installStaged` is where the reason this one waits
+ *  for nobody is written. */
+export function installNowPolicy(stamp: UpdateCheck | null, current: string): Extract<UpdateAction, { kind: "notify" | "installFlypi" }> {
+	const staged = stagedUpdate(stamp, current);
+	if (!staged) return { kind: "notify", text: "there is nothing downloaded to install — and the registry named no package to fetch" };
+	// A stamp this process did not write may name a version with no path beside it; `readUpdateCheck` validates
+	// nothing it parses (update.ts:200-206).
+	if (!stamp?.download?.file) return { kind: "notify", text: "the downloaded update is not on disk any more" };
+	return { kind: "installFlypi", version: staged, file: stamp.download.file };
 }
