@@ -78,8 +78,9 @@ export function updatePolicy(pass: UpdatePass): UpdateAction[] {
 	if (pass.first) return actions;
 	const staged = pass.checkout ? null : stagedUpdate(pass.stamp, pass.version);
 	const pending = pass.packages?.updates ?? [];
-	// The tarball the stamp names, which is what an install would run. `stagedUpdate` only ever names a
-	// version that has one, so the two agree wherever this pass is reached from.
+	// The tarball the stamp names, which is what an install would run. A stamp this process did not write may
+	// name a version with no path — `readUpdateCheck` does not validate what it parses (update.ts:200-206) — so
+	// the file is checked here as well as in `installStaged`; the guard is today's, so deleting it is a change.
 	const file = pass.stamp?.download?.file;
 	if ((!staged && pending.length === 0) || !isIdle(pass.idle)) {
 		// Nothing waiting, or someone using the process: spend the stretch rather than hold it.

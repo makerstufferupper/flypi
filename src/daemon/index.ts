@@ -394,6 +394,12 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 	// (src/daemon/update-policy.ts); this is the reading, the effects, and the one piece of state the rule has —
 	// when the current idle stretch began.
 	let idleSince = 0;
+	// `loadedPi` parses pi's own `package.json` with no `try`/`catch` (pi.ts:107), and this runs inside
+	// `beforePass`, whose throw `startJobLoop` only logs and moves on (jobs.ts:183-186) — so it would silently
+	// cost this pass the sweep's queueing on the lines after `updatePass`, every pass. An unreadable pi: not pinned.
+	const piIsPinned = (): boolean => {
+		try { return loadedPi(paths.root).pinned; } catch { return false; }
+	};
 	const updatePass = (input: { first: boolean; idle: UpdatePass["idle"] }) => {
 		const pass: UpdatePass = {
 			version,
@@ -405,7 +411,7 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 			packages: readPackageCheck(paths.root),
 			// Which pi this is; `pinned` decides nothing here — moving pi never happens unattended
 			// (docs/pi-upgrades.md:91), and `updatePolicy` says so in its own comment.
-			pi: { check: readPiCheck(paths.root), pinned: loadedPi(paths.root).pinned },
+			pi: { check: readPiCheck(paths.root), pinned: piIsPinned() },
 			idle: input.idle,
 			idleSince,
 			now: Date.now(),

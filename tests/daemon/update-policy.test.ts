@@ -108,13 +108,23 @@ describe("what one update pass decides", () => {
 	it("leaves the flypi ladder alone in a checkout but still checks the extensions", () => {
 		// A checkout updates with git, and the registry has never heard of it; the extension sources it loads
 		// are ordinary packages, so their check — and their install — run exactly as they do in an installed
-		// package. `staged` is forced null here, so the flypi tarball on disk stays on disk.
+		// package. `staged` is forced null here, so the flypi tarball on disk stays on disk. The flypi and pi
+		// stamps are a day old, so the two `!checkout` gates are the only thing keeping the registry asks out
+		// of the list below.
 		const pending = packageStamp({ checkedAt: iso(now - PACKAGE_CHECK_INTERVAL_MS), updates: ["pi-mcp"] });
-		expect(updatePolicy(pass({ checkout: true, packages: pending }))).toEqual([
+		expect(updatePolicy(pass({
+			checkout: true,
+			packages: pending,
+			stamp: flypiStamp({ checkedAt: iso(now - CHECK_INTERVAL_MS) }),
+			pi: { check: { checkedAt: iso(now - CHECK_INTERVAL_MS), latest: "0.4.0", next: "0.4.0" }, pinned: false },
+		}))).toEqual([
 			{ kind: "stagePackages" },
 			{ kind: "reloadExtensions", sources: ["pi-mcp"] },
 			{ kind: "endIdle" },
 		]);
+		// A checkout updates with git; the two registry gates stay shut however stale the stamps are — and at
+		// startup both daily gates stand open, so the gates are the only thing that keeps them shut there.
+		expect(updatePolicy(pass({ first: true, checkout: true, packages: null }))).toEqual([{ kind: "stagePackages" }]);
 	});
 
 	it("installs the extensions before flypi, and only when the user allowed it", () => {
