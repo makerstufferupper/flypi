@@ -43,6 +43,11 @@ describe("the dev container script", () => {
 		expect(source).toContain("flypi:local-");
 	});
 
+	// docs/release.md's gotcha row says the container stays down after a stop — only true while no restart policy is set; adding one makes that sentence a lie.
+	it("sets no restart policy, which is why an exec-stop leaves the container down", () => {
+		expect(source).not.toMatch(/--restart/);
+	});
+
 	// The repo's .dockerignore excludes `*.tgz`, so the build context has to be the pack dir, and the
 	// Dockerfile has to be the local one — the repo Dockerfile installs the *published* package (#48).
 	it("builds the local Dockerfile from the pack dir, not the repo", () => {
