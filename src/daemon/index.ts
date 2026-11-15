@@ -11,7 +11,7 @@
  * and so is the run store, which is a file either entrypoint can open in a millisecond. Everything that makes
  * it a *daemon* — the reconciliation, `/healthz`, `daemon.json`, the queue — lives here, and is tested here.
  */
-import { existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -31,6 +31,7 @@ import { SessionRegistry, type CreateSession } from "../server/session-registry.
 import type { RunStore } from "../server/run-store.ts";
 import { JobQueue, startJobLoop, type JobHandler } from "./jobs.ts";
 import { PI_PACKAGE, loadedPi, piTrees, readPiCheck, writePiCheck } from "./pi.ts";
+import { daemonSpawn, type DaemonSpawn } from "./spawn.ts";
 import { isIdle, installNowPolicy, packageToFetch, updateNotice, updatePolicy, type UpdateAction, type UpdatePass } from "./update-policy.ts";
 import { checkForUpdate, clearUpdateCheck, downloadUpdate, installArgs, isGlobalInstall, keepDownload, packageDir, packageInfo, readUpdateCheck, stagedUpdate, updateAvailable, writeUpdateCheck } from "./update.ts";
 
@@ -70,6 +71,10 @@ export interface DaemonOptions {
 	version?: string;
 	/** Where a daemon says what it did. Defaults to the console, which is where `flypi start` collects it. */
 	log?: (line: string) => void;
+	/** The daemon's external commands — the pi switch, the install, the restart. Overridable for the same
+	 *  reason `createSession` and `log` are: the band they sit in is unreachable from a checkout, so the only
+	 *  way to assert what `npm install -g` would be told is to record it instead of running it. */
+	spawn?: DaemonSpawn;
 }
 
 export interface DaemonHandle {
@@ -101,6 +106,8 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 	// daemon that reported three different versions would be a bug nobody could see.
 	const version = options.version ?? "dev";
 	const paths = options.paths;
+	// The commands this process starts, built from the root it owns and the package it runs from.
+	const spawner = options.spawn ?? daemonSpawn({ root: paths.root, packageDir: packageDir() });
 	const queue = new JobQueue(options.db);
 
 	// A claim still held at startup belongs to a process that is gone; leaving it locked would keep that
@@ -233,13 +240,12 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		// module graph it already imported, and the child is the process that survives the restart to notice a
 		// failed start and put the pointer back (docs/risks.md risk 13).
 		usePi: async (version: string) => {
-			if (pkg.checkout || !isGlobalInstall()) {
+			if (pkg.checkout || !spawner.global()) {
 				return "this flypi is not the npm global package — in a checkout, `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`; in a container, rebuild the image";
 			}
-			const logFile = openSync(resolve(paths.root, ".flypi", "daemon.log"), "a");
-			const child = spawn(process.execPath, ["--import", "tsx", resolve(packageDir(), "scripts", "pi.ts"), "--root", paths.root, "use", version], { cwd: packageDir(), detached: true, stdio: ["ignore", logFile, logFile] });
-			child.on("error", (error) => log(`flypi: the pi switch could not start: ${error.message}`));
-			child.unref();
+			void spawner.usePi(version).then((result) => {
+				if (result.error) log(`flypi: the pi switch could not start: ${result.error}`);
+			});
 			log(`flypi: moving to pi ${version} — the daemon restarts to run it, and goes back on its own if it does not come up`);
 			return null;
 		},
