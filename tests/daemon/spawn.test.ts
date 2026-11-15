@@ -16,9 +16,10 @@
  * asked over its own socket to move pi and to install now. Asked to *install*, a checkout gets past the guards —
  * `installStaged` deliberately drops the `checkout` guard (`index.ts`) — so the install band is assertable here
  * and nowhere else in the suite: which tarball the daemon fetches, the one it hands `install`, the restart that
- * follows only a clean exit, the sentences it logs, and the refusal that latches. Asked to move pi, a checkout
- * refuses before the recorder is consulted (`pkg.checkout ||`, `index.ts`), so that row's `calls` assertion
- * proves nothing started — not that the recorder was reached.
+ * follows only a clean exit, the sentences it logs, and the refusal that latches. Asked to move pi, the daemon
+ * answers two questions the harness controls — `spawner.global()` on the recorder and its own running-turn count
+ * in the run store — so the pi rows cover both refusals and the accepted switch, and their `calls` assertions say
+ * that the question was asked and what, if anything, was started.
  *
  * Those rows stub the registry instead of reaching it: every URL answers with the same tarball bytes and is
  * recorded, so "it fetched" and "it did not fetch" are counted requests for one URL. The recorder replaces every
@@ -88,8 +89,9 @@ async function connect(url: string, token: string) {
 /** A daemon that runs its external commands through the recorder instead of starting them, minus the models —
  *  the same shape `daemon.test.ts` starts one with. `version` is named by every install row: left to itself it is
  *  `"dev"`, which `compareVersions` reads as `0.0.0` (`update.ts`), and then the ladder in a stamp stops meaning
- *  anything. What the daemon logged comes back as `log`, because four rows are about those sentences. It does not
- *  close what it was handed, so this file closes the stores and the root it opened. */
+ *  anything. What the daemon logged comes back as `log`, because five rows are about those sentences (four
+ *  install, one pi), and the run store comes back as `runs` because a pi row has to put a real turn in flight in
+ *  it. It does not close what it was handed, so this file closes the stores and the root it opened. */
 async function daemonWith(over: { spawn?: DaemonSpawn; version?: string } = {}) {
 	const root = createTempFlypiRoot();
 	const db = openTempFileDb();
@@ -111,6 +113,7 @@ async function daemonWith(over: { spawn?: DaemonSpawn; version?: string } = {}) 
 	return {
 		root,
 		log,
+		runs,
 		...started,
 		dispose: async () => {
 			await started.close();
@@ -381,29 +384,90 @@ describe("the commands the daemon runs", () => {
 });
 
 describe("the daemon asked to move pi", () => {
-	it("refuses in a checkout, and starts nothing through the spawner it was given", async () => {
-		// The seam from the outside: a daemon built with `DaemonOptions.spawn` answers the page's pi switch
-		// with the refusal a checkout gives — the sentence a person reads (docs/pi-upgrades.md Phase 8.4),
-		// unchanged by the child moving into `spawn.ts`. The accepted path needs `checkout: false`, which is
-		// T41's seam, so this row stops at the refusal and says that nothing started — `pkg.checkout` is guarded
-		// before the spawner's `usePi` is called.
-		const { spawn, calls } = recorder();
-		const d = await daemonWith({ spawn });
-		const client = await connect(d.url, d.token);
+	// Byte-for-byte pins for the two sentences `usePi` answers the socket with, both owned by `piSwitchPolicy`
+	// (src/daemon/update-policy.ts). The not-global one is line 243 of `git show 43fdd93:src/daemon/index.ts`,
+	// which T41 moved without rewording; the busy one is the turn guard T41 adds (deepening.md §11.7).
+	const notGlobal = "this flypi is not the npm global package — in a checkout, `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`; in a container, rebuild the image";
+	const busy = "a turn is in flight — moving pi restarts this process, and a turn caught in the restart is left interrupted; ask again when nothing is mid-turn";
+
+	it("refuses a daemon that is not the npm global package, and starts nothing", async () => {
+		// The structural refusal, from the socket (docs/pi-upgrades.md Phase 8.4). `spawner.global()` is the one
+		// question that answers it: a checkout is not the npm global package either (`isGlobalInstall()`, pinned
+		// false for this worktree by tests/daemon/update.test.ts:233), so the recorder is made to say what this
+		// worktree is rather than the suite relying on what it runs in (plan decision 5/6). `["global"]` is the
+		// recorder's own record that the question was asked and `usePi` was never reached.
+		const { rec, client, close } = await piBand({ global: false });
 		try {
-			client.send({ type: "usePi", version: "1.5.0", requestId: "r1" });
-			const refused = await client.next((frame) => (frame.type === "result" || frame.type === "error") && frame.requestId === "r1");
-			expect(refused).toMatchObject({
-				type: "error",
-				message: "this flypi is not the npm global package — in a checkout, `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`; in a container, rebuild the image",
-			});
-			expect(calls).toEqual([]);
+			expect(await usePi(client, "r1")).toMatchObject({ type: "error", requestId: "r1", message: notGlobal });
+			expect(rec.calls).toEqual(["global"]);
 		} finally {
-			await client.close();
-			await d.dispose();
+			await close();
+		}
+	});
+
+	it("moves pi when the process holds the global pointer and nothing is in flight", async () => {
+		// The accepted path's first test in this repository's history (plan decision 5, `.scratch/plans/t34-plan.md`
+		// row I): `void spawner.usePi` was unreachable while `pkg.checkout ||` short-circuited ahead of the injected
+		// spawner, so nothing had ever asserted that a confirmed switch is started at all. A page attached is not a
+		// reason to refuse — the asking page is itself a client (plan decision 1).
+		const { d, rec, client, close } = await piBand();
+		try {
+			expect(await usePi(client, "r1")).toMatchObject({ type: "result", requestId: "r1" });
+			// The ack precedes the switch and the recorder resolves at once, so the call lands a microtask later.
+			await waitFor(() => rec.calls.includes("usePi 1.5.0"), "the pi switch the recorder was handed");
+			expect(rec.calls).toEqual(["global", "usePi 1.5.0"]);
+			expect(d.log).toContain("flypi: moving to pi 1.5.0 — the daemon restarts to run it, and goes back on its own if it does not come up");
+		} finally {
+			await close();
+		}
+	});
+
+	it("refuses the switch while a turn is in flight, and starts nothing", async () => {
+		// The fix itself, end to end: moving pi restarts this process and a turn caught in the restart is left
+		// `interrupted` (docs/architecture.md:139), so the daemon asks its own run store. The row has to put a real
+		// running turn in that store — `turns: 0` at the call site still answers `result` and starts the switch,
+		// which is mutation M2.
+		const { rec, client, close } = await piBand({ turn: true });
+		try {
+			expect(await usePi(client, "r1")).toMatchObject({ type: "error", requestId: "r1", message: busy });
+			expect(rec.calls).toEqual(["global"]);
+		} finally {
+			await close();
+		}
+	});
+
+	it("answers the not-global sentence when both reasons hold", async () => {
+		// The order, over the socket rather than inside the pure function: a process that could never move pi gets
+		// the refusal waiting will not fix, even with a turn running (plan decision 8).
+		const { rec, client, close } = await piBand({ global: false, turn: true });
+		try {
+			expect(await usePi(client, "r1")).toMatchObject({ type: "error", requestId: "r1", message: notGlobal });
+			expect(rec.calls).toEqual(["global"]);
+		} finally {
+			await close();
 		}
 	});
 });
+
+/** One row of the pi band: a daemon whose external commands are the recorder, a socket open for the page's pi
+ *  switch, and — when the row names a turn — one `running` row in the daemon's own run store. That row is written
+ *  *after* `startFlypiDaemon` resolves, because `reconcileInterrupted()` demotes every `running` row to
+ *  `interrupted` during startup (`index.ts:119`); a turn started before it would leave the daemon honestly
+ *  answering that nothing is in flight. */
+async function piBand(over: { global?: boolean; turn?: boolean } = {}) {
+	const rec = recorder({ global: over.global });
+	const d = await daemonWith({ spawn: rec.spawn });
+	const client = await connect(d.url, d.token);
+	if (over.turn) d.runs.setRunStatus("t41", "running", { seq: 0, sessionFile: "/tmp/flypi-t41.jsonl" });
+	return { d, rec, client, close: async () => { await client.close(); await d.dispose(); } };
+}
+
+/** The page's pi switch, asked over the socket, and the frame that answers it. `usePi` and `rollbackPi` both
+ *  reach the same handler (plan decision 9), so the version it names is the least interesting part of the row. */
+async function usePi(client: Awaited<ReturnType<typeof connect>>, requestId: string) {
+	client.send({ type: "usePi", version: "1.5.0", requestId });
+	return client.next((frame) => (frame.type === "result" || frame.type === "error") && frame.requestId === requestId);
+}
 /** One row of the install band: a daemon running `version` whose external commands are the recorder, the stamp
  *  written into its own root, the registry stubbed, and a socket open for the page's "install now". */
 async function band(over: { version: string; stamp: (root: string) => UpdateCheck | null; global?: boolean; install?: SpawnResult; restart?: SpawnResult }) {

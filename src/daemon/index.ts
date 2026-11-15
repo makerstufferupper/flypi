@@ -31,7 +31,7 @@ import type { RunStore } from "../server/run-store.ts";
 import { JobQueue, startJobLoop, type JobHandler } from "./jobs.ts";
 import { PI_PACKAGE, loadedPi, piTrees, readPiCheck, writePiCheck } from "./pi.ts";
 import { daemonSpawn, type DaemonSpawn } from "./spawn.ts";
-import { isIdle, installNowPolicy, packageToFetch, updateNotice, updatePolicy, type UpdateAction, type UpdatePass } from "./update-policy.ts";
+import { isIdle, installNowPolicy, packageToFetch, piSwitchPolicy, updateNotice, updatePolicy, type UpdateAction, type UpdatePass } from "./update-policy.ts";
 import { checkForUpdate, clearUpdateCheck, downloadUpdate, keepDownload, packageDir, packageInfo, readUpdateCheck, stagedUpdate, updateAvailable, writeUpdateCheck } from "./update.ts";
 
 /** What `.flypi/daemon.json` holds: enough for `flypi status` to find a running daemon again. */
@@ -239,13 +239,16 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		// module graph it already imported, and the child is the process that survives the restart to notice a
 		// failed start and put the pointer back (docs/risks.md risk 13).
 		usePi: async (version: string) => {
-			if (pkg.checkout || !spawner.global()) {
-				return "this flypi is not the npm global package — in a checkout, `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`; in a container, rebuild the image";
-			}
-			void spawner.usePi(version).then((result) => {
+			// One question owns "can this process move pi at all". A checkout is not the npm global package either
+			// (`isGlobalInstall()`, false here and pinned by tests/daemon/update.test.ts:233), so asking
+			// `packageInfo().checkout` beside it was a second answer to the same question — and the only thing it
+			// bought was a guard no test could get past (deepening.md §11.7 / T41, plan decision 5).
+			const decision = piSwitchPolicy({ version, global: spawner.global(), turns: options.runs.runningTurns() });
+			if (decision.kind === "notify") return decision.text;
+			void spawner.usePi(decision.version).then((result) => {
 				if (result.error) log(`flypi: the pi switch could not start: ${result.error}`);
 			});
-			log(`flypi: moving to pi ${version} — the daemon restarts to run it, and goes back on its own if it does not come up`);
+			log(`flypi: moving to pi ${decision.version} — the daemon restarts to run it, and goes back on its own if it does not come up`);
 			return null;
 		},
 		// `hello` carries it too, so a client knows what pi it is talking to without a round trip to /healthz.
