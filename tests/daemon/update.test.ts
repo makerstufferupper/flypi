@@ -22,6 +22,8 @@ import {
 	isNewer,
 	keepDownload,
 	nextVersion,
+	noUpdateCheck,
+	oneStepAtATime,
 	packageInfo,
 	published,
 	readUpdateCheck,
@@ -89,6 +91,41 @@ describe("one step at a time", () => {
 		expect(updateAvailable(stamp, "0.4.0")).toBeNull();
 		expect(updateAvailable(null, "0.1.0")).toBeNull();
 		expect(updateAvailable({ checkedAt: "x", current: "0.1.0", latest: null, next: null, error: "offline" }, "0.1.0")).toBeNull();
+	});
+});
+
+describe("the two sentences both update surfaces read", () => {
+	// The daemon's daily log line (`updateNotice`) and `flypi update` (`scripts/update.ts`) say the same two
+	// things, so each has one owner — here, beside the ladder rule the second one explains.
+	const registryDown = "the registry could not be reached: connect ECONNREFUSED 127.0.0.1:443";
+	const step = "0.2.0";
+	const stampWith = (latest: string | null) => ({ checkedAt: "2026-10-17T00:00:00.000Z", current: "0.1.0", latest, next: step });
+	const tail = (latest: string) => `; one step at a time — ${latest} is the newest published`;
+
+	it("says the check itself failed, and names the top of the ladder", () => {
+		// Byte-for-byte, because both surfaces print these words and a reword has to go red in one place. The
+		// `flypi: ` prefix belongs to whoever prints the sentence, not to the owner.
+		expect(noUpdateCheck(registryDown)).toBe(`no update check: ${registryDown}`);
+		expect(oneStepAtATime(stampWith("0.3.0"), step)).toBe(tail("0.3.0"));
+	});
+
+	it("says the tail only while the newest published sits above the step", () => {
+		// Above the step: the reader learns the top exists without being sent there. Equal is the common case —
+		// this step *is* the newest published — and a registry that gave no `dist-tags.latest` has nothing to
+		// compare. The guard is inside the owner, so neither caller re-spells it as a third copy.
+		expect(oneStepAtATime(stampWith("0.4.0"), step)).toBe(tail("0.4.0"));
+		expect(oneStepAtATime(stampWith(step), step)).toBe("");
+		expect(oneStepAtATime(stampWith(null), step)).toBe("");
+	});
+
+	it("is the only place in src that spells either sentence", () => {
+		// A source pin, not a behaviour row: `updateNotice` composes both sentences and its own byte-exact pins
+		// (`tests/daemon/update-policy.test.ts:258,272,283`) pass whoever spelled the words, so re-inlining a copy
+		// in that caller could only go red here. Vitest's cwd is the repo root, as in
+		// `tests/scripts/dev-container.test.ts:12`. The leading `; ` and the em dash are the owner's spelling alone.
+		const policy = readFileSync("src/daemon/update-policy.ts", "utf8");
+		expect(policy).not.toContain("no update check");
+		expect(policy).not.toContain("one step at a time");
 	});
 });
 

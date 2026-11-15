@@ -126,6 +126,19 @@ export function stagedUpdate(check: UpdateCheck | null, current: string): string
 	return check?.download?.version && isNewer(current, check.download.version) ? check.download.version : null;
 }
 
+/** What the reader is told when the registry could not be asked. Both surfaces say it: the daemon's daily log line
+ *  (`updateNotice`) and `flypi update` (`scripts/update.ts`). The `flypi: ` prefix belongs to whoever prints it. */
+export function noUpdateCheck(error: string): string {
+	return `no update check: ${error}`;
+}
+
+/** The tail for a stamp whose newest published release sits above the step: the ladder is walked one release at a
+ *  time (this file's rule), so the reader learns the top exists without being sent there. Empty when the step *is*
+ *  the top, which is the common case, and when the registry gave no `dist-tags.latest` to compare. */
+export function oneStepAtATime(check: UpdateCheck, step: string): string {
+	return check.latest && isNewer(step, check.latest) ? `; one step at a time — ${check.latest} is the newest published` : "";
+}
+
 /** Is the answer too old to trust (or absent)? */
 export function dueForCheck(check: UpdateCheck | null, now = Date.now()): boolean {
 	const at = Date.parse(check?.checkedAt ?? "");

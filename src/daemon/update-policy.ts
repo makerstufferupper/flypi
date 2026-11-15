@@ -27,7 +27,7 @@
  */
 import { dueForPackageCheck, type PackageCheck } from "../agent/packages.ts";
 import { dueForPiCheck, type PiCheck } from "./pi.ts";
-import { IDLE_BEFORE_INSTALL_MS, dueForCheck, isNewer, stagedUpdate, updateAvailable, type UpdateCheck, type UpdateDist } from "./update.ts";
+import { IDLE_BEFORE_INSTALL_MS, dueForCheck, noUpdateCheck, oneStepAtATime, stagedUpdate, updateAvailable, type UpdateCheck, type UpdateDist } from "./update.ts";
 
 /** What one pass of the update rule was asked about. Every field is a read the daemon already does. */
 export interface UpdatePass {
@@ -140,10 +140,10 @@ export function updateNotice(stamp: UpdateCheck, current: string): string | null
 	const step = updateAvailable(stamp, current);
 	// The step is asked for first, the error second: `checkForUpdate`'s `fail()` writes `next: null` beside every
 	// error, so the two never both hold. The order is the one the caller had, not a simplification of it.
-	if (!step) return stamp.error ? `no update check: ${stamp.error}` : null;
+	if (!step) return stamp.error ? noUpdateCheck(stamp.error) : null;
 	// One step, and the reader is told when more than one is waiting: the ladder is walked a release at a time
 	// so each version's own schema upgrade runs against the schema it expects.
-	const further = stamp.latest && isNewer(step, stamp.latest) ? `; one step at a time — ${stamp.latest} is the newest published` : "";
+	const further = oneStepAtATime(stamp, step);
 	return `${step} is available — this is ${current}; ${stamp.download ? "downloaded, and it installs the next time the daemon is idle (`flypi update` does it now)" : "not downloaded — `flypi update` installs it"}${further}`;
 }
 
