@@ -361,7 +361,7 @@ describe("what the page's pi switch answers with", () => {
 	it("accepts the switch with a page attached and nothing in flight", () => {
 		// Plan decision 1: there is no `clients` count in the pass, because the page that asks is itself an
 		// attached socket (src/server/index.ts:428) — `clients() === 0` is never true at the moment a human
-		// clicks, so the sweep's two-count `isIdle` rule would refuse every confirm.
+		// clicks, so the update pass's two-count `isIdle` rule would refuse every confirm.
 		expect(piSwitchPolicy(piSwitch({ version: "1.6.0" }))).toEqual({ kind: "usePi", version: "1.6.0" });
 	});
 

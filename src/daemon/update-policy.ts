@@ -165,9 +165,10 @@ export type PiSwitchDecision = { kind: "notify"; text: string } | { kind: "usePi
 /** Move pi, or say why not. The structural refusal comes first: it is the one waiting will not fix. */
 export function piSwitchPolicy(pass: PiSwitchPass): PiSwitchDecision {
 	if (!pass.global) return { kind: "notify", text: "this flypi is not the npm global package — in a checkout, `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`; in a container, rebuild the image" };
-	// Not `isIdle`: the page that asks is itself an attached client (server/index.ts:428), so the sweep's two-count
-	// rule would refuse every confirm. What a pi restart costs is the turn — caught in it, a turn is left
-	// `interrupted` (docs/architecture.md:139) — so this asks only about turns and refuses now (deepening.md §11.7 / T41, decisions 1-3).
+	// Not `isIdle`: the page that asks is itself an attached client (server/index.ts:428), so the update pass's
+	// two-count rule would refuse every confirm. What a pi restart costs is the turn — caught in it, a turn is
+	// left `interrupted` (docs/architecture.md:139) — so this asks only about turns and refuses now
+	// (deepening.md §11.7 / T41, decisions 1-3).
 	if (pass.turns > 0) return { kind: "notify", text: "a turn is in flight — moving pi restarts this process, and a turn caught in the restart is left interrupted; ask again when nothing is mid-turn" };
 	return { kind: "usePi", version: pass.version };
 }
