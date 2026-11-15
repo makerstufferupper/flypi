@@ -21,7 +21,9 @@
  * owner and a row that goes red when either is reworded. So does the sentence the daily flypi check leaves in
  * the log (`updateNotice`) — the one place the daemon says out loud that the ladder is more than one rung deep.
  * (`scripts/update.ts` prints the same fact its own way, and `/healthz` carries the version; this is the
- * daemon's own sentence, the one its log line is made of.)
+ * daemon's own sentence, the one its log line is made of.) The page's "use this version" / "switch back" asks
+ * the same module the third way (`piSwitchPolicy`): the switch itself, or one of the two sentences that refuse
+ * it — the one waiting will not fix first.
  */
 import { dueForPackageCheck, type PackageCheck } from "../agent/packages.ts";
 import { dueForPiCheck, type PiCheck } from "./pi.ts";
@@ -143,4 +145,28 @@ export function updateNotice(stamp: UpdateCheck, current: string): string | null
 	// so each version's own schema upgrade runs against the schema it expects.
 	const further = stamp.latest && isNewer(step, stamp.latest) ? `; one step at a time — ${stamp.latest} is the newest published` : "";
 	return `${step} is available — this is ${current}; ${stamp.download ? "downloaded, and it installs the next time the daemon is idle (`flypi update` does it now)" : "not downloaded — `flypi update` installs it"}${further}`;
+}
+
+/** What the page's "use this version" / "switch back" was asked with, and what a restart would cost now. */
+export interface PiSwitchPass {
+	/** The version the page asked to move to. */
+	version: string;
+	/** Does this process hold the pointer an `npm install -g` would replace? `DaemonSpawn.global()`. */
+	global: boolean;
+	/** Turns in flight in this process right now — `RunStore.runningTurns()`. */
+	turns: number;
+}
+
+/** The switch itself, or the sentence that refuses it — a string is the refused-action contract
+ *  `usePi` and `installUpdate` already have (src/server/resources-server.ts:160-162). */
+export type PiSwitchDecision = { kind: "notify"; text: string } | { kind: "usePi"; version: string };
+
+/** Move pi, or say why not. The structural refusal comes first: it is the one waiting will not fix. */
+export function piSwitchPolicy(pass: PiSwitchPass): PiSwitchDecision {
+	if (!pass.global) return { kind: "notify", text: "this flypi is not the npm global package — in a checkout, `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`; in a container, rebuild the image" };
+	// Not `isIdle`: the page that asks is itself an attached client (server/index.ts:428), so the sweep's two-count
+	// rule would refuse every confirm. What a pi restart costs is the turn — caught in it, a turn is left
+	// `interrupted` (docs/architecture.md:139) — so this asks only about turns and refuses now (deepening.md §11.7 / T41, decisions 1-3).
+	if (pass.turns > 0) return { kind: "notify", text: "a turn is in flight — moving pi restarts this process, and a turn caught in the restart is left interrupted; ask again when the conversation has answered" };
+	return { kind: "usePi", version: pass.version };
 }

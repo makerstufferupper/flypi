@@ -19,11 +19,15 @@
  * And it pins the sentence the daily flypi check leaves in the log (`updateNotice`), ladder tail and all: it is
  * the only place the daemon's log says a release is waiting, and nothing else in the suite would notice a
  * reword, because the daemon's own tests run in a checkout, where that check never runs at all.
+ *
+ * And the page's pi switch (`piSwitchPolicy`): the switch when nothing is in flight, and the two sentences that
+ * refuse it — the one waiting will not fix before the one that goes away on its own. Both are pinned byte for
+ * byte, because the refusal a person reads is the whole interface this band has.
  */
 import { describe, expect, it } from "vitest";
 import { PACKAGE_CHECK_INTERVAL_MS, type PackageCheck } from "../../src/agent/packages.ts";
 import { CHECK_INTERVAL_MS, IDLE_BEFORE_INSTALL_MS, type UpdateCheck } from "../../src/daemon/update.ts";
-import { installNowPolicy, packageToFetch, updateNotice, updatePolicy, type UpdatePass } from "../../src/daemon/update-policy.ts";
+import { installNowPolicy, packageToFetch, piSwitchPolicy, updateNotice, updatePolicy, type PiSwitchPass, type UpdatePass } from "../../src/daemon/update-policy.ts";
 
 // A fixed clock: the pass is handed `now` rather than reading one, so the boundary arithmetic below is exact.
 const now = 1_777_000_000_000;
@@ -55,6 +59,8 @@ const pass = (over: Partial<UpdatePass> = {}): UpdatePass => ({
 });
 /** What the fixture above has waiting: the tarball for 0.2.0, with this process on 0.1.0. */
 const install = { kind: "installFlypi", version: "0.2.0", file: "/root/.flypi/updates/flypi-0.2.0.tgz" };
+/** A pass for the page's pi switch: this process holds the global pointer and nothing is in flight. */
+const piSwitch = (over: Partial<PiSwitchPass> = {}): PiSwitchPass => ({ version: "1.5.0", global: true, turns: 0, ...over });
 
 describe("what one update pass decides", () => {
 	it("refuses to install while a page is attached", () => {
@@ -318,5 +324,52 @@ describe("what the flypi check says afterwards", () => {
 		// needs; the older form above could not see it — it never looks at `current`, so it would refuse and then
 		// answer "there is nothing downloaded to install" while the registry had named a package one rung up.
 		expect(packageToFetch(behind, "0.2.0")).toEqual({ version: "0.3.0", dist: { tarball: "https://registry.npmjs.org/@makerstufferupper/flypi/-/flypi-0.3.0.tgz" } });
+	});
+});
+
+describe("what the page's pi switch answers with", () => {
+	// `piSwitchPolicy` is what `usePi` will answer the socket with (src/daemon/index.ts:241-250): the switch
+	// itself, or the sentence that refuses it. Moving pi flips a symlink and restarts this process, so the
+	// refusals a person reads belong here where they can be asserted (deepening.md §11.7 / T41, decisions 1-3).
+	// Byte-for-byte pins: the first is the sentence `index.ts:243` answers with today, and `git show
+	// 43fdd93:src/daemon/index.ts` is what proves this copy never drifted from it.
+	const notGlobal = "this flypi is not the npm global package — in a checkout, `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`; in a container, rebuild the image";
+	const busy = "a turn is in flight — moving pi restarts this process, and a turn caught in the restart is left interrupted; ask again when the conversation has answered";
+
+	it("refuses a process that does not hold the npm global pointer", () => {
+		// A checkout, a container image and any other non-global install are not the pointer an `npm install -g`
+		// would replace, so the switch cannot be done from here at all. The sentence is the one `index.ts:243`
+		// answers with today, moved verbatim — em-dash, backticks and the trailing `rebuild the image`.
+		expect(piSwitchPolicy(piSwitch({ global: false }))).toEqual({ kind: "notify", text: notGlobal });
+	});
+
+	it("refuses the switch while a turn runs", () => {
+		// The harm this guard exists for: a turn caught in the restart is recorded `interrupted`
+		// (docs/architecture.md:139), and the panel's own confirm text promises the restart. The em-dash and the
+		// whole sentence are pinned, the way the install's two refusals are pinned above.
+		expect(piSwitchPolicy(piSwitch({ turns: 1 }))).toEqual({ kind: "notify", text: busy });
+	});
+
+	it("answers the structural refusal when both reasons hold", () => {
+		// The order is a rule: a checkout that also has a turn running gets the refusal waiting will not fix,
+		// not the one that goes away on its own. Deleting the order — checking `turns` first — goes red here.
+		const decision = piSwitchPolicy(piSwitch({ global: false, turns: 3 }));
+		expect(decision).toEqual({ kind: "notify", text: notGlobal });
+		expect(decision).not.toEqual({ kind: "notify", text: busy });
+	});
+
+	it("accepts the switch with a page attached and nothing in flight", () => {
+		// Plan decision 1: there is no `clients` count in the pass, because the page that asks is itself an
+		// attached socket (src/server/index.ts:428) — `clients() === 0` is never true at the moment a human
+		// clicks, so the sweep's two-count `isIdle` rule would refuse every confirm.
+		expect(piSwitchPolicy(piSwitch())).toEqual({ kind: "usePi", version: "1.5.0" });
+	});
+
+	it("draws the line at one turn in flight", () => {
+		// The same pair T33.1 pinned for the install ("refuses to install while a page is attached" and "refuses
+		// to install while a turn runs", both one attached/one in flight against none): zero is accepted, one is
+		// refused, so `turns > 0` is not accidentally `turns > 1` — one answer mid-reply is a turn cut short.
+		expect(piSwitchPolicy(piSwitch({ turns: 0 }))).toEqual({ kind: "usePi", version: "1.5.0" });
+		expect(piSwitchPolicy(piSwitch({ turns: 1 }))).toEqual({ kind: "notify", text: busy });
 	});
 });
