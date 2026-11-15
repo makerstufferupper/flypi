@@ -172,7 +172,13 @@ const TARBALL = Buffer.from("the flypi package, as the registry served it\n");
 const SHASUM = createHash("sha1").update(TARBALL).digest("hex");
 
 /** The registry, answering every URL with those bytes and recording each URL it was asked for — so "it fetched"
- *  and "it did not fetch" are counted requests for one tarball, not an inference. */
+ *  and "it did not fetch" are counted requests for one tarball, not an inference.
+ *
+ *  A row that expects none is not trusting luck: the job loop's `stagePackages` pass runs in these daemons and
+ *  reaches the same global `fetch` through `publishedVersions` (`packages.ts`), but that asks only about
+ *  *configured* extension sources and a fresh root configures none — measured: one call per daemon, zero URLs
+ *  recorded. The day a default config names an npm extension, the empty-`urls` rows would have to filter this
+ *  list to the tarball host instead. */
 function stubRegistry(): string[] {
 	const urls: string[] = [];
 	vi.stubGlobal("fetch", (url: string | URL) => {
@@ -433,7 +439,9 @@ describe("the daemon asked to install now", () => {
 	});
 
 	it("installs the package it fetched, restarts, and forgets the answer", async () => {
-		const { d, rec, urls, log, client, close } = await band({ version: "0.1.0", stamp: () => stampWith({ download: undefined }) });
+		// `latest` is deliberately a rung above `next`: what gets fetched is the step above this version, never the
+		// top of the ladder, and an answer that fetched `latest` would ask for a different tarball and fail below.
+		const { d, rec, urls, log, client, close } = await band({ version: "0.1.0", stamp: () => stampWith({ latest: "0.3.0", download: undefined }) });
 		try {
 			expect(await installNow(client, "r1")).toMatchObject({ type: "result", requestId: "r1" });
 			// The ack precedes the restart, and the recorder's `install` resolves at once, so what follows the
