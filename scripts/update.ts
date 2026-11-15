@@ -14,7 +14,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { checkForUpdate, clearUpdateCheck, downloadUpdate, installArgs, isGlobalInstall, isNewer, keepDownload, packageDir, packageInfo, readUpdateCheck, updateAvailable, writeUpdateCheck } from "../src/daemon/update.ts";
+import { checkForUpdate, clearUpdateCheck, downloadUpdate, installArgs, isGlobalInstall, keepDownload, noUpdateCheck, oneStepAtATime, packageDir, packageInfo, readUpdateCheck, updateAvailable, writeUpdateCheck } from "../src/daemon/update.ts";
 
 const argv = process.argv.slice(2);
 const rootAt = argv.indexOf("--root");
@@ -46,17 +46,20 @@ const stamp = await checkForUpdate({ current: pkg.version, name: pkg.name });
 stamp.download = keepDownload(stamp, readUpdateCheck(root));
 if (!dryRun) writeUpdateCheck(root, stamp);
 if (stamp.error) {
-	console.log(`flypi: no update check: ${stamp.error}`);
+	console.log(`flypi: ${noUpdateCheck(stamp.error)}`);
 	process.exit(0);
 }
 const step = updateAvailable(stamp, pkg.version);
 if (!step) {
+	// CLI-only: the daemon stays quiet when nothing newer is published (`updateNotice` answers null —
+	// tests/daemon/update-policy.test.ts:289), so this answer has no owner to call. The registry answered, and
+	// what a person asked for is the answer: this is the top of the ladder.
 	console.log(`flypi: ${pkg.version} is the newest published version of ${pkg.name}`);
 	process.exit(0);
 }
 // One step, never a jump: flypi's databases migrate when the version that needs the migration starts, so
 // 0.1.0 → 0.3.0 would skip what 0.2.0 would have done to the schema (src/daemon/update.ts).
-const further = stamp.latest && isNewer(step, stamp.latest) ? ` — one step at a time; ${stamp.latest} is the newest published` : "";
+const further = oneStepAtATime(stamp, step);
 console.log(`flypi: ${pkg.version} → ${step}${further}`);
 if (checkOnly) {
 	console.log(stamp.download ? `flypi: ${step} is downloaded; it installs the next time the daemon is idle` : "flypi: `flypi update` installs it");

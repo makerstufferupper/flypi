@@ -374,6 +374,44 @@ describe("the daemon CLI", () => {
 		}
 	});
 
+	describe("the update sentences a checkout cannot print, pinned from `scripts/update.ts`", () => {
+		// Why these read the script's text instead of running it: `packageInfo()` sets `checkout` from the `.git`
+		// next to the code (src/daemon/update.ts:69-72), this repo *is* a checkout, and the refusal above exits
+		// before all three prints (scripts/update.ts:37-42) — `--root` / `FLYPI_ROOT` do not reach that guard, since
+		// `:23` calls `packageInfo()` with no argument. `tests/daemon/update.test.ts:6-7` already calls the refusal
+		// "the only branch a test can take from inside a checkout", and the row above is that test. So the words are
+		// pinned the way a script with top-level side effects gets pinned here (`tests/scripts/dev-container.test.ts:12`
+		// reads its script the same way, off the repo root), and the bytes a person actually sees are the live rows
+		// 5-8 of `.scratch/plans/t42-plan.md`, run in the one habitat where `checkout` is false: the container.
+		const source = readFileSync(join(repo, "scripts", "update.ts"), "utf8");
+
+		it("reads both sentences from their owners, and drops the helper that only spelled one", () => {
+			// The two fragments belong to `src/daemon/update.ts` (`noUpdateCheck`, `oneStepAtATime`). A caller that
+			// re-spells them drifts from the daemon's log line, and no behaviour row here could notice — see the
+			// comment above. `isNewer` was the tail's only use in this file, so it leaves the import list.
+			expect(source).toContain("noUpdateCheck(stamp.error)");
+			expect(source).toContain("oneStepAtATime(stamp, step)");
+			expect(source, "scripts/update.ts uses `isNewer` again — the tail's owner is `oneStepAtATime`").not.toMatch(/\bisNewer\b/);
+		});
+
+		it("still prints the tail in both answers, so deleting it cannot pass silently", () => {
+			// This row exists for its own sake: `${further}` is only an interpolation, so deleting it from either
+			// print changes what a person reads at a keyboard and reddens nothing else — the sweep row
+			// (`tests/daemon/update.test.ts`) only asks that the words are not spelled out, and a checkout never
+			// reaches either print. The composition is the half that a re-inline would silently undo.
+			expect(source).toContain("`flypi: ${pkg.version} → ${step}${further}`");
+			expect(source).toContain("installed${further}`");
+		});
+
+		it("keeps the one sentence that is the CLI's own, and names why it has no owner", () => {
+			// The daemon says nothing in this state — `updateNotice` answers `null` when the registry answered and
+			// nothing newer is published (pinned at tests/daemon/update-policy.test.ts:289) — so there is no owner
+			// for `flypi update` to call. The `CLI-only:` marker is what says so; a reword or a silence goes red here.
+			expect(source).toContain("is the newest published version of");
+			expect(source).toContain("CLI-only:");
+		});
+	});
+
 	it("status reports the newer package the daemon found, from its stamp and not from the network", async () => {
 		const root = tempRoot();
 		let started = false;
