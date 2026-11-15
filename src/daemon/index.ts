@@ -12,8 +12,7 @@
  * it a *daemon* — the reconciliation, `/healthz`, `daemon.json`, the queue — lives here, and is tested here.
  */
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { assertFlypiOwned, DAEMON_FILE, memoryMcpUrl, type FlypiPaths } from "../agent/paths.ts";
 import { applyConfigEdits, ensureAgentConfig, ensureMemoryEntry, memoryEndpoint } from "../agent/config-files.ts";
@@ -33,7 +32,7 @@ import { JobQueue, startJobLoop, type JobHandler } from "./jobs.ts";
 import { PI_PACKAGE, loadedPi, piTrees, readPiCheck, writePiCheck } from "./pi.ts";
 import { daemonSpawn, type DaemonSpawn } from "./spawn.ts";
 import { isIdle, installNowPolicy, packageToFetch, updateNotice, updatePolicy, type UpdateAction, type UpdatePass } from "./update-policy.ts";
-import { checkForUpdate, clearUpdateCheck, downloadUpdate, installArgs, isGlobalInstall, keepDownload, packageDir, packageInfo, readUpdateCheck, stagedUpdate, updateAvailable, writeUpdateCheck } from "./update.ts";
+import { checkForUpdate, clearUpdateCheck, downloadUpdate, keepDownload, packageDir, packageInfo, readUpdateCheck, stagedUpdate, updateAvailable, writeUpdateCheck } from "./update.ts";
 
 /** What `.flypi/daemon.json` holds: enough for `flypi status` to find a running daemon again. */
 export interface DaemonInfo {
@@ -317,25 +316,30 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 	let installRefused = false;
 	const installPackage = (to: string, file: string): string | null => {
 		if (installRefused) return "this process is not the npm global package — install it yourself";
-		if (!isGlobalInstall()) {
+		if (!spawner.global()) {
 			// Say it once: the running code is not what `npm install -g` would replace, so installing would
 			// land somewhere else and the restart would come back on this version.
 			installRefused = true;
 			return "this process is not the npm global package — install it yourself";
 		}
 		log(`flypi: installing ${to} from ${file} — it restarts itself to run it`);
-		const npm = spawn("npm", installArgs(file), { stdio: "ignore" });
-		// Both listeners, or a missing `npm` on a launchd/systemd PATH is an unhandled `error` event — which
-		// would take the daemon down on the spot, the one thing an update attempt must never do.
-		npm.on("error", (error) => log(`flypi: the install could not start: ${error.message} — staying on ${version}`));
-		npm.on("exit", (code) => {
-			if (code !== 0) {
-				log(`flypi: the install failed (npm exited ${code}) — staying on ${version}, and it will try again after the next idle stretch`);
+		void spawner.install(file).then((result) => {
+			// The `error` listener these children carried lives in `spawn.ts` now, on every child: a missing `npm`
+			// on a launchd/systemd PATH is the answer below rather than an unhandled `error` event, which would
+			// take the daemon down on the spot — the one thing an update attempt must never do. So an install that
+			// never started restarts nothing.
+			if (result.error) {
+				log(`flypi: the install could not start: ${result.error} — staying on ${version}`);
 				return;
 			}
-			const cli = spawn(process.execPath, [resolve(packageDir(), "scripts", "flypi.mjs"), "--root", paths.root, "restart"], { detached: true, stdio: "ignore" });
-			cli.on("error", (error) => log(`flypi: ${to} is installed, but the restart could not start: ${error.message}`));
-			cli.unref();
+			// A non-zero or a null exit code (a child killed by a signal) is the same thing: nothing installed.
+			if (result.code !== 0) {
+				log(`flypi: the install failed (npm exited ${result.code}) — staying on ${version}, and it will try again after the next idle stretch`);
+				return;
+			}
+			void spawner.restart().then((restart) => {
+				if (restart.error) log(`flypi: ${to} is installed, but the restart could not start: ${restart.error}`);
+			});
 			// Forget the answer: the version that comes back builds its own ladder from where it now stands,
 			// so the next step is one step, not the rest of an older answer.
 			clearUpdateCheck(paths.root);
@@ -344,7 +348,7 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 	};
 
 	// What the page's "install now" asks for: the staged package, or the step the registry named if the daily
-	// check has not fetched it yet. The same guards except `checkout` — only `installPackage`'s `isGlobalInstall`
+	// check has not fetched it yet. The same guards except `checkout` — only `installPackage`'s `spawner.global()`
 	// check covers that here — and no idle wait: someone is attached, which is exactly the state the idle rule
 	// will not restart in, so this restart is asked for rather than stumbled into.
 	const installStaged = async (): Promise<string | null> => {

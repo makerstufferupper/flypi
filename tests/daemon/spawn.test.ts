@@ -12,22 +12,29 @@
  * installs, when a restart is allowed — are `update-policy.ts` and asserted in
  * `tests/daemon/update-policy.test.ts`; this file owns the effects.
  *
- * The last row is the seam from the other side: a daemon started with the spawner it was handed, asked over its
- * own socket to move pi, answers with the refusal rather than with a child. In a checkout that refusal is the
- * first thing `usePi` does (`pkg.checkout ||`, `index.ts`), so the recorder is not consulted and the row's
- * `calls` assertion proves that nothing started — not that the recorder was reached. (Asked to *install*, a
- * checkout does get past that first guard: `installStaged` deliberately drops the `checkout` guard, `index.ts`,
- * and refuses at `isGlobalInstall` instead.)
+ * The rows after those are the same seam from the other side: a daemon started with the spawner it was handed,
+ * asked over its own socket to move pi and to install now. Asked to *install*, a checkout gets past the guards —
+ * `installStaged` deliberately drops the `checkout` guard (`index.ts`) — so the install band is assertable here
+ * and nowhere else in the suite: which tarball the daemon fetches, the one it hands `install`, the restart that
+ * follows only a clean exit, the sentences it logs, and the refusal that latches. Asked to move pi, a checkout
+ * refuses before the recorder is consulted (`pkg.checkout ||`, `index.ts`), so that row's `calls` assertion
+ * proves nothing started — not that the recorder was reached.
+ *
+ * Those rows stub the registry instead of reaching it: every URL answers with the same tarball bytes and is
+ * recorded, so "it fetched" and "it did not fetch" are counted requests for one URL. The recorder replaces every
+ * command, which is what keeps the promise above true for them too — and the band is driven over a real socket
+ * with `installUpdate`, the page's "install now", because that is the only route to it a checkout can reach.
  */
-import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { WebSocket } from "ws";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { flypiPaths } from "../../src/agent/paths.ts";
 import { startFlypiDaemon } from "../../src/daemon/index.ts";
 import { daemonSpawn, runCommand, type DaemonSpawn, type SpawnResult } from "../../src/daemon/spawn.ts";
-import { isGlobalInstall } from "../../src/daemon/update.ts";
+import { isGlobalInstall, readUpdateCheck, writeUpdateCheck, type UpdateCheck, type UpdateDist } from "../../src/daemon/update.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import type { ClientCommand, ServerFrame } from "../../src/server/protocol.ts";
 import { openRunStore } from "../../src/server/run-store.ts";
@@ -79,24 +86,31 @@ async function connect(url: string, token: string) {
 }
 
 /** A daemon that runs its external commands through the recorder instead of starting them, minus the models —
- *  the same shape `daemon.test.ts` starts one with. It does not close what it was handed, so this file closes
- *  the stores and the root it opened. */
-async function daemonWith(spawn: DaemonSpawn) {
+ *  the same shape `daemon.test.ts` starts one with. `version` is named by every install row: left to itself it is
+ *  `"dev"`, which `compareVersions` reads as `0.0.0` (`update.ts`), and then the ladder in a stamp stops meaning
+ *  anything. What the daemon logged comes back as `log`, because four rows are about those sentences. It does not
+ *  close what it was handed, so this file closes the stores and the root it opened. */
+async function daemonWith(over: { spawn?: DaemonSpawn; version?: string } = {}) {
 	const root = createTempFlypiRoot();
 	const db = openTempFileDb();
 	const runs = openRunStore(flypiPaths(root));
+	const log: string[] = [];
 	const started = await startFlypiDaemon({
 		paths: flypiPaths(root),
 		db: db.db,
 		store: new MemoryStore(db.db, wordEmbedder()),
 		runs,
 		jobIntervalMs: 5,
-		log: () => {},
-		spawn,
+		version: over.version,
+		log: (line) => {
+			log.push(line);
+		},
+		spawn: over.spawn,
 		createSession: stubCreateSession(root, toolTurn(), { authPath: join(root, ".flypi", "agent", "auth.json") }),
 	});
 	return {
 		root,
+		log,
 		...started,
 		dispose: async () => {
 			await started.close();
@@ -122,6 +136,95 @@ const spawner = (over: { result?: SpawnResult; global?: () => boolean } = {}) =>
 	});
 	return { root, calls, spawn: spawned, done: () => rmSync(root, { recursive: true, force: true }) };
 };
+
+/** What the daemon's spawner was asked to do, in the order it was asked, and with which file. Every command is
+ *  answered here, so nothing starts: `DaemonOptions.spawn` exists precisely so `npm install -g` is recorded. */
+const recorder = (over: { global?: boolean; install?: SpawnResult; restart?: SpawnResult } = {}) => {
+	const calls: string[] = [];
+	/** The file each `install` was handed, so which tarball installs is asserted rather than inferred. */
+	const files: string[] = [];
+	const spawn: DaemonSpawn = {
+		global: () => {
+			calls.push("global");
+			return over.global ?? true;
+		},
+		usePi: async (version) => {
+			calls.push(`usePi ${version}`);
+			return { code: 0 };
+		},
+		install: async (file) => {
+			calls.push("install");
+			files.push(file);
+			return over.install ?? { code: 0 };
+		},
+		restart: async () => {
+			calls.push("restart");
+			return over.restart ?? { code: 0 };
+		},
+	};
+	return { spawn, calls, files };
+};
+
+/** One tarball's bytes, and the sha1 a registry would have published with them. `downloadUpdate` refuses a
+ *  manifest with no checksum to verify against (`update.ts`), so a row that wants a download to land has to
+ *  answer that gate with its own checksum rather than by leaving it out. */
+const TARBALL = Buffer.from("the flypi package, as the registry served it\n");
+const SHASUM = createHash("sha1").update(TARBALL).digest("hex");
+
+/** The registry, answering every URL with those bytes and recording each URL it was asked for — so "it fetched"
+ *  and "it did not fetch" are counted requests for one tarball, not an inference. */
+function stubRegistry(): string[] {
+	const urls: string[] = [];
+	vi.stubGlobal("fetch", (url: string | URL) => {
+		urls.push(String(url));
+		return Promise.resolve({ ok: true, arrayBuffer: async () => TARBALL } as unknown as Response);
+	});
+	return urls;
+}
+
+/** The stub is per-row, because it replaces the `fetch` the daemon's own checks would otherwise use. Nothing in
+ *  these rows asks `/healthz`, which is the one read a stubbed `fetch` would answer wrongly; the socket is a
+ *  different transport and is unaffected. */
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
+
+/** The `dist` npm publishes for one version, named by the URL that tarball is fetched from. */
+const dist = (version: string): UpdateDist => ({
+	tarball: `https://registry.npmjs.org/@makerstufferupper/flypi/-/flypi-${version}.tgz`,
+	shasum: SHASUM,
+});
+
+/** The stamp the daily check leaves behind, so a row names only the rung it is about. */
+const stampWith = (over: Partial<UpdateCheck> = {}): UpdateCheck => ({
+	checkedAt: new Date().toISOString(),
+	current: "0.1.0",
+	latest: "0.2.0",
+	next: "0.2.0",
+	dist: dist("0.2.0"),
+	...over,
+});
+
+/** Where `downloadUpdate` writes a fetched tarball: `.flypi/updates`, under the tarball URL's own basename. */
+const fetched = (root: string, version: string) => join(root, ".flypi", "updates", `flypi-${version}.tgz`);
+
+/** A package already on disk, with the stamp entry that names it — what the daily check would have left. */
+function stagedOnDisk(root: string, version: string): { version: string; file: string; at: string } {
+	mkdirSync(join(root, ".flypi", "updates"), { recursive: true });
+	const file = fetched(root, version);
+	writeFileSync(file, TARBALL);
+	return { version, file, at: new Date().toISOString() };
+}
+
+/** Poll for what the ack precedes. The recorder's `install` resolves at once, so the restart and the forgotten
+ *  stamp land a microtask after the socket's reply; a bare `expect` there passes only on a fast machine. */
+async function waitFor(done: () => boolean, what: string) {
+	const until = Date.now() + 1_000;
+	while (!done()) {
+		if (Date.now() > until) throw new Error(`timed out waiting for ${what}`);
+		await new Promise((settled) => setTimeout(settled, 10));
+	}
+}
 
 describe("one child, run to the end", () => {
 	it("reports a command that is not on this PATH instead of dying on it", async () => {
@@ -278,26 +381,8 @@ describe("the daemon asked to move pi", () => {
 		// unchanged by the child moving into `spawn.ts`. The accepted path needs `checkout: false`, which is
 		// T41's seam, so this row stops at the refusal and says that nothing started — `pkg.checkout` is guarded
 		// before the spawner's `usePi` is called.
-		const calls: string[] = [];
-		const recorder: DaemonSpawn = {
-			global: () => {
-				calls.push("global");
-				return true;
-			},
-			usePi: async () => {
-				calls.push("usePi");
-				return { code: 0 };
-			},
-			install: async () => {
-				calls.push("install");
-				return { code: 0 };
-			},
-			restart: async () => {
-				calls.push("restart");
-				return { code: 0 };
-			},
-		};
-		const d = await daemonWith(recorder);
+		const { spawn, calls } = recorder();
+		const d = await daemonWith({ spawn });
 		const client = await connect(d.url, d.token);
 		try {
 			client.send({ type: "usePi", version: "1.5.0", requestId: "r1" });
@@ -311,5 +396,179 @@ describe("the daemon asked to move pi", () => {
 			await client.close();
 			await d.dispose();
 		}
+	});
+});
+/** One row of the install band: a daemon running `version` whose external commands are the recorder, the stamp
+ *  written into its own root, the registry stubbed, and a socket open for the page's "install now". */
+async function band(over: { version: string; stamp: (root: string) => UpdateCheck | null; global?: boolean; install?: SpawnResult; restart?: SpawnResult }) {
+	const urls = stubRegistry();
+	const rec = recorder(over);
+	const d = await daemonWith({ spawn: rec.spawn, version: over.version });
+	const stamp = over.stamp(d.root);
+	if (stamp) writeUpdateCheck(d.root, stamp);
+	const client = await connect(d.url, d.token);
+	return { d, rec, urls, log: d.log, client, close: async () => { await client.close(); await d.dispose(); } };
+}
+
+/** The page's "install now", asked over the socket, and the frame that answers it. `installUpdate` is the only
+ *  route to the install band that a checkout can reach — `updatePolicy` will not emit an install where `.git`
+ *  sits next to the code — and the ack goes out before the restart closes this socket. */
+async function installNow(client: Awaited<ReturnType<typeof connect>>, requestId: string) {
+	client.send({ type: "installUpdate", requestId });
+	return client.next((frame) => (frame.type === "result" || frame.type === "error") && frame.requestId === requestId);
+}
+
+describe("the daemon asked to install now", () => {
+	it("answers that nothing is downloaded when the stamp names no package to fetch", async () => {
+		// `next` without a `dist` is a step with nothing to download, so there is neither a fetch nor an install
+		// and the person asking gets the sentence rather than a restart.
+		const { rec, urls, client, close } = await band({ version: "0.1.0", stamp: () => stampWith({ dist: undefined }) });
+		try {
+			expect(await installNow(client, "r1")).toMatchObject({ type: "error", requestId: "r1", message: "there is nothing downloaded to install — and the registry named no package to fetch" });
+			expect(urls).toEqual([]);
+			expect(rec.calls).toEqual([]);
+		} finally {
+			await close();
+		}
+	});
+
+	it("installs the package it fetched, restarts, and forgets the answer", async () => {
+		const { d, rec, urls, log, client, close } = await band({ version: "0.1.0", stamp: () => stampWith({ download: undefined }) });
+		try {
+			expect(await installNow(client, "r1")).toMatchObject({ type: "result", requestId: "r1" });
+			// The ack precedes the restart, and the recorder's `install` resolves at once, so what follows the
+			// reply is a microtask deep and has to be polled for.
+			await waitFor(() => rec.calls.includes("restart"), "the restart that follows a clean install");
+			expect(urls).toEqual([dist("0.2.0").tarball]);
+			expect(rec.calls).toEqual(["global", "install", "restart"]);
+			// The file, not a version string the install would re-resolve: what was verified is what installs.
+			const file = fetched(d.root, "0.2.0");
+			expect(rec.files).toEqual([file]);
+			expect(log).toContain(`flypi: installing 0.2.0 from ${file} — it restarts itself to run it`);
+			// The answer is forgotten: the version that comes back builds its own ladder from where it stands.
+			await waitFor(() => readUpdateCheck(d.root) === null, "the stamp to be forgotten after the step");
+		} finally {
+			await close();
+		}
+	});
+
+	it("fetches the rung the registry named when the download on disk is not a step", async () => {
+		// The ladder as an effect. This process runs 0.2.0 and 0.2.0 is what sits on disk, so that package is not
+		// a step at all and 0.3.0 — the rung the registry named — is what "install now" has to fetch. The rule
+		// this replaced asked only "is there some tarball" and so fetched nothing here, answering "there is
+		// nothing downloaded to install" while the registry had named a package one rung up. `packageToFetch`
+		// asks whether the one on disk is a step, which is a question about `current`.
+		const { d, rec, urls, client, close } = await band({
+			version: "0.2.0",
+			stamp: (root) => stampWith({ latest: "0.3.0", next: "0.3.0", dist: dist("0.3.0"), download: stagedOnDisk(root, "0.2.0") }),
+		});
+		try {
+			expect(await installNow(client, "r1")).toMatchObject({ type: "result", requestId: "r1" });
+			await waitFor(() => rec.calls.includes("install"), "the install of the fetched 0.3.0");
+			expect(urls).toEqual([dist("0.3.0").tarball]);
+			expect(rec.files).toEqual([fetched(d.root, "0.3.0")]);
+		} finally {
+			await close();
+		}
+	});
+
+	it("installs the step already on disk instead of refetching it", async () => {
+		// The same stamp one rung lower: here the 0.2.0 on disk IS a step above 0.1.0, so nothing is fetched for a
+		// restart and the registry's 0.3.0 stays unrequested — one rung at a time (`update-policy.ts`), as an
+		// effect rather than as data.
+		const { d, rec, urls, client, close } = await band({
+			version: "0.1.0",
+			stamp: (root) => stampWith({ latest: "0.3.0", next: "0.3.0", dist: dist("0.3.0"), download: stagedOnDisk(root, "0.2.0") }),
+		});
+		try {
+			expect(await installNow(client, "r1")).toMatchObject({ type: "result", requestId: "r1" });
+			await waitFor(() => rec.calls.includes("install"), "the install of the staged 0.2.0");
+			expect(urls).toEqual([]);
+			expect(rec.files).toEqual([fetched(d.root, "0.2.0")]);
+		} finally {
+			await close();
+		}
+	});
+
+	it("does not restart after an install that failed", async () => {
+		const { d, rec, log, client, close } = await band({ version: "0.1.0", install: { code: 1 }, stamp: () => stampWith({ download: undefined }) });
+		try {
+			expect(await installNow(client, "r1")).toMatchObject({ type: "result", requestId: "r1" });
+			// Either answer ends the install: the sentence, or the restart that only a clean exit is allowed. Waiting
+			// for both means a daemon that restarted anyway says so below instead of merely running out of patience.
+			await waitFor(() => rec.calls.includes("restart") || log.some((line) => line.startsWith("flypi: the install failed")), "a failed install to be answered");
+			// A restart onto the code a failed install left half-written is what the sentence exists to promise will
+			// not happen.
+			expect(rec.calls).toEqual(["global", "install"]);
+			const file = fetched(d.root, "0.2.0");
+			expect(log).toContain(`flypi: installing 0.2.0 from ${file} — it restarts itself to run it`);
+			expect(log).toContain("flypi: the install failed (npm exited 1) — staying on 0.1.0, and it will try again after the next idle stretch");
+			// And the download is not forgotten: the next idle stretch tries it again.
+			expect(readUpdateCheck(d.root)?.download?.version).toBe("0.2.0");
+		} finally {
+			await close();
+		}
+	});
+
+	it("does not restart after an install that never started", async () => {
+		// `npm` missing from a launchd/systemd PATH is an `error` on the child, not a crash and not an exit: the
+		// daemon stays where it was and says so (`spawn.ts`'s `runCommand` is what turns it into this answer).
+		const { rec, log, client, close } = await band({ version: "0.1.0", install: { code: null, error: "spawn npm ENOENT" }, stamp: () => stampWith({ download: undefined }) });
+		try {
+			expect(await installNow(client, "r1")).toMatchObject({ type: "result", requestId: "r1" });
+			// Both sentences begin the same way, and either one means the daemon reached the install's answer; the
+			// assertion below is about which of the two it was.
+			await waitFor(() => log.some((line) => line.startsWith("flypi: the install ")), "the install to be answered");
+			expect(log).toContain("flypi: the install could not start: spawn npm ENOENT — staying on 0.1.0");
+			expect(rec.calls).toEqual(["global", "install"]);
+		} finally {
+			await close();
+		}
+	});
+
+	it("says the install worked when only the restart failed", async () => {
+		const { rec, log, client, close } = await band({ version: "0.1.0", restart: { code: null, error: "spawn node ENOENT" }, stamp: () => stampWith({ download: undefined }) });
+		try {
+			expect(await installNow(client, "r1")).toMatchObject({ type: "result", requestId: "r1" });
+			await waitFor(() => log.some((line) => line.startsWith("flypi: 0.2.0 is installed, but the restart could not start:")), "the restart-failed sentence");
+			expect(rec.calls).toEqual(["global", "install", "restart"]);
+			// Two different failures, two different sentences: the new code is installed and the person has to
+			// know the running process is still the old one.
+			expect(log).toContain("flypi: 0.2.0 is installed, but the restart could not start: spawn node ENOENT");
+		} finally {
+			await close();
+		}
+	});
+
+	it("refuses twice, and asks the global-package question once", async () => {
+		const { rec, urls, client, close } = await band({ version: "0.1.0", global: false, stamp: () => stampWith({ download: undefined }) });
+		try {
+			expect(await installNow(client, "r1")).toMatchObject({ type: "error", requestId: "r1", message: "this process is not the npm global package — install it yourself" });
+			expect(rec.calls).toEqual(["global"]);
+			expect(rec.files).toEqual([]);
+			// The latch, and the recorder is what proves it: the second ask answered the same sentence without
+			// asking the question again. And this is the row that proves `options.spawn` is the spawner in use —
+			// with the real one the recorder would be silent, because a checkout is not the global package.
+			expect(await installNow(client, "r2")).toMatchObject({ type: "error", requestId: "r2", message: "this process is not the npm global package — install it yourself" });
+			expect(rec.calls).toEqual(["global"]);
+		} finally {
+			await close();
+		}
+	});
+
+	it("leaves no raw child in the daemon's own file, or anywhere but the spawner", () => {
+		// `grep -c 'spawn(' src/daemon/index.ts` as an assertion: the daemon's children all go through
+		// `src/daemon/spawn.ts` now. `daemonSpawn(` and `spawnSync(` do not match `spawn(` at all — the first is
+		// capitalised, the second is a different call — so what is left is the one raw child in the module.
+		const dir = resolve(import.meta.dirname, "..", "..", "src", "daemon");
+		const code = (file: string) =>
+			readFileSync(join(dir, file), "utf8")
+				.split("\n")
+				// Comment lines are prose about the shape the code used to have: `update-policy.ts`'s header still
+				// names the `spawn("npm", …)` callback this band came out of, in the past tense.
+				.filter((line) => line.includes("spawn(") && !/^\s*(?:\/\/|\/?\*)/.test(line));
+		expect(code("index.ts")).toEqual([]);
+		const files = [...new Set(readdirSync(dir).filter((name) => name.endsWith(".ts")).flatMap((name) => (code(name).length ? [name] : [])))];
+		expect(files).toEqual(["spawn.ts"]);
 	});
 });
