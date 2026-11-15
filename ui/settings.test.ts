@@ -972,6 +972,31 @@ describe("the pi this flypi runs", () => {
 		expect(document.querySelector('[data-role="pi-checked"]')?.textContent).toContain("2026-01-06");
 		expect(document.querySelector('[data-role="pi-next"]')).toBeNull();
 	});
+
+	// Byte-for-byte: the sentence `piSwitchPolicy` (src/daemon/update-policy.ts) owns. A reword there must go
+	// red here and in tests/daemon/update-policy.test.ts and tests/daemon/spawn.test.ts, all three at once.
+	const busy = "a turn is in flight — moving pi restarts this process, and a turn caught in the restart is left interrupted; ask again when nothing is mid-turn";
+
+	it("says so when a turn is in flight, and lets the person ask again", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answeredPi(transport);
+		fireEvent.click(document.querySelector('[data-role="pi-use"]') as HTMLButtonElement);
+		await tick();
+		fireEvent.click(document.querySelector('[data-role="pi-use-confirm"]') as HTMLButtonElement);
+		await tick();
+		const requestId = (transport.sent.filter((c) => c.type === "usePi")[0] as { requestId: string }).requestId;
+		transport.emit({ type: "error", requestId, message: busy });
+		await tick();
+
+		// A busy daemon answers every confirm this way, and the chat's error strip is not on screen while this
+		// view is: the config lane is the only place the refusal can be said. And a switch that was refused must
+		// not leave the panel saying `Restarting…` — the person has to be able to ask again once nothing runs.
+		expect(document.querySelector('[data-role="save-error"]')?.textContent).toContain(busy);
+		const confirm = document.querySelector('[data-role="pi-use-confirm"]') as HTMLButtonElement;
+		expect(confirm.disabled).toBe(false);
+		expect(confirm.textContent).toContain("Confirm — use 1.4.0");
+	});
 });
 
 describe("the raw file editor", () => {
