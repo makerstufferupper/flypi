@@ -1,8 +1,9 @@
 /**
  * The daemon's external commands, in one place (docs/architecture.md Phase 7, docs/pi-upgrades.md Phase 8.4,
  * `.scratch/docs/deepening.md` §11.5 / T34): the pi version switch, the `npm install -g` of a package it
- * already downloaded, the CLI restart that follows it, and the one question npm has to answer before any of
- * them — is this process the global package at all.
+ * already downloaded, the CLI restart that follows it, and `global()` — the question that decides whether this
+ * process's own code may be replaced at all: is this process the global package an `npm install -g` would
+ * overwrite.
  *
  * Each command used to be a `spawn` call written inside the request handler that needed it, so nothing could
  * say what a child was asked to do without starting it. That mattered because a checkout has `.git` next to
@@ -57,7 +58,9 @@ export function runCommand(command: string, args: string[], options: RunOptions 
 	});
 }
 
-/** The daemon's commands, one method each. */
+/** The daemon's commands, one method each. A child started here resolves with a `SpawnResult` and never
+ *  rejects — a command that never started is a result like any other — which is what lets the caller take the
+ *  promise without waiting for it, and what a recorder has to honour. */
 export interface DaemonSpawn {
 	/** Is the running code the global package `npm install -g` would replace? Nothing installs when it is not. */
 	global(): boolean;

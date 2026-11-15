@@ -6,15 +6,20 @@
  *
  * The argv rows go through the factory's injected `run`, which is the whole reason the spawner is injectable:
  * a test must read what `npm` would be told without the suite running `npm install -g` on the machine running
- * it. Only `runCommand` itself starts a real child, and only with `process.execPath` or a name that cannot
- * exist. The decisions behind those commands — which tarball installs, when a restart is allowed — are
- * `update-policy.ts` and asserted in `tests/daemon/update-policy.test.ts`; this file owns the effects.
+ * it. So the only children this file starts are `runCommand`'s own, with `process.execPath` or a name that
+ * cannot exist: nothing here runs `npm install -g`, `npm root -g`, a restart or a pi switch — the factory's
+ * default `global` is compared as a value, never called. The decisions behind those commands — which tarball
+ * installs, when a restart is allowed — are `update-policy.ts` and asserted in
+ * `tests/daemon/update-policy.test.ts`; this file owns the effects.
  *
  * The last row is the seam from the other side: a daemon started with the spawner it was handed, asked over its
- * own socket to move pi — the one command of the three a checkout can be asked for, and it answers with the
- * refusal rather than with a child.
+ * own socket to move pi, answers with the refusal rather than with a child. In a checkout that refusal is the
+ * first thing `usePi` does (`pkg.checkout ||`, `index.ts`), so the recorder is not consulted and the row's
+ * `calls` assertion proves that nothing started — not that the recorder was reached. (Asked to *install*, a
+ * checkout does get past that first guard: `installStaged` deliberately drops the `checkout` guard, `index.ts`,
+ * and refuses at `isGlobalInstall` instead.)
  */
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { WebSocket } from "ws";
@@ -22,6 +27,7 @@ import { describe, expect, it } from "vitest";
 import { flypiPaths } from "../../src/agent/paths.ts";
 import { startFlypiDaemon } from "../../src/daemon/index.ts";
 import { daemonSpawn, runCommand, type DaemonSpawn, type SpawnResult } from "../../src/daemon/spawn.ts";
+import { isGlobalInstall } from "../../src/daemon/update.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import type { ClientCommand, ServerFrame } from "../../src/server/protocol.ts";
 import { openRunStore } from "../../src/server/run-store.ts";
@@ -140,14 +146,17 @@ describe("one child, run to the end", () => {
 
 	it("appends the child's output to the log fd it was given", async () => {
 		// The pi switch's own output belongs in `.flypi/daemon.log`: that is the file `flypi pi use` reads
-		// back when a candidate does not come up.
+		// back when a candidate does not come up — and a crash, a tsx load failure and pi's own refusal all
+		// arrive on stderr, so both streams have to reach the fd.
 		const root = tempRoot();
 		try {
 			const file = join(root, ".flypi", "daemon.log");
 			const fd = openSync(file, "a");
-			expect(await runCommand(process.execPath, ["-e", "console.log('flypi: pi moved')"], { fd })).toEqual({ code: 0 });
+			expect(await runCommand(process.execPath, ["-e", "console.log('flypi: pi moved'); console.error('flypi: the candidate did not come up')"], { fd })).toEqual({ code: 0 });
 			closeSync(fd);
-			expect(readFileSync(file, "utf8")).toContain("flypi: pi moved");
+			const text = readFileSync(file, "utf8");
+			expect(text).toContain("flypi: pi moved");
+			expect(text).toContain("flypi: the candidate did not come up");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -175,6 +184,10 @@ describe("the commands the daemon runs", () => {
 	it("moves pi through the same CLI path `flypi pi use` takes, from the package, into the daemon log", async () => {
 		const s = spawner();
 		try {
+			// The log a failed candidate is read back from already holds what came before, so the fd the switch
+			// is handed has to be opened for append — opened for write it truncates it on every pi switch.
+			const log = join(s.root, ".flypi", "daemon.log");
+			appendFileSync(log, "flypi: an earlier candidate\n");
 			await s.spawn.usePi("1.5.0");
 			expect(s.calls).toHaveLength(1);
 			const call = s.calls[0]!;
@@ -187,7 +200,9 @@ describe("the commands the daemon runs", () => {
 			if (typeof fd !== "number") throw new Error(`the pi child writes to the daemon log, saw ${String(fd)}`);
 			writeSync(fd, "flypi: pi moved\n");
 			closeSync(fd);
-			expect(readFileSync(join(s.root, ".flypi", "daemon.log"), "utf8")).toContain("flypi: pi moved");
+			const text = readFileSync(log, "utf8");
+			expect(text).toContain("flypi: pi moved");
+			expect(text).toContain("flypi: an earlier candidate");
 		} finally {
 			s.done();
 		}
@@ -239,13 +254,16 @@ describe("the commands the daemon runs", () => {
 		}
 	});
 
-	it("asks npm whether this process is the global package, so a checkout refuses", () => {
-		// The suite runs in a checkout, which is the answer a checkout gives (`update.test.ts` pins the same
-		// fact about `isGlobalInstall`), and the override is how a test says yes — the way `PiSwitchDeps`
-		// carries `global` for the same reason (`pi.ts`).
+	it("answers npm's global-package question through the default `global`", () => {
+		// The wiring, not npm's answer: `isGlobalInstall()` is false for four different reasons — no npm, a
+		// non-zero exit, an empty output, or genuinely not the global package (`update.ts:228-231`) — so
+		// asserting `false` here passed on a machine with no npm and would go red the day this suite runs from
+		// a real global install. What this file owns is that the default *is* that function, and that the
+		// override replaces it — the way `PiSwitchDeps` carries `global` for the same reason (`pi.ts`).
+		expect(daemonSpawn({ root: "/flypi-not-a-root", packageDir: pkg }).global).toBe(isGlobalInstall);
 		const s = spawner({ global: () => true });
 		try {
-			expect(daemonSpawn({ root: "/flypi-not-a-root", packageDir: pkg }).global()).toBe(false);
+			expect(s.spawn.global).not.toBe(isGlobalInstall);
 			expect(s.spawn.global()).toBe(true);
 		} finally {
 			s.done();
@@ -258,7 +276,8 @@ describe("the daemon asked to move pi", () => {
 		// The seam from the outside: a daemon built with `DaemonOptions.spawn` answers the page's pi switch
 		// with the refusal a checkout gives — the sentence a person reads (docs/pi-upgrades.md Phase 8.4),
 		// unchanged by the child moving into `spawn.ts`. The accepted path needs `checkout: false`, which is
-		// T41's seam, so this row stops at the refusal and says that the recorder saw nothing at all.
+		// T41's seam, so this row stops at the refusal and says that nothing started — `pkg.checkout` is guarded
+		// before the spawner's `usePi` is called.
 		const calls: string[] = [];
 		const recorder: DaemonSpawn = {
 			global: () => {
