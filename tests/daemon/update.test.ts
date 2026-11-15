@@ -39,6 +39,13 @@ const temp = (prefix: string) => {
 	return { root, done: () => rmSync(root, { recursive: true, force: true }) };
 };
 
+/** Every `.ts` under `dir`, walked rather than listed, so a file added tomorrow is swept the day it lands. A walk
+ *  has no list to check itself against, so the row that uses it states the scope and asserts what it found, the way
+ *  `tests/scripts/health-url.test.ts:27-39` declares its sites with their counts. */
+function tsFiles(dir: string): string[] {
+	return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? tsFiles(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
+}
+
 describe("which version is newer", () => {
 	it("reads the parts as numbers, not text", () => {
 		expect(isNewer("0.1.0", "0.1.1")).toBe(true);
@@ -118,14 +125,25 @@ describe("the two sentences both update surfaces read", () => {
 		expect(oneStepAtATime(stampWith(null), step)).toBe("");
 	});
 
-	it("is the only place in src that spells either sentence", () => {
+	it("leaves no spelling of either sentence anywhere in src outside its owner", () => {
 		// A source pin, not a behaviour row: `updateNotice` composes both sentences and its own byte-exact pins
 		// (`tests/daemon/update-policy.test.ts:258,272,283`) pass whoever spelled the words, so re-inlining a copy
-		// in that caller could only go red here. Vitest's cwd is the repo root, as in
+		// in a caller could only go red here. Vitest's cwd is the repo root, as in
 		// `tests/scripts/dev-container.test.ts:12`. The leading `; ` and the em dash are the owner's spelling alone.
-		const policy = readFileSync("src/daemon/update-policy.ts", "utf8");
-		expect(policy).not.toContain("no update check");
-		expect(policy).not.toContain("one step at a time");
+		// Scope, stated because the title is only as wide as it is: every `.ts` under `src/` (56 today), the owner
+		// file left out. `scripts/` is out of reach until T42.2 spells the CLI's copies from here. Whole files,
+		// comments included on purpose — the phrase belongs to its owner, and prose that wants to say it names
+		// `oneStepAtATime` instead, which is how `src/daemon/update-policy.ts:145-146` is already worded.
+		const swept = tsFiles("src").filter((file) => file !== join("src", "daemon", "update.ts"));
+		// And the walk itself is checked, not trusted: a walk that found nothing would pass over the empty list — the
+		// same false confidence in a new costume. A floor rather than 56 exactly, so adding a file under src/ is not
+		// what breaks this row.
+		expect(swept.length).toBeGreaterThan(40);
+		for (const file of swept) {
+			const text = readFileSync(file, "utf8");
+			expect(text, `${file} spells the no-update-check sentence — call \`noUpdateCheck\``).not.toContain("no update check");
+			expect(text, `${file} spells the ladder tail — call \`oneStepAtATime\``).not.toContain("one step at a time");
+		}
 	});
 });
 

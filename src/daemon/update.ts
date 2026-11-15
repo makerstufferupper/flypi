@@ -134,7 +134,7 @@ export function noUpdateCheck(error: string): string {
 
 /** The tail for a stamp whose newest published release sits above the step: the ladder is walked one release at a
  *  time (this file's rule), so the reader learns the top exists without being sent there. Empty when the step *is*
- *  the top, which is the common case, and when the registry gave no `dist-tags.latest` to compare. */
+ *  the top (the common case) or below it (a stale or hand-edited stamp), or when the registry gave no `latest`. */
 export function oneStepAtATime(check: UpdateCheck, step: string): string {
 	return check.latest && isNewer(step, check.latest) ? `; one step at a time — ${check.latest} is the newest published` : "";
 }

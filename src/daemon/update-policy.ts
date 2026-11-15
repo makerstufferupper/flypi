@@ -19,7 +19,8 @@
  * The page's "install now" is the same guards asked a second way (`packageToFetch`, `installNowPolicy`). The
  * two sentences it answers with when it cannot install live here too, so the refusal a person reads has one
  * owner and a row that goes red when either is reworded. So does the sentence the daily flypi check leaves in
- * the log (`updateNotice`) — the one place the daemon says out loud that the ladder is more than one rung deep.
+ * the log (`updateNotice`) — the one place the daemon says out loud that the ladder is more than one rung deep,
+ * though its two fragments belong to `update.ts` (`noUpdateCheck`, `oneStepAtATime`) and are imported, never re-spelled.
  * (`scripts/update.ts` prints the same fact its own way, and `/healthz` carries the version; this is the
  * daemon's own sentence, the one its log line is made of.) The page's "use this version" / "switch back" asks
  * the same module the third way (`piSwitchPolicy`): the switch itself, or one of the two sentences that refuse
