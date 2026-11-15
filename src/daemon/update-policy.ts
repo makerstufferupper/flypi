@@ -158,7 +158,8 @@ export interface PiSwitchPass {
 }
 
 /** The switch itself, or the sentence that refuses it — a string is the refused-action contract
- *  `usePi` and `installUpdate` already have (src/server/resources-server.ts:160-162). */
+ *  `usePi` and `installUpdate` already have (src/server/resources-server.ts:30 names both; they answer at
+ *  src/server/resources-server.ts:162 and src/server/index.ts:366). */
 export type PiSwitchDecision = { kind: "notify"; text: string } | { kind: "usePi"; version: string };
 
 /** Move pi, or say why not. The structural refusal comes first: it is the one waiting will not fix. */
@@ -167,6 +168,6 @@ export function piSwitchPolicy(pass: PiSwitchPass): PiSwitchDecision {
 	// Not `isIdle`: the page that asks is itself an attached client (server/index.ts:428), so the sweep's two-count
 	// rule would refuse every confirm. What a pi restart costs is the turn — caught in it, a turn is left
 	// `interrupted` (docs/architecture.md:139) — so this asks only about turns and refuses now (deepening.md §11.7 / T41, decisions 1-3).
-	if (pass.turns > 0) return { kind: "notify", text: "a turn is in flight — moving pi restarts this process, and a turn caught in the restart is left interrupted; ask again when the conversation has answered" };
+	if (pass.turns > 0) return { kind: "notify", text: "a turn is in flight — moving pi restarts this process, and a turn caught in the restart is left interrupted; ask again when nothing is mid-turn" };
 	return { kind: "usePi", version: pass.version };
 }

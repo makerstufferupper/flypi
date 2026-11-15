@@ -334,7 +334,7 @@ describe("what the page's pi switch answers with", () => {
 	// Byte-for-byte pins: the first is the sentence `index.ts:243` answers with today, and `git show
 	// 43fdd93:src/daemon/index.ts` is what proves this copy never drifted from it.
 	const notGlobal = "this flypi is not the npm global package — in a checkout, `npm install @earendil-works/pi-coding-agent@X && npm test && npm run smoke`; in a container, rebuild the image";
-	const busy = "a turn is in flight — moving pi restarts this process, and a turn caught in the restart is left interrupted; ask again when the conversation has answered";
+	const busy = "a turn is in flight — moving pi restarts this process, and a turn caught in the restart is left interrupted; ask again when nothing is mid-turn";
 
 	it("refuses a process that does not hold the npm global pointer", () => {
 		// A checkout, a container image and any other non-global install are not the pointer an `npm install -g`
@@ -362,7 +362,7 @@ describe("what the page's pi switch answers with", () => {
 		// Plan decision 1: there is no `clients` count in the pass, because the page that asks is itself an
 		// attached socket (src/server/index.ts:428) — `clients() === 0` is never true at the moment a human
 		// clicks, so the sweep's two-count `isIdle` rule would refuse every confirm.
-		expect(piSwitchPolicy(piSwitch())).toEqual({ kind: "usePi", version: "1.5.0" });
+		expect(piSwitchPolicy(piSwitch({ version: "1.6.0" }))).toEqual({ kind: "usePi", version: "1.6.0" });
 	});
 
 	it("draws the line at one turn in flight", () => {
