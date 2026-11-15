@@ -247,6 +247,9 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 			// "install now" asks it per click too and latches a no (`installRefused`, `installPackage`), and this
 			// handler is reached only by a confirmed pi write (`src/server/resources-server.ts:162`).
 			const decision = piSwitchPolicy({ version, global: spawner.global(), turns: options.runs.runningTurns() });
+			// shortcut: `runningTurns()` is a sample, not a lock. A confirm that lands between the person pressing
+			// send and that turn's `running` row being written is accepted, and two confirms both start a child;
+			// closing either would mean the run store holding the switch, which is a bigger claim than T41 made.
 			if (decision.kind === "notify") return decision.text;
 			void spawner.usePi(decision.version).then((result) => {
 				if (result.error) log(`flypi: the pi switch could not start: ${result.error}`);
