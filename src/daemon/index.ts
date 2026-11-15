@@ -240,8 +240,9 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 		// failed start and put the pointer back (docs/risks.md risk 13).
 		usePi: async (version: string) => {
 			// One question owns "can this process move pi at all". A checkout is not the npm global package either
-			// (`isGlobalInstall()`, false here and pinned by tests/daemon/update.test.ts:236), so asking
-			// `packageInfo().checkout` beside it was a second answer to the same question — and the only thing it
+			// (`isGlobalInstall()`, false here and pinned by the row "will not install over a flypi that is not the npm
+			// global package" in tests/daemon/update.test.ts), so asking `packageInfo().checkout` beside it was a second
+			// answer to the same question — and the only thing it
 			// bought was a guard no test could get past (deepening.md §11.7 / T41, plan decision 5). Asking it costs
 			// one `npm root -g` `spawnSync` per human click, which a checkout used to skip for free: the page's
 			// "install now" asks it per click too and latches a no (`installRefused`, `installPackage`), and this

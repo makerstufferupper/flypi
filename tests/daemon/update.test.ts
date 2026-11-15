@@ -125,13 +125,13 @@ describe("the two sentences both update surfaces read", () => {
 		expect(oneStepAtATime(stampWith(null), step)).toBe("");
 	});
 
-	it("leaves no spelling of either sentence anywhere in src or scripts outside its owner", () => {
+	it("leaves no spelling of either sentence in any .ts under src or scripts outside its owner", () => {
 		// A source pin, not a behaviour row: `updateNotice` composes both sentences and its own byte-exact pins
 		// (`tests/daemon/update-policy.test.ts:258,272,283`) pass whoever spelled the words, so re-inlining a copy
 		// in a caller could only go red here. Vitest's cwd is the repo root, as in
 		// `tests/scripts/dev-container.test.ts:12`. The leading `; ` and the em dash are the owner's spelling alone.
-		// Scope, stated because the title is only as wide as it is: every `.ts` under `src/` (56 today) and under
-		// `scripts/` (14), the owner file left out — `scripts/update.ts` spelled both copies until T42.2 made it
+		// The counts behind that scope: every `.ts` under `src/` (56 today) and under `scripts/` (14), the owner file
+		// left out — `scripts/update.ts` spelled both copies until T42.2 made it
 		// call these, which is why the walk covers it too: a second copy in a *script* drifts just as quietly.
 		// Whole files, comments included on purpose — the phrase belongs to its owner, and prose that wants to say
 		// it names `oneStepAtATime` instead, which is how `src/daemon/update-policy.ts:145-146` is already worded
@@ -139,8 +139,10 @@ describe("the two sentences both update surfaces read", () => {
 		const swept = [...tsFiles("src"), ...tsFiles("scripts")].filter((file) => file !== join("src", "daemon", "update.ts"));
 		// And the walk itself is checked, not trusted: a walk that found nothing would pass over the empty list — the
 		// same false confidence in a new costume. A floor rather than 69 exactly, so adding a file under either tree
-		// is not what breaks this row.
+		// is not what breaks this row, and a floor `src` alone could meet would not protect `scripts/`: past 61 files
+		// in `src` an empty `scripts` walk would still clear it, so `scripts` is asked whether it turned up at all.
 		expect(swept.length).toBeGreaterThan(60);
+		expect(swept.filter((file) => file.startsWith("scripts")).length, "the walk found no file under scripts/, which the title claims").toBeGreaterThan(0);
 		for (const file of swept) {
 			const text = readFileSync(file, "utf8");
 			expect(text, `${file} spells the no-update-check sentence — call \`noUpdateCheck\``).not.toContain("no update check");

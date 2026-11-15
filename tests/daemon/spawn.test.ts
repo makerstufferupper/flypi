@@ -393,7 +393,8 @@ describe("the daemon asked to move pi", () => {
 	it("refuses a daemon that is not the npm global package, and starts nothing", async () => {
 		// The structural refusal, from the socket (docs/pi-upgrades.md Phase 8.4). `spawner.global()` is the one
 		// question that answers it: a checkout is not the npm global package either (`isGlobalInstall()`, pinned
-		// false for this worktree by tests/daemon/update.test.ts:236), so the recorder is made to say what this
+		// false for this worktree by the row "will not install over a flypi that is not the npm global package" in
+		// tests/daemon/update.test.ts), so the recorder is made to say what this
 		// worktree is rather than the suite relying on what it runs in (plan decision 5/6). `["global"]` is the
 		// recorder's own record that the question was asked and `usePi` was never reached.
 		const { rec, client, close } = await piBand({ global: false });
