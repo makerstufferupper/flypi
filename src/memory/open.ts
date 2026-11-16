@@ -11,6 +11,8 @@
  *     `openMemoryDb` or `openMemoryDbReadOnly`.
  *   - a judge loads only when all three hold: it was asked for, this process writes, and the embedder has an
  *     identity at all. A judge with no candidate set is ~400 MB for a call that cannot happen.
+ *     A store with no judge is a supported state, not a failure: it keeps judging what tokens can judge, and the
+ *     reason it has no model travels to the log as `judge.error` (`judge.ts`; `docs/decisions.md` owns the model).
  *   - a missing model stays a reason and never becomes a throw: it comes back as `degraded`, so recall can
  *     say it degraded instead of pretending it did not (`embed.ts`'s header).
  *

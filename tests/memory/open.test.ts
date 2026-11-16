@@ -325,9 +325,13 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 /** Runnable code only — `ui/public/*.jpeg` has no store to assemble. */
 const RUNNABLE = /\.(ts|mjs|js|svelte)$/;
 
+/** Generated trees hold no decision of ours; a minified bundle under `ui/` must not make this red on build output. */
+const SKIPPED = new Set(["node_modules", "coverage", "dist", ".flypi", ".git"]);
+
 /** Every runnable file below a directory, recursively, in a stable order. */
 function walk(dir: string): string[] {
 	return readdirSync(join(root, dir), { withFileTypes: true })
+		.filter((entry) => !SKIPPED.has(entry.name))
 		.flatMap((entry) => (entry.isDirectory() ? walk(join(dir, entry.name)) : RUNNABLE.test(entry.name) ? [join(dir, entry.name)] : []))
 		.sort();
 }
@@ -357,5 +361,34 @@ describe("the assembly ritual stays copied nowhere", () => {
 		expect(copies("createJudge("), "a judge loaded outside src/memory").toEqual([
 			["src/memory/judge.ts", 1], // the definition
 		]);
+	});
+
+	// `.scratch/plans/t35-plan.md`'s fourth `Done when` grep: no entrypoint decides on its own which embedder to
+	// load. `writes` is that decision, so both loaders it picks between belong to `open.ts`.
+	it("leaves the choice of embedder loader to open.ts", () => {
+		// The two definitions live in `embed.ts`, and `open.ts` passes both to `defaultLoaders` by name, so it
+		// scores 0 for the parenthesised form — the same shape `createJudge` has above.
+		expect(copies("createEmbedder("), "an embedder loaded outside src/memory").toEqual([
+			// The declared exception, plan decision 8: the measurement tool `.scratch/docs/memory.md` and
+			// `config.ts` cite for the model choice. It hand-builds an `EmbeddingsConfig` from `--cacheDir` with no
+			// `FlypiPaths`, loads no judge and builds no store, so it stays a direct caller — one call, no more.
+			["scripts/benchmark-nli.ts", 1],
+			["src/memory/embed.ts", 1], // the definition
+		]);
+		expect(copies("configuredIdentity("), "a reader's identity built outside src/memory").toEqual([
+			["src/memory/embed.ts", 1], // the definition
+		]);
+	});
+
+	// `docs/risks.md` risk 3: one writer per file. The second process gets a read-only handle precisely so it
+	// cannot become a second writer of the memory database, so which callers ask for `writes: false` is the rule.
+	it("keeps the agent server and the dev server readers", () => {
+		expect(copies("writes: false"), "a process holding the memory db read-only").toEqual([
+			["scripts/serve.ts", 1],
+			["vite.config.ts", 1],
+		]);
+		for (const reader of ["scripts/serve.ts", "vite.config.ts"]) {
+			expect(readFileSync(join(root, reader), "utf8"), `${reader} asks for a write handle too`).not.toContain("writes: true");
+		}
 	});
 });
