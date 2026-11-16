@@ -44,7 +44,7 @@ if (judge.error) console.log(`flypi memory: ${judge.error}`);
 openSecretVault(paths, { db, write: true });
 const index = store.indexSummary();
 if (index.stale > 0 && index.expected) {
-	console.log(`flypi memory: ${index.stale} stored vectors are not from ${index.expected.model} — \`flypi start\` queues memory.reembed and repairs it when idle`);
+	console.log(`flypi memory: ${index.stale} stored vectors are not from ${index.expected.model} — the daemon queues memory.reembed when it starts (\`flypi restart\` if one is already running)`);
 }
 
 const server = await startMemoryServer({

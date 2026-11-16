@@ -76,10 +76,13 @@ if (db.prepare("SELECT count(*) AS n FROM memories").get().n !== rowsBefore) fai
 ok(`audit + delete rules — ${db.prepare("SELECT count(*) AS n FROM memory_audit WHERE memory_id = ?").get(throwaway).n} audit rows for #${throwaway}, still ${rowsBefore} memory rows`);
 
 // 4. The index is one vector space, or it says so — and looking at it writes nothing. The queue has one owner
-//    (src/daemon/index.ts), so a step here that left a row in `jobs` is the bug T36 removed.
-const jobsBefore = db.prepare("SELECT count(*) AS n FROM jobs").get().n;
+//    (src/daemon/index.ts), so a step here that left a row in `jobs` is the bug T36 removed. The rows are
+//    compared, not counted: `queueJob` never opens a second row for a kind already open and only moves
+//    `next_run_at` forward, so a count stays the same while a read is writing.
+const jobs = () => db.prepare("SELECT id, kind, payload, next_run_at FROM jobs ORDER BY id").all();
+const jobsBefore = jobs();
 const index = store.indexSummary();
-if (db.prepare("SELECT count(*) AS n FROM jobs").get().n !== jobsBefore) fail("reading the index queued a job");
+if (JSON.stringify(jobs()) !== JSON.stringify(jobsBefore)) fail("reading the index queued a job or moved one forward");
 if (index.stale > 0) {
 	// The explicit form, which is what the daemon does: measure, then queue when the measurement says stale.
 	store.queueReembed(`${index.stale} of ${index.rows} vectors are from another model or quantization`);
