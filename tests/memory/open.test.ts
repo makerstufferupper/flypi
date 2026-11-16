@@ -74,6 +74,27 @@ function recordingLoaders(overrides: Partial<MemoryLoaders> = {}) {
 	return { loaders, calls };
 }
 
+/** Each progress callback is `modelProgress(<that model>)` (`progress.ts:26`): the model name is baked into
+ * the closure, so the only way to tell the two callbacks apart is to make one report and read its line — and
+ * `log` defaults to `console.log` *as it stands when `openMemory` builds the callback*, so the collector has
+ * to be installed around the open, not just around the report. `report` returns what one callback printed.
+ * `modelProgress` logs only a `progress_total` event that reaches 100 % (`progress.ts:30-37`), which is why
+ * the event below is shaped like this. */
+async function withProgressLog<T>(run: (report: (callback: (progress: ModelProgress) => void) => string) => Promise<T>): Promise<T> {
+	const lines: string[] = [];
+	const log = console.log;
+	console.log = (line?: unknown) => void lines.push(String(line));
+	try {
+		return await run((callback) => {
+			lines.length = 0;
+			callback({ status: "progress_total", progress: 100, loaded: 1, total: 1 });
+			return lines.join("");
+		});
+	} finally {
+		console.log = log;
+	}
+}
+
 const aJudgeThatSaysNew: MemoryLoaders["judge"] = async () => ({ classify: async () => ({ verdict: "new" as const }) });
 const aJudgeThatMustNotRun = (reason: string): MemoryLoaders["judge"] => async () => {
 	throw new Error(reason);
@@ -88,10 +109,13 @@ describe("openMemory: who gets loaded", () => {
 			seen.push(candidates.map((candidate) => candidate.body));
 			return { verdict: "new" as const };
 		};
-		const { loaders } = recordingLoaders({ judge: async () => ({ classify }) });
+		const { loaders, calls } = recordingLoaders({ judge: async () => ({ classify }) });
 		await withFileDb(async (file) => {
 			const handle = await openMemory(config, { writes: true, judge: true, dbPath: file, loaders });
 			expect(handle.judge.classify).toBe(classify);
+			// Exactly one judge load: a second load is a second ~90 MB model resident, and the daemon keeps
+			// this process alive for days.
+			expect(calls.judgeProgress.length).toBe(1);
 			expect(handle.degraded).toBeUndefined();
 			await remember(handle.store, PNPM);
 			// The assertion the handle cannot fake: this is how tests/memory/store.test.ts proves a
@@ -170,21 +194,34 @@ describe("openMemory: who gets loaded", () => {
 			first.db.close();
 
 			const again = await openMemory(config, { writes: true, dbPath: file, loaders: recordingLoaders().loaders });
-			expect(() => again.store.forget(id, "test")).not.toThrow();
+			again.store.forget(id, "test");
 			expect(again.store.memory(id)?.status).toBe("deleted");
 			again.db.close();
 		});
 	});
 
-	it("progress hands each loader a callback, and without it each loader is handed undefined", async () => {
+	it("progress hands each loader a callback for its own model, and without it each loader is handed undefined", async () => {
 		// Rule: `modelProgress(model)` (`progress.ts:26`, whose line already reads `flypi: downloading …`)
 		// is built here or not passed at all — a caller never imports it.
 		const on = recordingLoaders({ judge: aJudgeThatSaysNew });
 		await withFileDb(async (file) => {
-			const handle = await openMemory(config, { writes: true, judge: true, progress: true, dbPath: file, loaders: on.loaders });
-			expect(typeof on.calls.embedderProgress[0]).toBe("function");
-			expect(typeof on.calls.judgeProgress[0]).toBe("function");
-			handle.db.close();
+			await withProgressLog(async (report) => {
+				const handle = await openMemory(config, { writes: true, judge: true, progress: true, dbPath: file, loaders: on.loaders });
+				try {
+					expect(on.calls.judgeProgress.length).toBe(1);
+					expect(typeof on.calls.embedderProgress[0]).toBe("function");
+					expect(typeof on.calls.judgeProgress[0]).toBe("function");
+					// And each callback names *its own* model: the first-run container log is the only place
+					// either line is ever read, and a callback built from the other model's name would blame
+					// the wrong download for the wait there.
+					const embedderLine = report(on.calls.embedderProgress[0]!);
+					expect(embedderLine).toContain(config.embeddings.model);
+					expect(embedderLine).not.toContain(config.judge.model);
+					expect(report(on.calls.judgeProgress[0]!)).toContain(config.judge.model);
+				} finally {
+					handle.db.close();
+				}
+			});
 		});
 
 		const off = recordingLoaders({ judge: aJudgeThatSaysNew });
