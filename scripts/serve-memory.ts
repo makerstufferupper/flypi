@@ -42,9 +42,9 @@ if (judge.error) console.log(`flypi memory: ${judge.error}`);
 // with no vault open would accept `sk-…` into a memory row and never know.
 // This process owns the write handle, so the vault may record uses and changes against it.
 openSecretVault(paths, { db, write: true });
-const identity = store.indexIdentity();
-if (identity.stale > 0 && identity.expected) {
-	console.log(`flypi memory: ${identity.stale} stored vectors are not from ${identity.expected?.model} — queued memory.reembed`);
+const index = store.indexSummary();
+if (index.stale > 0 && index.expected) {
+	console.log(`flypi memory: ${index.stale} stored vectors are not from ${index.expected.model} — \`flypi start\` queues memory.reembed and repairs it when idle`);
 }
 
 const server = await startMemoryServer({

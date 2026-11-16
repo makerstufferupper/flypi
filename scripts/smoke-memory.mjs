@@ -75,10 +75,17 @@ if (store.memory(throwaway).status !== "deleted") fail("forget did not reach sta
 if (db.prepare("SELECT count(*) AS n FROM memories").get().n !== rowsBefore) fail("a memory row disappeared; Phase 3 never hard-deletes");
 ok(`audit + delete rules — ${db.prepare("SELECT count(*) AS n FROM memory_audit WHERE memory_id = ?").get(throwaway).n} audit rows for #${throwaway}, still ${rowsBefore} memory rows`);
 
-// 4. The index is one vector space, or it says so.
-const index = store.indexIdentity();
-if (index.stale > 0 && !index.reembedQueued) fail("a stale index did not queue memory.reembed");
-ok(`index identity — ${index.rows} vectors, ${index.stale} from another model, reembed queued: ${index.reembedQueued}`);
+// 4. The index is one vector space, or it says so — and looking at it writes nothing. The queue has one owner
+//    (src/daemon/index.ts), so a step here that left a row in `jobs` is the bug T36 removed.
+const jobsBefore = db.prepare("SELECT count(*) AS n FROM jobs").get().n;
+const index = store.indexSummary();
+if (db.prepare("SELECT count(*) AS n FROM jobs").get().n !== jobsBefore) fail("reading the index queued a job");
+if (index.stale > 0) {
+	// The explicit form, which is what the daemon does: measure, then queue when the measurement says stale.
+	store.queueReembed(`${index.stale} of ${index.rows} vectors are from another model or quantization`);
+	if (db.prepare("SELECT count(*) AS n FROM jobs WHERE kind = 'memory.reembed'").get().n !== 1) fail("the explicit queue did not open exactly one memory.reembed");
+}
+ok(`index identity — ${index.rows} vectors, ${index.stale} from another model, reading it queued nothing`);
 
 // 5. The same store over HTTP, through the MCP client pi uses.
 const server = await startMemoryServer({ store, token: "smoke-token", principal: "mcp:smoke" });
@@ -126,7 +133,7 @@ for (const [written, kind] of [[picture, "image"], [recording, "audio"]]) {
 		fail(`#${written.id} ${embedder.identity ? `has no ${kind} vector in the current index` : `did not report why it is keyword-only`}`);
 	}
 }
-if (embedder.identity && store.indexIdentity().stale !== 0) fail("the media vectors did not land in the current index");
+if (embedder.identity && store.indexSummary().stale !== 0) fail("the media vectors did not land in the current index");
 
 const asked = JSON.parse((await client.callTool("memory_search", { query: `${marker} tone` })).content[0].text);
 if (!asked.results.some((row) => row.id === recording.id && row.modality === "audio")) fail("the search did not report the recording's modality");

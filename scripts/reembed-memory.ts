@@ -26,13 +26,13 @@ if (flagValue("--embeddings")) config.embeddings.provider = flagValue("--embeddi
 const { db, store, degraded } = await openMemory(config, { writes: true, dbPath: flagValue("--db") ?? paths.memoryDbPath });
 if (degraded) console.log(`flypi reembed: ${degraded}`);
 
-const before = store.indexIdentity();
+const before = store.indexSummary();
 console.log(`flypi reembed: ${before.rows} stored vectors, ${before.stale} not from ${before.expected?.model ?? "anything we can produce"}`);
 
 const { embedded, skipped } = await store.reembed("cli");
 console.log(`flypi reembed: rewrote ${embedded.length} ${embedded.length === 1 ? "memory" : "memories"}${embedded.length ? `: ${embedded.join(", ")}` : ""}`);
 for (const row of skipped) console.log(`flypi reembed: #${row.id} stays keyword-only: ${row.why}`);
 
-const after = store.indexIdentity();
+const after = store.indexSummary();
 console.log(`flypi reembed: index now holds ${after.rows} vectors, ${after.stale} from another model`);
 db.close();
