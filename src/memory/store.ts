@@ -722,26 +722,15 @@ export class MemoryStore {
 	}
 
 	/**
-	 * Does the stored index match the embeddings we can produce now? A mismatch is reported and
-	 * queued, never papered over by searching two vector spaces together (risk 7).
+	 * Does the stored index match the embeddings we can produce now? The measurement, never the repair:
+	 * the Memory tab and `memory_index_status` look at the store and must not queue work, and the one caller
+	 * that owns the queue says so at its own call site (`src/daemon/index.ts`).
+	 *
+	 * A mismatch is reported, never papered over by searching two vector spaces together (risk 7).
 	 *
 	 * Only active rows count as the index: `vectorSearch` reads nothing else, so a stale vector on a
 	 * superseded or deleted row is not something anyone can get a wrong answer from, and counting it
 	 * would keep a re-embed job open forever.
-	 */
-	indexIdentity(): { expected: EmbedIdentity | null; rows: number; stale: number; reembedQueued: boolean } {
-		const { expected, rows, stale } = this.indexSummary();
-		return {
-			expected,
-			rows,
-			stale,
-			reembedQueued: stale > 0 && this.queueReembed(`${stale} of ${rows} vectors are from another model or quantization`).length > 0,
-		};
-	}
-
-	/**
-	 * The same reading without the queue: opening the Memory tab must not put a job in the daemon's queue,
-	 * and a process holding the store read-only could not write one. `indexIdentity` is this plus the queue.
 	 */
 	indexSummary(): { expected: EmbedIdentity | null; rows: number; stale: number } {
 		const expected = this.embedder.identity;

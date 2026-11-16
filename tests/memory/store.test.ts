@@ -636,13 +636,15 @@ describe("MemoryStore: images and recordings", () => {
 
 	it("keeps a memory the embedder refused, says why, and still finds it by keyword", async () => {
 		const reason = "input is 9000 tokens, over the 8192-token window — split it into two memories";
-		const store = new MemoryStore(openTestDb(), refusingEmbedder(reason));
+		const db = openTestDb();
+		const store = new MemoryStore(db, refusingEmbedder(reason));
 		const written = await store.addMemory({ kind: "convention", body: PNPM, ...provenance });
 
 		expect(written.notIndexed).toBe(reason);
 		expect(store.memory(written.id)!.embed).toBeNull();
 		// Not a stale index: there is no vector to disagree with, and no re-embed job is queued for it.
-		expect(store.indexIdentity()).toMatchObject({ rows: 0, stale: 0, reembedQueued: false });
+		expect(store.indexSummary()).toMatchObject({ rows: 0, stale: 0 });
+		expect(openJobs(db)).toEqual([]);
 
 		const { results, partial, note } = await store.search({ query: "pnpm" });
 		expect(results.map((hit) => hit.id)).toEqual([written.id]);
@@ -765,7 +767,9 @@ describe("MemoryStore: one vector space at a time", () => {
 		const id = await remember(store, PNPM);
 
 		const swapped = new MemoryStore(db, wordEmbedder({ model: "other-model", quantized: false }));
-		expect(swapped.indexIdentity()).toMatchObject({ rows: 1, stale: 1, reembedQueued: true });
+		expect(swapped.indexSummary()).toMatchObject({ rows: 1, stale: 1 });
+		swapped.queueReembed("the stored vectors are from another model");
+		expect(openJobs(db)).toEqual(["memory.reembed"]);
 		const result = await swapped.search({ query: "which package manager" });
 		// The old vectors are not silently compared against the new query embedding.
 		expect(result.results.map((row) => row.id)).not.toContain(id);
@@ -776,16 +780,19 @@ describe("MemoryStore: one vector space at a time", () => {
 		await remember(store, PNPM);
 		const swapped = new MemoryStore(db, wordEmbedder({ model: "other-model", quantized: true }));
 
-		expect(swapped.indexIdentity().reembedQueued).toBe(true);
-		expect(openJobs(db)).toEqual(["memory.reembed"]);
+		expect(swapped.indexSummary()).toMatchObject({ rows: 1, stale: 1 });
+		expect(openJobs(db)).toEqual([]); // the measurement queued nothing on its own
+		swapped.queueReembed("first");
+		expect(openJobs(db)).toEqual(["memory.reembed"]); // the queue has one owner: the explicit call
 		swapped.queueReembed("again");
-		expect(openJobs(db)).toEqual(["memory.reembed"]);
+		expect(openJobs(db)).toEqual(["memory.reembed"]); // made due again, not doubled
 	});
 
 	it("an index built by the configured model is not stale", async () => {
-		const { store } = storeWith();
+		const { store, db } = storeWith();
 		await remember(store, PNPM);
-		expect(store.indexIdentity()).toMatchObject({ rows: 1, stale: 0, reembedQueued: false });
+		expect(store.indexSummary()).toMatchObject({ rows: 1, stale: 0 });
+		expect(openJobs(db)).toEqual([]); // and a clean reading writes nothing
 	});
 
 	/** Switching embedding models is what this exists for: the old vectors stop being comparable. */
@@ -800,13 +807,15 @@ describe("MemoryStore: one vector space at a time", () => {
 		});
 
 		const swapped = new MemoryStore(db, wordEmbedder({ model: "other-model", quantized: true }));
-		expect(swapped.indexIdentity()).toMatchObject({ rows: 2, stale: 2, reembedQueued: true });
+		expect(swapped.indexSummary()).toMatchObject({ rows: 2, stale: 2 });
+		swapped.queueReembed("the model changed");
+		expect(openJobs(db)).toEqual(["memory.reembed"]); // the repair has a job to close
 
 		const { embedded, skipped } = await swapped.reembed();
 		expect(embedded).toEqual([text, photo.id]); // the media row re-embeds from its stored bytes
 		expect(skipped).toEqual([]);
-		expect(swapped.indexIdentity()).toMatchObject({ rows: 2, stale: 0, reembedQueued: false });
-		expect(openJobs(db)).toEqual([]);
+		expect(swapped.indexSummary()).toMatchObject({ rows: 2, stale: 0 });
+		expect(openJobs(db)).toEqual([]); // it closed the job it was fixing
 		expect(swapped.history(photo.id).some((entry) => entry.action === "reembed")).toBe(true);
 	});
 
@@ -836,7 +845,9 @@ describe("MemoryStore: one vector space at a time", () => {
 			},
 		};
 		const swapped = new MemoryStore(db, cannotDecode);
-		expect(swapped.indexIdentity()).toMatchObject({ rows: 2, stale: 2, reembedQueued: true });
+		expect(swapped.indexSummary()).toMatchObject({ rows: 2, stale: 2 });
+		swapped.queueReembed("the model changed");
+		expect(openJobs(db)).toEqual(["memory.reembed"]); // the job the skipped rows will keep open
 
 		const { embedded, skipped } = await swapped.reembed();
 		expect(embedded).toEqual([]);
@@ -853,7 +864,9 @@ describe("MemoryStore: one vector space at a time", () => {
 		const id = await remember(store, PNPM);
 		const reason = "input is 9000 tokens, over the 8192-token window";
 		const refusing = new MemoryStore(db, refusingEmbedder(reason));
-		expect(refusing.indexIdentity().reembedQueued).toBe(true); // what the model change looks like from here
+		expect(refusing.indexSummary()).toMatchObject({ rows: 1, stale: 1 }); // what the model change looks like from here
+		refusing.queueReembed("the model changed");
+		expect(openJobs(db)).toEqual(["memory.reembed"]);
 
 		const { embedded, skipped } = await refusing.reembed();
 		expect(embedded).toEqual([]);

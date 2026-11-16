@@ -392,3 +392,17 @@ describe("the assembly ritual stays copied nowhere", () => {
 		}
 	});
 });
+
+describe("the index queue keeps one owner", () => {
+	it("leaves the queue call to the daemon and keeps the reading clean", () => {
+		// `indexIdentity()` was a getter that queued (deepening.md §11.6). Its name staying gone is the drift
+		// this pins: a new reading that writes would reappear here first.
+		expect(copies("indexIdentity("), "a read that queues maintenance").toEqual([]);
+		// One queue owner in the shipped code, plus the smoke that exercises the path with a real model.
+		expect(copies("queueReembed("), "a caller that queues maintenance").toEqual([
+			["scripts/smoke-memory.mjs", 1],
+			["src/daemon/index.ts", 1],
+			["src/memory/store.ts", 1], // the definition
+		]);
+	});
+});
