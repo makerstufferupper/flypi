@@ -21,7 +21,7 @@ import { flypiPaths } from "../../src/agent/paths.ts";
 import { EMBED_MODEL, memoryConfig, parseMemoryConfig } from "../../src/memory/config.ts";
 import { configuredIdentity, createEmbedder, noneEmbedder } from "../../src/memory/embed.ts";
 import { createJudge } from "../../src/memory/judge.ts";
-import { defaultLoaders, openMemory, type MemoryLoaders } from "../../src/memory/open.ts";
+import { defaultLoaders, loadMemoryModels, openMemory, type MemoryLoaders } from "../../src/memory/open.ts";
 import type { ModelProgress } from "../../src/memory/progress.ts";
 import type { ContradictionCandidate, MemoryStore } from "../../src/memory/store.ts";
 import { openTempFileDb, wordEmbedder } from "../helpers/memory-db.ts";
@@ -273,6 +273,42 @@ describe("openMemory: who gets loaded", () => {
 });
 
 /**
+ * The models half on its own, because `scripts/warm-models.ts` calls *this* function and never `openMemory`
+ * (`open.ts`'s decision 4 in `.scratch/plans/t35-plan.md`: a download step must not create
+ * `.flypi/memory/flypi.db`). Its row of the table would otherwise be proven only transitively, through the
+ * store cases above — and there is no db and no store here, nothing for a wrong loader to hide behind.
+ */
+describe("loadMemoryModels: the models half, with no store", () => {
+	it("a writer gets one judge and a progress line per model, a reader gets the identity and no judge", async () => {
+		// The writer's row, exactly as `npm run models:warm` asks for it.
+		const { loaders, calls } = recordingLoaders({ judge: aJudgeThatSaysNew });
+		await withProgressLog(async (report) => {
+			const models = await loadMemoryModels(config, { writes: true, judge: true, progress: true, loaders });
+			expect(models.embedder.identity).not.toBeNull();
+			expect(models.judge.classify).toBeDefined();
+			expect(models.degraded).toBeUndefined();
+			// One judge load, and each callback reports *its own* model — the two downloads are ~1.1 GB and
+			// ~90 MB, so blaming the wrong one in a first-run log is a user waiting for the wrong number.
+			expect(calls.judgeProgress.length).toBe(1);
+			expect(typeof calls.embedderProgress[0]).toBe("function");
+			const embedderLine = report(calls.embedderProgress[0]!);
+			expect(embedderLine).toContain(config.embeddings.model);
+			expect(embedderLine).not.toContain(config.judge.model);
+			expect(report(calls.judgeProgress[0]!)).toContain(config.judge.model);
+		});
+
+		// The reader's row: `writes: false` must not fetch the model, and a judge nobody could feed a
+		// candidate set stays in the cache.
+		const reader = recordingLoaders({ judge: aJudgeThatMustNotRun("a reader has no candidate set to judge") });
+		const models = await loadMemoryModels(config, { writes: false, judge: true, progress: true, loaders: reader.loaders });
+		expect(reader.calls.identity).toBe(1);
+		expect(reader.calls.embedderProgress.length).toBe(0);
+		expect(reader.calls.judgeProgress.length).toBe(0);
+		expect(models.judge).toEqual({});
+	});
+});
+
+/**
  * T35's other half: the copy stays gone.
  *
  * Swept from the tree rather than asserted per script, because the failure this pins is a *new* copy: the
@@ -310,17 +346,15 @@ function copies(needle: string): [string, number][] {
 
 describe("the assembly ritual stays copied nowhere", () => {
 	it("leaves `new MemoryStore` to open.ts and the judge rule to one caller", () => {
-		// One body for the store assembly in runnable code. `vite.config.ts` is the expected survivor and the
-		// reason it is named rather than ignored: T35.3 moves this one (the dev server's read-only row).
+		// One body for the store assembly in runnable code — including `vite.config.ts`, which is named in the
+		// swept list rather than ignored precisely because it assembled its own store there (plan D2).
 		expect(copies("new MemoryStore("), "a MemoryStore assembled outside src/memory/open.ts").toEqual([
 			["src/memory/open.ts", 1],
-			["vite.config.ts", 1], // T35.3 moves this one
 		]);
 		// One body for the judge rule. `open.ts` is the rule's only caller and passes `createJudge` to
 		// `defaultLoaders` by name, so it scores 0 for the parenthesised form; if it ever calls it directly it
-		// belongs in this list. `warm-models.ts` restates the rule today — T35.3 moves this one.
+		// belongs in this list.
 		expect(copies("createJudge("), "a judge loaded outside src/memory").toEqual([
-			["scripts/warm-models.ts", 1], // T35.3 moves this one
 			["src/memory/judge.ts", 1], // the definition
 		]);
 	});
