@@ -10,9 +10,7 @@
 import { resolve } from "node:path";
 import { flypiPaths } from "../src/agent/paths.ts";
 import { memoryConfig } from "../src/memory/config.ts";
-import { openMemoryDb } from "../src/memory/db.ts";
-import { createEmbedder } from "../src/memory/embed.ts";
-import { MemoryStore } from "../src/memory/store.ts";
+import { openMemory } from "../src/memory/open.ts";
 
 const argv = process.argv.slice(2);
 const flagValue = (name: string): string | undefined => {
@@ -24,11 +22,10 @@ const paths = flypiPaths(resolve(flagValue("--root") ?? process.cwd()));
 const config = memoryConfig(paths);
 if (flagValue("--embeddings")) config.embeddings.provider = flagValue("--embeddings") === "none" ? "none" : "transformers";
 
-const embedder = await createEmbedder(config.embeddings);
-if (embedder.error) console.log(`flypi reembed: ${embedder.error}`);
+// No judge: re-embedding a vector never asks one, and loading it would be 400 MB for a call that cannot happen.
+const { db, store, degraded } = await openMemory(config, { writes: true, dbPath: flagValue("--db") ?? paths.memoryDbPath });
+if (degraded) console.log(`flypi reembed: ${degraded}`);
 
-const db = openMemoryDb(flagValue("--db") ?? paths.memoryDbPath);
-const store = new MemoryStore(db, embedder);
 const before = store.indexIdentity();
 console.log(`flypi reembed: ${before.rows} stored vectors, ${before.stale} not from ${before.expected?.model ?? "anything we can produce"}`);
 

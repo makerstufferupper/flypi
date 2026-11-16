@@ -15,10 +15,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { flypiPaths } from "../src/agent/paths.ts";
-import { openMemoryDb } from "../src/memory/db.ts";
-import { MemoryStore } from "../src/memory/store.ts";
-import { createEmbedder } from "../src/memory/embed.ts";
 import { memoryConfig } from "../src/memory/config.ts";
+import { openMemory } from "../src/memory/open.ts";
 import { secretReferences } from "../src/secrets/config.ts";
 import { openSecretVault } from "../src/secrets/vault.ts";
 import { schemaVersion } from "../src/shared/sqlite.ts";
@@ -36,9 +34,13 @@ const fail = (line) => {
 const root = mkdtempSync(join(tmpdir(), "flypi-smoke-secrets-"));
 const paths = flypiPaths(root);
 const TOKEN = "ghp_Smoke1111111111111111AAAAAAAA";
+// Decided for the whole smoke up here, not at step 4: this gate checks redaction and vault bytes, never a
+// vector, so `none` is the config that keeps a 1.1 GB model out of it.
+const config = memoryConfig(paths);
+config.embeddings.provider = "none";
 
 // 1. The writer: the same database the memory store uses, opened the way the daemon opens it.
-const db = openMemoryDb(paths.memoryDbPath);
+const { db, store } = await openMemory(config, { writes: true, dbPath: paths.memoryDbPath });
 const vault = openSecretVault(paths, { db, write: true });
 ok(`vault in the memory file — ${paths.memoryDbPath} at schema v${schemaVersion(db)}, one file for memories and secrets`);
 
@@ -77,9 +79,6 @@ ok(`bytes on disk are ciphertext — ${row.bytes} B cipher, ${row.nonce} B nonce
 
 // 4. The redaction boundary, at the place it matters: text being stored. A memory and a turn's tool calls go
 // through the same function the transcript hooks call (src/memory/store.ts).
-const embeddings = memoryConfig(paths).embeddings;
-embeddings.provider = "none";
-const store = new MemoryStore(db, await createEmbedder(embeddings));
 const remembered = await store.addMemory({
 	kind: "smoke",
 	body: `the github token is ${TOKEN} — do not paste it in a wiki`,

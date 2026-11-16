@@ -11,9 +11,7 @@ import { existsSync } from "node:fs";
 import { flypiPaths } from "../src/agent/paths.ts";
 import { memoryEndpoint } from "../src/agent/config-files.ts";
 import { memoryConfig } from "../src/memory/config.ts";
-import { openMemoryDbReadOnly } from "../src/memory/db.ts";
-import { configuredIdentity } from "../src/memory/embed.ts";
-import { MemoryStore } from "../src/memory/store.ts";
+import { openMemory } from "../src/memory/open.ts";
 import { memoryApi } from "../src/server/memory-api.ts";
 import { SessionRegistry } from "../src/server/session-registry.ts";
 import { openRunStore } from "../src/server/run-store.ts";
@@ -48,8 +46,8 @@ let vault: SecretStore | undefined;
 let memory: ReturnType<typeof memoryApi> | undefined;
 try {
 	if (existsSync(paths.memoryDbPath)) {
-		const memoryDb = openMemoryDbReadOnly(paths.memoryDbPath);
-		memory = memoryApi(new MemoryStore(memoryDb, await configuredIdentity(memoryConfig(paths).embeddings)), memoryDb, { readOnly: true });
+		const reader = await openMemory(memoryConfig(paths), { writes: false, dbPath: paths.memoryDbPath });
+		memory = memoryApi(reader.store, reader.db, { readOnly: true });
 	}
 } catch (error) {
 	console.log(`flypi: no memory store: ${(error as Error).message}`);

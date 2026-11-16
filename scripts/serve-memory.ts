@@ -17,11 +17,8 @@
 import { resolve } from "node:path";
 import { flypiPaths } from "../src/agent/paths.ts";
 import { memoryConfig } from "../src/memory/config.ts";
-import { openMemoryDb } from "../src/memory/db.ts";
-import { createEmbedder } from "../src/memory/embed.ts";
-import { createJudge } from "../src/memory/judge.ts";
 import { startMemoryServer } from "../src/memory/mcp.ts";
-import { MemoryStore } from "../src/memory/store.ts";
+import { openMemory } from "../src/memory/open.ts";
 import { openSecretVault } from "../src/secrets/vault.ts";
 
 const argv = process.argv.slice(2);
@@ -35,16 +32,11 @@ const config = memoryConfig(paths);
 if (flagValue("--embeddings")) config.embeddings.provider = flagValue("--embeddings") === "none" ? "none" : "transformers";
 if (flagValue("--judge")) config.judge.provider = flagValue("--judge") === "none" ? "none" : "transformers";
 
-const embedder = await createEmbedder(config.embeddings);
-if (embedder.error) console.log(`flypi memory: ${embedder.error} — search will be keyword-only`);
-// A second resident model (~400 MB of RSS next to the embedder, docs/decisions.md). Refusing to load it
-// is a supported state, not a failure: the store keeps judging what tokens can judge and says so.
-// With no embedder there is no candidate set, so a judge would be 400 MB for a call that cannot happen.
-const judge = embedder.identity ? await createJudge(config.judge) : { classify: undefined };
+// The loaders and the handle are `openMemory`'s call; this script owns only the wording its reasons print in.
+const { db, store, embedder, judge, degraded } = await openMemory(config, { writes: true, judge: true, dbPath: flagValue("--db") ?? paths.memoryDbPath });
+if (degraded) console.log(`flypi memory: ${degraded} — search will be keyword-only`);
 if (judge.error) console.log(`flypi memory: ${judge.error}`);
 
-const db = openMemoryDb(flagValue("--db") ?? paths.memoryDbPath);
-const store = new MemoryStore(db, embedder, { classify: judge.classify });
 // The vault lives in this same file, so this process is the one that can write it — and opening it here is
 // what makes `redactSecrets` real when a memory body is stored (docs/secrets.md Phase 5.5). A memory server
 // with no vault open would accept `sk-…` into a memory row and never know.

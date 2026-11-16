@@ -13,6 +13,9 @@
  * testable, and there is no `vi.mock` in this repo) — so nothing here downloads a model. Case 7 is the one
  * call that uses the real defaults, with `provider: "none"`, which is the config that needs no weights.
  */
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { flypiPaths } from "../../src/agent/paths.ts";
 import { EMBED_MODEL, memoryConfig, parseMemoryConfig } from "../../src/memory/config.ts";
@@ -266,5 +269,59 @@ describe("openMemory: who gets loaded", () => {
 		expect(embedder.identity).toEqual({ model: EMBED_MODEL, quantized: true });
 		await expect(embedder.embedQuery(PNPM)).resolves.toMatchObject({ ok: false });
 		await expect(embedder.embedDocument(PNPM)).resolves.toMatchObject({ ok: false });
+	});
+});
+
+/**
+ * T35's other half: the copy stays gone.
+ *
+ * Swept from the tree rather than asserted per script, because the failure this pins is a *new* copy: the
+ * judge rule was restated three times (`serve-memory.ts`, `serve-daemon.ts`, `warm-models.ts`) and each copy
+ * was kept honest by a comment beside it, so an assertion naming the files that exist today would say
+ * nothing about the script someone adds tomorrow. `.scratch/plans/t35-plan.md`'s `Done when` states the same
+ * claim as a grep nobody runs; this is that grep as a test. Paths are resolved from `import.meta.url` for the
+ * same reason `tests/memory/recall-corpus.test.ts:19` resolves its fixture — the case must not depend on
+ * which directory vitest was started from.
+ *
+ * `tests/` is not swept: a test builds its own `MemoryStore` on purpose (`tests/helpers/memory-db.ts`).
+ */
+const root = fileURLToPath(new URL("../..", import.meta.url));
+/** Runnable code only — `ui/public/*.jpeg` has no store to assemble. */
+const RUNNABLE = /\.(ts|mjs|js|svelte)$/;
+
+/** Every runnable file below a directory, recursively, in a stable order. */
+function walk(dir: string): string[] {
+	return readdirSync(join(root, dir), { withFileTypes: true })
+		.flatMap((entry) => (entry.isDirectory() ? walk(join(dir, entry.name)) : RUNNABLE.test(entry.name) ? [join(dir, entry.name)] : []))
+		.sort();
+}
+
+/** The swept surface: the plan's `scripts src` grep, plus `ui`, `bin` and `vite.config.ts` — the file that
+ * grep cannot see and which is exactly why the wider sweep exists (plan D2). */
+const SWEPT = ["src", "scripts", "ui", "bin"].flatMap(walk).concat("vite.config.ts").sort();
+
+/** The files that hold `needle`, with their count — so the diff names the paths that went rogue. */
+function copies(needle: string): [string, number][] {
+	return SWEPT.flatMap((file) => {
+		const hits = readFileSync(join(root, file), "utf8").split(needle).length - 1;
+		return hits > 0 ? ([[file, hits]] as [string, number][]) : [];
+	});
+}
+
+describe("the assembly ritual stays copied nowhere", () => {
+	it("leaves `new MemoryStore` to open.ts and the judge rule to one caller", () => {
+		// One body for the store assembly in runnable code. `vite.config.ts` is the expected survivor and the
+		// reason it is named rather than ignored: T35.3 moves this one (the dev server's read-only row).
+		expect(copies("new MemoryStore("), "a MemoryStore assembled outside src/memory/open.ts").toEqual([
+			["src/memory/open.ts", 1],
+			["vite.config.ts", 1], // T35.3 moves this one
+		]);
+		// One body for the judge rule. `open.ts` is the rule's only caller and passes `createJudge` to
+		// `defaultLoaders` by name, so it scores 0 for the parenthesised form; if it ever calls it directly it
+		// belongs in this list. `warm-models.ts` restates the rule today — T35.3 moves this one.
+		expect(copies("createJudge("), "a judge loaded outside src/memory").toEqual([
+			["scripts/warm-models.ts", 1], // T35.3 moves this one
+			["src/memory/judge.ts", 1], // the definition
+		]);
 	});
 });

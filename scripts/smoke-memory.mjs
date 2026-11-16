@@ -15,10 +15,8 @@ import { deflateSync } from "node:zlib";
 import { McpClient, StreamableHttpTransport } from "@earendil-works/pi-mcp";
 import { flypiPaths } from "../src/agent/paths.ts";
 import { memoryConfig } from "../src/memory/config.ts";
-import { openMemoryDb } from "../src/memory/db.ts";
-import { createEmbedder } from "../src/memory/embed.ts";
 import { startMemoryServer } from "../src/memory/mcp.ts";
-import { MemoryStore } from "../src/memory/store.ts";
+import { openMemory } from "../src/memory/open.ts";
 import { consolidate, planSweep } from "../src/memory/consolidate.ts";
 import { readWiki, renderWiki } from "../src/memory/wiki.ts";
 
@@ -31,9 +29,9 @@ const dbFile = flagValue("--db") ?? paths.memoryDbPath;
 const config = memoryConfig(paths);
 if (process.argv.includes("--no-embeddings")) config.embeddings.provider = "none";
 
-const embedder = await createEmbedder(config.embeddings);
-const db = openMemoryDb(dbFile);
-const store = new MemoryStore(db, embedder);
+// No judge on purpose: steps 2 and 3 assert the supersede and dedup outcomes a contradiction judge would
+// change, so the smoke measures the store's own rules here.
+const { db, store, embedder, degraded } = await openMemory(config, { writes: true, dbPath: dbFile });
 
 const ok = (line) => console.log(`ok: ${line}`);
 const fail = (line) => {
@@ -51,7 +49,7 @@ const byKeyword = await store.search({ query: marker });
 if (!byKeyword.results.some((row) => row.id === id)) fail(`#${id} was not found by its own marker`);
 ok(
 	`store + keyword search — #${id} in ${byKeyword.results.length} hit(s)` +
-		(byKeyword.partial ? `, keyword-only (${embedder.error ?? "embeddings off"})` : `, embeddings ${embedder.identity?.model}`),
+		(byKeyword.partial ? `, keyword-only (${degraded ?? "embeddings off"})` : `, embeddings ${embedder.identity?.model}`),
 );
 
 // 2. The one automatic transition: active → superseded, both rows kept. The two rows must be different

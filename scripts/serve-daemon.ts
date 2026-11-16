@@ -21,11 +21,7 @@ import { fileURLToPath } from "node:url";
 import { assertFlypiOwned, flypiPaths, memoryMcpUrl } from "../src/agent/paths.ts";
 import { builtUi, startFlypiDaemon } from "../src/daemon/index.ts";
 import { memoryConfig } from "../src/memory/config.ts";
-import { openMemoryDb } from "../src/memory/db.ts";
-import { createEmbedder } from "../src/memory/embed.ts";
-import { modelProgress } from "../src/memory/progress.ts";
-import { createJudge } from "../src/memory/judge.ts";
-import { MemoryStore } from "../src/memory/store.ts";
+import { openMemory } from "../src/memory/open.ts";
 import { openRunStore } from "../src/server/run-store.ts";
 
 const argv = process.argv.slice(2);
@@ -44,16 +40,12 @@ if (flagValue("--embeddings")) config.embeddings.provider = flagValue("--embeddi
 if (flagValue("--judge")) config.judge.provider = flagValue("--judge") === "none" ? "none" : "transformers";
 
 // The download is ~1 GB on a machine that has never run flypi, and the daemon is not listening until it
-// finishes — so both loaders report what they are fetching, into the log `flypi start` echoes back.
-const embedder = await createEmbedder(config.embeddings, modelProgress(config.embeddings.model));
-if (embedder.error) console.log(`flypi: ${embedder.error} — memory search will be keyword-only`);
-// A second resident model (~400 MB next to the embedder, docs/decisions.md). Not loading it is supported:
-// the store judges what tokens can judge and says so. With no embedder there is no candidate set.
-const judge = embedder.identity ? await createJudge(config.judge, modelProgress(config.judge.model)) : { classify: undefined };
+// finishes — so `progress` has both loaders report what they are fetching, into the log `flypi start` echoes
+// back. What comes back degraded is this script's sentence to print, not `openMemory`'s.
+const { db, store, embedder, judge, degraded } = await openMemory(config, { writes: true, judge: true, progress: true, dbPath: paths.memoryDbPath });
+if (degraded) console.log(`flypi: ${degraded} — memory search will be keyword-only`);
 if (judge.error) console.log(`flypi: ${judge.error}`);
 
-const db = openMemoryDb(paths.memoryDbPath);
-const store = new MemoryStore(db, embedder, { classify: judge.classify });
 // The backend's own database: which conversation had a turn in flight. Separate file, separate writer.
 const runs = openRunStore(paths);
 
