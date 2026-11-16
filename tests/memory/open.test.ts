@@ -404,5 +404,10 @@ describe("the index queue keeps one owner", () => {
 			["src/daemon/index.ts", 1],
 			["src/memory/store.ts", 1], // the definition
 		]);
+		// The kind, not just the wrapper: `queueReembed()` is one line over `queueJob("memory.reembed", …)`, so a
+		// caller that reaches for `queueJob` directly would open the same row past the list above.
+		expect(copies('queueJob("memory.reembed"'), "a second caller opening the re-embed kind").toEqual([
+			["src/memory/store.ts", 1], // the body `queueReembed` wraps
+		]);
 	});
 });

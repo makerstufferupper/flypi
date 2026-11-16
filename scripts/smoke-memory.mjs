@@ -84,8 +84,10 @@ const jobsBefore = jobs();
 const index = store.indexSummary();
 if (JSON.stringify(jobs()) !== JSON.stringify(jobsBefore)) fail("reading the index queued a job or moved one forward");
 if (index.stale > 0) {
-	// The explicit form, which is what the daemon does: measure, then queue when the measurement says stale.
-	store.queueReembed(`${index.stale} of ${index.rows} vectors are from another model or quantization`);
+	// The explicit form, which is what the daemon does: measure, then queue when the measurement says
+	// stale. The reason is the smoke's own sentence, not the daemon's: nothing reads this payload, and a
+	// copy of the daemon's wording would only ever be checked by the daemon's own test.
+	store.queueReembed("the memory smoke measured a stale index");
 	if (db.prepare("SELECT count(*) AS n FROM jobs WHERE kind = 'memory.reembed'").get().n !== 1) fail("the explicit queue did not open exactly one memory.reembed");
 }
 ok(`index identity — ${index.rows} vectors, ${index.stale} from another model, reading it queued nothing`);
