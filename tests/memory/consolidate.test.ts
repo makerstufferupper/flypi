@@ -274,10 +274,14 @@ describe("the trigger", () => {
 		await remember(store, "the deploy host is the small box");
 		expect(store.sweepState().newRows).toBe(1);
 		// A sweep that ran is the clock; a sweep that failed is not.
-		db.prepare("INSERT INTO job_runs (job_id, kind, started_at, finished_at, status) VALUES (NULL, 'memory.consolidate', '2026-01-01T00:00:00.000Z', ?, 'failed')").run(dayAgoIso());
+		// One clock read, not three: the two INSERTs and the expectation below used to call
+		// dayAgoIso() separately, and a 1 ms tick between them made `finished_at` come back a
+		// millisecond off what was written (T43 — red ~1 run in 20 at `a016cc2`).
+		const finishedAt = dayAgoIso();
+		db.prepare("INSERT INTO job_runs (job_id, kind, started_at, finished_at, status) VALUES (NULL, 'memory.consolidate', '2026-01-01T00:00:00.000Z', ?, 'failed')").run(finishedAt);
 		expect(store.sweepState()).toEqual({ newRows: 1, lastSweepAt: null });
-		db.prepare("INSERT INTO job_runs (job_id, kind, started_at, finished_at, status) VALUES (NULL, 'memory.consolidate', '2026-01-01T00:00:00.000Z', ?, 'ok')").run(dayAgoIso());
-		expect(store.sweepState().lastSweepAt).toBe(dayAgoIso());
+		db.prepare("INSERT INTO job_runs (job_id, kind, started_at, finished_at, status) VALUES (NULL, 'memory.consolidate', '2026-01-01T00:00:00.000Z', ?, 'ok')").run(finishedAt);
+		expect(store.sweepState().lastSweepAt).toBe(finishedAt);
 	});
 });
 
