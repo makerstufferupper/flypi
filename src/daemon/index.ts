@@ -120,7 +120,8 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 	if (interrupted.length > 0) log(`flypi: ${interrupted.length} turn(s) were interrupted by the previous shutdown: ${interrupted.join(", ")}`);
 
 	// The queue owner. A stale index is fixed by a job and this is the process that runs jobs, so it is also
-	// the process that queues it. Every reader measures with `indexSummary()` and writes nothing.
+	// the one that queues it, here at its own start. `indexSummary()` is the measurement on its own: it
+	// writes nothing, which is what lets the Memory tab and `memory_index_status` look at the index safely.
 	const index = options.store.indexSummary();
 	if (index.stale > 0) {
 		options.store.queueReembed(`${index.stale} of ${index.rows} vectors are from another model or quantization`);

@@ -85,8 +85,9 @@ export function memoryApi(store: MemoryStore, db: DatabaseSync, options: { readO
 
 	const snapshot = (): MemorySnapshot => {
 		const hit = store.memoryHitRate();
-		// A read: `indexSummary()` measures and queues nothing. The queue has one owner, the daemon's call
-		// site (`src/daemon/index.ts`), so opening this tab cannot put work in it.
+		// A read: `indexSummary()` measures and queues nothing, so opening this tab cannot put work in the
+		// queue. Running it is the daemon's job (`src/daemon/index.ts`), which queues a stale index at its own
+		// start — a reader that noticed staleness reports it, it does not schedule the repair.
 		const index = store.indexSummary();
 		return {
 			// Newest first: the browser is where you check what the agent learned *today*.

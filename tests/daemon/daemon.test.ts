@@ -430,15 +430,16 @@ describe("the daemon", () => {
 		}
 	});
 
-	it("queues a stale index exactly once at startup, from the one call site that owns the queue", async () => {
+	it("queues a stale index at startup, from the one call site that owns the queue", async () => {
 		const root = createTempFlypiRoot();
 		const db = openTempFileDb();
 		const old = new MemoryStore(db.db, wordEmbedder({ model: "embeddinggemma-1", quantized: true }));
 		await old.addMemory({ kind: "convention", body: "the deploy host is 10.0.0.5", tags: [], origin_class: "owner", session_kind: "interactive", actor: "user" });
 		const store = { db, store: new MemoryStore(db.db, wordEmbedder()) };
 		const lines: string[] = [];
-		// The queue is deliberately left un-run: this row is about what startup put in the table, not what it
-		// did with it, and a 5 ms runner would have taken the row back before it could be read.
+		// What startup left in the table, not what the runner ran: `startFlypiDaemon` returns with no `await` after
+		// `startJobLoop`, so these reads precede its first tick (`setTimeout(tick, 0)`, jobs.ts:196); the interval
+		// only spaces the passes after that one.
 		const d = await startOn(root, store, { log: (line) => lines.push(line), jobIntervalMs: 600_000 });
 		try {
 			expect(d.jobs.snapshot().jobs.map((job) => job.kind)).toEqual(["memory.reembed"]);
