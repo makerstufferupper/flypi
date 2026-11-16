@@ -296,7 +296,7 @@ describe("memory MCP server over HTTP", () => {
 		await client.close();
 	});
 
-	it("reports an index built by another model and queues the re-embed", async () => {
+	it("reports an index built by another model and queues nothing", async () => {
 		const identity: EmbedIdentity = { model: "configured-model", quantized: true };
 		const db = openTestDb();
 		const server = await startMemoryServer({ store: new MemoryStore(db, wordEmbedder(identity)), token: TOKEN });
@@ -306,10 +306,16 @@ describe("memory MCP server over HTTP", () => {
 			await call(client, "memory_write", { body: PNPM, kind: "convention" });
 			await client.close();
 
-			// The same rows, now asked about under a different configured model: reported and queued,
-			// never searched across two vector spaces.
+			// The same rows, now asked about under a different configured model: reported, never searched
+			// across two vector spaces — and now queued by nobody, which is what the next three lines assert.
 			const swapped = await clientFor(swappedServer.url);
-			expect((await call(swapped, "memory_index_status")).value).toMatchObject({ rows: 1, stale: 1, reembedQueued: true });
+			// Decision 3 (deepening.md §11.6/T36): the tool advertises `readOnlyHint: true`, so asking about the
+			// index must not be able to put maintenance in the daemon's queue. It also has no `reembedQueued`
+			// left to report: the whole answer is the measurement, pinned by key.
+			const status = (await call(swapped, "memory_index_status")).value;
+			expect(status).toMatchObject({ rows: 1, stale: 1 });
+			expect(Object.keys(status).sort()).toEqual(["expected", "rows", "stale"]);
+			expect((db.prepare("SELECT count(*) AS n FROM jobs").get() as unknown as { n: number }).n).toBe(0);
 			await swapped.close();
 		} finally {
 			await server.close();

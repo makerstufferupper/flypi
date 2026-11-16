@@ -85,8 +85,8 @@ export function memoryApi(store: MemoryStore, db: DatabaseSync, options: { readO
 
 	const snapshot = (): MemorySnapshot => {
 		const hit = store.memoryHitRate();
-		// The summary, not `indexIdentity()`: looking at the store must not queue a re-embed, and a process
-		// holding the database read-only could not write the queue row it would try to make.
+		// A read: `indexSummary()` measures and queues nothing. The queue has one owner, the daemon's call
+		// site (`src/daemon/index.ts`), so opening this tab cannot put work in it.
 		const index = store.indexSummary();
 		return {
 			// Newest first: the browser is where you check what the agent learned *today*.

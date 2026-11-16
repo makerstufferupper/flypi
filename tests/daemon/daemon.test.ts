@@ -70,7 +70,7 @@ afterEach(() => {
 async function startOn(
 	root: string,
 	store: ReturnType<typeof memory>,
-	options: { log?: (line: string) => void; script?: ReturnType<typeof toolTurn>; tokensPerSecond?: number; token?: string } = {},
+	options: { log?: (line: string) => void; jobIntervalMs?: number; script?: ReturnType<typeof toolTurn>; tokensPerSecond?: number; token?: string } = {},
 ): Promise<DaemonHandle & { runs: RunStore }> {
 	// The backend's own database, opened from the same paths an entrypoint would use. It is a separate file
 	// from `store`, which is the point: nothing here can join the two by accident.
@@ -81,7 +81,7 @@ async function startOn(
 		db: store.db.db,
 		store: store.store,
 		runs,
-		jobIntervalMs: 5,
+		jobIntervalMs: options.jobIntervalMs ?? 5,
 		log: options.log ?? (() => {}),
 		...(options.token ? { token: options.token } : {}),
 		createSession: stubCreateSession(root, options.script ?? toolTurn(), {
@@ -430,11 +430,35 @@ describe("the daemon", () => {
 		}
 	});
 
+	it("queues a stale index exactly once at startup, from the one call site that owns the queue", async () => {
+		const root = createTempFlypiRoot();
+		const db = openTempFileDb();
+		const old = new MemoryStore(db.db, wordEmbedder({ model: "embeddinggemma-1", quantized: true }));
+		await old.addMemory({ kind: "convention", body: "the deploy host is 10.0.0.5", tags: [], origin_class: "owner", session_kind: "interactive", actor: "user" });
+		const store = { db, store: new MemoryStore(db.db, wordEmbedder()) };
+		const lines: string[] = [];
+		// The queue is deliberately left un-run: this row is about what startup put in the table, not what it
+		// did with it, and a 5 ms runner would have taken the row back before it could be read.
+		const d = await startOn(root, store, { log: (line) => lines.push(line), jobIntervalMs: 600_000 });
+		try {
+			expect(d.jobs.snapshot().jobs.map((job) => job.kind)).toEqual(["memory.reembed"]);
+			expect(lines.filter((line) => line.includes("memory.reembed is queued"))).toHaveLength(1);
+			// The reason string is the explanation the three comments carried, now at the call site that queues.
+			expect(db.db.prepare("SELECT kind, payload FROM jobs").all()).toEqual([
+				{ kind: "memory.reembed", payload: '{"reason":"1 of 1 vectors are from another model or quantization"}' },
+			]);
+		} finally {
+			await d.close();
+			db.dispose();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("repairs an index another model built, with nobody connected", async () => {
 		const root = createTempFlypiRoot();
 		const db = openTempFileDb();
 		// Vectors written by a model this daemon does not use — what an upgrade leaves behind, and the reason
-		// `indexIdentity()` queues the repair rather than refusing to compare them forever.
+		// the daemon's own startup queues the repair rather than refusing to compare them forever.
 		const old = new MemoryStore(db.db, wordEmbedder({ model: "embeddinggemma-1", quantized: true }));
 		await old.addMemory({ kind: "convention", body: "the deploy host is 10.0.0.5", tags: [], origin_class: "owner", session_kind: "interactive", actor: "user" });
 		const store = { db, store: new MemoryStore(db.db, wordEmbedder()) };
@@ -447,7 +471,7 @@ describe("the daemon", () => {
 			// By kind, not by position: the re-embed queues the merge pass, so the chain has already moved on.
 			expect(d.jobs.snapshot().jobRuns.find((run) => run.kind === "memory.reembed")).toMatchObject({ status: "ok", detail: "re-embedded 1, skipped 0" });
 			// Repaired: the vectors are now the daemon's own, and there is nothing left to queue.
-			expect(store.store.indexIdentity()).toMatchObject({ rows: 1, stale: 0 });
+			expect(store.store.indexSummary()).toMatchObject({ rows: 1, stale: 0 });
 		} finally {
 			await d.close();
 			db.dispose();

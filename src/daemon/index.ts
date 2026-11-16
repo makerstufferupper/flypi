@@ -119,9 +119,13 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 	const interrupted = options.runs.reconcileInterrupted();
 	if (interrupted.length > 0) log(`flypi: ${interrupted.length} turn(s) were interrupted by the previous shutdown: ${interrupted.join(", ")}`);
 
-	// A stale index is queued as a job by reading it, which is the point: the daemon fixes it when idle.
-	const identity = options.store.indexIdentity();
-	if (identity.stale > 0) log(`flypi: ${identity.stale} stored vectors are not from ${identity.expected?.model ?? "the configured model"} — memory.reembed is queued`);
+	// The queue owner. A stale index is fixed by a job and this is the process that runs jobs, so it is also
+	// the process that queues it. Every reader measures with `indexSummary()` and writes nothing.
+	const index = options.store.indexSummary();
+	if (index.stale > 0) {
+		options.store.queueReembed(`${index.stale} of ${index.rows} vectors are from another model or quantization`);
+		log(`flypi: ${index.stale} stored vectors are not from ${index.expected?.model ?? "the configured model"} — memory.reembed is queued`);
+	}
 
 	// A fresh install has no agent dir at all, and a missing config file reads as a broken install
 	// (`could not read …: ENOENT`) rather than as what it is: no model configured yet. Writing the empty pair

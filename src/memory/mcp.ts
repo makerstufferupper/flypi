@@ -155,7 +155,7 @@ const TOOL_META: Record<(keyof typeof TOOL_MODELS), { description: string; annot
 		annotations: { readOnlyHint: true, destructiveHint: false },
 	},
 	memory_index_status: {
-		description: "Report whether the stored vectors all belong to the configured embedding model (a mismatch queues a re-embed).",
+		description: "Report whether the stored vectors all belong to the configured embedding model (a mismatch is repaired by the daemon's re-embed job).",
 		annotations: { readOnlyHint: true, destructiveHint: false },
 	},
 };
@@ -356,7 +356,7 @@ export function createMemoryMcpServer(store: MemoryStore, options: MemoryMcpOpti
 					});
 				}
 				case "memory_index_status":
-					return text(store.indexIdentity());
+					return text(store.indexSummary());
 				default:
 					return text(`unknown tool: ${request.params.name}`, true);
 			}

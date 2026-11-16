@@ -6,11 +6,12 @@
  * on — reading the store must not look like searching it, or the promotion gates would count browsing.
  */
 import { describe, expect, it } from "vitest";
+import { openMemoryDbReadOnly } from "../../src/memory/db.ts";
 import { noneEmbedder } from "../../src/memory/embed.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { renderWiki } from "../../src/memory/wiki.ts";
 import { memoryApi } from "../../src/server/memory-api.ts";
-import { openTestDb, wordEmbedder } from "../helpers/memory-db.ts";
+import { openTempFileDb, openTestDb, wordEmbedder } from "../helpers/memory-db.ts";
 
 type Db = import("node:sqlite").DatabaseSync;
 
@@ -112,6 +113,38 @@ describe("the memory API", () => {
 		expect((db.prepare("SELECT count(*) AS n FROM jobs").get() as unknown as { n: number }).n).toBe(0);
 		// The number is still reported — the browser says the index is stale, it does not fix it.
 		expect(api.snapshot().stats).toMatchObject({ indexRows: 1, indexStale: 1 });
+	});
+
+	it("opening the Memory tab twice leaves the job table exactly as it was", async () => {
+		const { store, db, api } = fresh();
+		await remember(store, "the deploy host is the small box");
+		db.prepare("UPDATE memories SET embed_model = 'some-other-model' WHERE id = 1").run();
+		// Seed the queue: comparing an empty table to itself proves nothing, so there is a row in it whose
+		// neighbours a hidden write would have to add.
+		store.queueJob("memory.consolidate", { runAt: "2999-01-01T00:00:00.000Z" });
+		const jobs = () => db.prepare("SELECT id, kind, payload, next_run_at FROM jobs ORDER BY id").all();
+		const before = jobs();
+		expect(api.snapshot().stats).toMatchObject({ indexRows: 1, indexStale: 1 });
+		expect(api.snapshot().stats).toMatchObject({ indexRows: 1, indexStale: 1 });
+		expect(jobs()).toEqual(before);
+	});
+
+	it("a snapshot on a read-only connection is the same snapshot — no write is reachable from it", async () => {
+		// `snapshot()` must reach only reads (deepening.md §11.6/T36). The store is opened the way a second
+		// process opens it, so any write inside the snapshot throws rather than quietly succeeding.
+		const file = openTempFileDb();
+		const writer = new MemoryStore(file.db, wordEmbedder());
+		const id = await remember(writer, "the deploy host is the small box");
+		file.db.prepare("UPDATE memories SET embed_model = 'some-other-model' WHERE id = ?").run(id);
+		const ro = openMemoryDbReadOnly(file.file);
+		try {
+			const reader = memoryApi(new MemoryStore(ro, wordEmbedder()), ro);
+			expect(reader.snapshot().stats).toMatchObject({ indexRows: 1, indexStale: 1 });
+			expect(reader.snapshot().memories.map((row) => row.id)).toEqual([id]);
+		} finally {
+			ro.close();
+			file.dispose();
+		}
 	});
 
 	it("a process that holds the store read-only reads it and refuses to change it", async () => {
