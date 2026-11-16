@@ -15,9 +15,10 @@
  */
 import { describe, expect, it } from "vitest";
 import { flypiPaths } from "../../src/agent/paths.ts";
-import { memoryConfig, parseMemoryConfig } from "../../src/memory/config.ts";
-import { noneEmbedder } from "../../src/memory/embed.ts";
-import { openMemory, type MemoryLoaders } from "../../src/memory/open.ts";
+import { EMBED_MODEL, memoryConfig, parseMemoryConfig } from "../../src/memory/config.ts";
+import { configuredIdentity, createEmbedder, noneEmbedder } from "../../src/memory/embed.ts";
+import { createJudge } from "../../src/memory/judge.ts";
+import { defaultLoaders, openMemory, type MemoryLoaders } from "../../src/memory/open.ts";
 import type { ModelProgress } from "../../src/memory/progress.ts";
 import type { ContradictionCandidate, MemoryStore } from "../../src/memory/store.ts";
 import { openTempFileDb, wordEmbedder } from "../helpers/memory-db.ts";
@@ -233,7 +234,7 @@ describe("openMemory: who gets loaded", () => {
 		});
 	});
 
-	it("the default loaders are the real ones, and provider none needs no download", async () => {
+	it("provider: \"none\" opens with no download and no degradation", async () => {
 		// Rule: `loaders` is a test seam, not a caller's job — and `provider: "none"` is a decision, so it
 		// degrades into nothing. No `loaders` here covers the default-parameter branch offline.
 		await withFileDb(async (file) => {
@@ -245,5 +246,25 @@ describe("openMemory: who gets loaded", () => {
 			expect(handle.store.memory(id)?.body).toBe(PNPM);
 			handle.db.close();
 		});
+	});
+
+	it("the default loaders are the three real ones", () => {
+		// Pinned by identity, not behaviour: `provider: "none"` answers `noneEmbedder()` for both
+		// `createEmbedder` and `configuredIdentity`, and `provider: "transformers"` would download ~1.1 GB.
+		// Swapping the two is the failure `writes` exists to prevent — a reader that fetches the model, or a
+		// writer that stores every row without a vector — and nothing else in the suite can see it.
+		expect(defaultLoaders.embedder).toBe(createEmbedder);
+		expect(defaultLoaders.identity).toBe(configuredIdentity);
+		expect(defaultLoaders.judge).toBe(createJudge);
+	});
+
+	it("the reader's embedder knows the index it cannot write", async () => {
+		// `memory.md`'s read-only half, and `embed.ts`'s own header: the second process knows which vector
+		// space the rows are in without loading the model, and every embed refuses — which is what stops it
+		// quietly adding a vector it could not reproduce. No network: `configuredIdentity` never loads.
+		const embedder = await defaultLoaders.identity(config.embeddings);
+		expect(embedder.identity).toEqual({ model: EMBED_MODEL, quantized: true });
+		await expect(embedder.embedQuery(PNPM)).resolves.toMatchObject({ ok: false });
+		await expect(embedder.embedDocument(PNPM)).resolves.toMatchObject({ ok: false });
 	});
 });

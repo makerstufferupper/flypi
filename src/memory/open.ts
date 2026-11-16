@@ -49,8 +49,12 @@ export interface MemoryHandle extends MemoryModels {
 	db: DatabaseSync;
 }
 
-/** The real three, so no caller has to know the seam above exists. */
-const defaultLoaders: MemoryLoaders = { embedder: createEmbedder, identity: configuredIdentity, judge: createJudge };
+/**
+ * The real three, so no caller has to know the seam above exists. Exported for the identity pin in
+ * `tests/memory/open.test.ts`: the only offline way to tell `configuredIdentity` from `createEmbedder` is the
+ * function's identity — behaviourally they differ by a 1.1 GB download, which is not a test.
+ */
+export const defaultLoaders: MemoryLoaders = { embedder: createEmbedder, identity: configuredIdentity, judge: createJudge };
 
 /** The models half, for a caller that warms weights and builds no store (`scripts/warm-models.ts`). */
 export async function loadMemoryModels(
