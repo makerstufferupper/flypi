@@ -276,8 +276,8 @@ describe("the trigger", () => {
 		// A sweep that ran is the clock; a sweep that failed is not.
 		// One clock read, not three: the two INSERTs and the expectation below used to call
 		// dayAgoIso() separately, and a 1 ms tick between them made `finished_at` come back a
-		// millisecond off what was written — enough to flip the row intermittently (1 of 20
-		// single-file runs at `a016cc2`, more often under the full suite's load). T43.
+		// millisecond off what was written — enough to flip the row (1 of 20 single-file runs at
+		// `a016cc2`; deepening.md §11.7 saw it twice while T33's reviews ran). T43.
 		const finishedAt = dayAgoIso();
 		db.prepare("INSERT INTO job_runs (job_id, kind, started_at, finished_at, status) VALUES (NULL, 'memory.consolidate', '2026-01-01T00:00:00.000Z', ?, 'failed')").run(finishedAt);
 		expect(store.sweepState()).toEqual({ newRows: 1, lastSweepAt: null });
