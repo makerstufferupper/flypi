@@ -867,6 +867,30 @@ describe("MemoryStore: one vector space at a time", () => {
 		expect(allJobs(db)).toEqual([]); // the row this call came from closes even when there was nothing to repair
 	});
 
+	// The by-id arm has two predicates, and each one is a width limit: the id names the row this pass holds
+	// (risk 3 — a row another process holds is not its to close) and the kind says no other row is.
+	it("a re-embed closes the row it was given and no other row", async () => {
+		const { store, db } = storeWith();
+		await remember(store, PNPM);
+		expect(store.indexSummary()).toMatchObject({ stale: 0 }); // the close is the only thing under test
+		const [held] = store.queueReembed("the model changed");
+		expect(new JobQueue(db).claim(held!, "4242")).toBe(true); // the row this pass will close
+		// Queueing a kind that is already held opens a second row: `queueJob` dedupes only unclaimed ones
+		// (store.ts:979), which is exactly the state `releaseStaleClaims` names in its own comment (jobs.ts:103-105).
+		const [other] = store.queueReembed("queued again while the first was held");
+		expect(new JobQueue(db).claim(other!, "9999")).toBe(true); // a different holder
+		const [wiki] = store.queueJob("wiki.render"); // a row of another kind, unclaimed
+
+		await store.reembed({ jobId: held });
+		expect(db.prepare("SELECT kind, locked_by FROM jobs ORDER BY id").all()).toEqual([
+			{ kind: "memory.reembed", locked_by: "9999" }, // the row another process holds survives (risk 3)
+			{ kind: "wiki.render", locked_by: null }, // and so does a row of a kind this pass does not own
+		]);
+
+		await store.reembed({ jobId: wiki });
+		expect(allJobs(db)).toEqual(["memory.reembed", "wiki.render"]); // nothing else's row is this job's to close
+	});
+
 	// A media row can exist without the bytes next to it (crash between the two inserts), and the bytes
 	// can be there and still not decode. Both are a reason the index did not move, and the job has to say
 	// which one, or the answer to "why is my index short" is a guess.
