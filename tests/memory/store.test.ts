@@ -8,6 +8,7 @@ import { createEmbedder, noneEmbedder, type Embedder } from "../../src/memory/em
 import { createJudge } from "../../src/memory/judge.ts";
 import { applyTokenBudget, fuseRrf, MemoryStore, valueSwap, type ContradictionCandidate, type ContradictionVerdict, type NewMemory } from "../../src/memory/store.ts";
 import { openMemoryDb, } from "../../src/memory/db.ts";
+import { JobQueue } from "../../src/daemon/jobs.ts";
 import { openTempFileDb, openTestDb, refusingEmbedder, wordEmbedder } from "../helpers/memory-db.ts";
 
 const PNPM = "we use pnpm, never npm";
@@ -23,6 +24,8 @@ function storeWith(aliases: Record<string, string> = {}, identity?: { model: str
 const statuses = (db: Db) =>
 	(db.prepare("SELECT status FROM memories ORDER BY id").all() as { status: string }[]).map((row) => row.status);
 const openJobs = (db: Db) => (db.prepare("SELECT kind FROM jobs WHERE locked_by IS NULL").all() as { kind: string }[]).map((row) => row.kind);
+/** Every row, held or not: `openJobs`'s `locked_by IS NULL` is the exact clause that hides T45 (plan D3). */
+const allJobs = (db: Db) => (db.prepare("SELECT kind FROM jobs ORDER BY id").all() as { kind: string }[]).map((row) => row.kind);
 const nextRunAt = (db: Db, id: number) => (db.prepare("SELECT next_run_at FROM jobs WHERE id = ?").get(id) as { next_run_at: string }).next_run_at;
 
 async function remember(store: MemoryStore, body: string, extra: Partial<NewMemory> = {}) {
@@ -817,6 +820,51 @@ describe("MemoryStore: one vector space at a time", () => {
 		expect(swapped.indexSummary()).toMatchObject({ rows: 2, stale: 0 });
 		expect(openJobs(db)).toEqual([]); // it closed the job it was fixing
 		expect(swapped.history(photo.id).some((entry) => entry.action === "reembed")).toBe(true);
+	});
+
+	// The runner claims the row before it calls the handler (src/daemon/jobs.ts:144) and releases it an hour
+	// later, so the close that only matches an unclaimed row can never match the row this call came from.
+	it("a re-embed that came from a claimed job row closes that row", async () => {
+		const { store, db } = storeWith();
+		const text = await remember(store, PNPM);
+		const swapped = new MemoryStore(db, wordEmbedder({ model: "other-model", quantized: true }));
+		const [jobId] = swapped.queueReembed("the model changed");
+		expect(new JobQueue(db).claim(jobId!, "4242")).toBe(true); // claimed the way the runner claims it
+
+		const { embedded } = await swapped.reembed({ jobId });
+		expect(embedded).toEqual([text]);
+		expect(allJobs(db)).toEqual([]); // the row it was fixing is gone, not an hour out
+		expect(swapped.indexSummary()).toMatchObject({ stale: 0 });
+	});
+
+	// The other arm of the close: a pass that locks nothing (the CLI) must still not delete a row some other
+	// process is running — one writer per file, docs/risks.md risk 3.
+	it("a re-embed with no job of its own leaves a row another process holds alone", async () => {
+		const { store, db } = storeWith();
+		await remember(store, PNPM);
+		const swapped = new MemoryStore(db, wordEmbedder({ model: "other-model", quantized: true }));
+		const [jobId] = swapped.queueReembed("the model changed");
+		expect(new JobQueue(db).claim(jobId!, "4242")).toBe(true);
+
+		await swapped.reembed();
+		expect(allJobs(db)).toEqual(["memory.reembed"]); // the held row survives the pass
+		const held = db.prepare("SELECT locked_by FROM jobs WHERE id = ?").get(jobId!) as { locked_by: string | null };
+		expect(held.locked_by).toBe("4242"); // and the holder keeps it
+	});
+
+	// The hourly re-run (.scratch/live/t36-live.md:196-199): the daemon claims the row, the index has nothing
+	// left to fix, and a close that only fires on rows it rewrote would reschedule this row for ever.
+	it("a re-embed with nothing left to fix still closes the job row it came from", async () => {
+		const { store, db } = storeWith();
+		await remember(store, PNPM);
+		expect(store.indexSummary()).toMatchObject({ stale: 0 }); // the same index, so this pass rewrites nothing
+		const [jobId] = store.queueReembed("the model changed");
+		expect(new JobQueue(db).claim(jobId!, "4242")).toBe(true);
+
+		const { embedded, skipped } = await store.reembed({ jobId });
+		expect(embedded).toEqual([]);
+		expect(skipped).toEqual([]);
+		expect(allJobs(db)).toEqual([]); // the row this call came from closes even when there was nothing to repair
 	});
 
 	// A media row can exist without the bytes next to it (crash between the two inserts), and the bytes

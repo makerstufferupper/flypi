@@ -29,7 +29,7 @@ if (degraded) console.log(`flypi reembed: ${degraded}`);
 const before = store.indexSummary();
 console.log(`flypi reembed: ${before.rows} stored vectors, ${before.stale} not from ${before.expected?.model ?? "anything we can produce"}`);
 
-const { embedded, skipped } = await store.reembed("cli");
+const { embedded, skipped } = await store.reembed({ actor: "cli" });
 console.log(`flypi reembed: rewrote ${embedded.length} ${embedded.length === 1 ? "memory" : "memories"}${embedded.length ? `: ${embedded.join(", ")}` : ""}`);
 for (const row of skipped) console.log(`flypi reembed: #${row.id} stays keyword-only: ${row.why}`);
 

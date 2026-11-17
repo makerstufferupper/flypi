@@ -758,8 +758,14 @@ export class MemoryStore {
 	 * the switch rather than discovered a week later. Rows the model refuses stay unindexed and say why.
 	 * Only `active` rows are touched — the same set `vectorSearch` reads, which is what lets the report
 	 * above reach zero.
+	 *
+	 * `jobId` is for the one caller that holds a `memory.reembed` row: `runDueJobs` claims it before it
+	 * calls this handler (src/daemon/jobs.ts:144), so only the handler knows which row it is running, and
+	 * only the handler may pass it. Every other caller — `npm run reembed:memory`, a CLI that locks
+	 * nothing — leaves it undefined and closes whatever open row of the kind exists. The two arms differ
+	 * because what they are allowed to delete differs: see the close below.
 	 */
-	async reembed(actor = "reembed"): Promise<{ embedded: number[]; skipped: { id: number; why: string }[] }> {
+	async reembed({ actor = "reembed", jobId }: { actor?: string; jobId?: number } = {}): Promise<{ embedded: number[]; skipped: { id: number; why: string }[] }> {
 		const identity = this.embedder.identity;
 		if (!identity) return { embedded: [], skipped: [{ id: 0, why: this.embedder.error ?? "embeddings are off" }] };
 		const stale = this.db
@@ -804,7 +810,16 @@ export class MemoryStore {
 		const left = this.db
 			.prepare("SELECT count(*) AS n FROM memories WHERE status = 'active' AND embedding IS NOT NULL AND (embed_model IS NOT ? OR embed_quantized IS NOT ?)")
 			.get(identity.model, identity.quantized ? 1 : 0) as { n: number };
-		if (left.n === 0) this.db.prepare("DELETE FROM jobs WHERE kind = 'memory.reembed' AND locked_by IS NULL").run();
+		if (left.n === 0) {
+			// The runner holds the row it is fixing: `runDueJobs` claims before it calls the handler
+			// (src/daemon/jobs.ts:144) and releases it an hour later (:160, :91-92), so `locked_by IS NULL` can
+			// never match the row this call was asked to run and a finished repair is rescheduled for ever
+			// (T45). A pass that came from a job closes that row; every other caller — `npm run reembed:memory`,
+			// which locks nothing — closes any open row of the kind, and that clause is what stops one process
+			// deleting another process's in-flight job: one writer per file, docs/risks.md risk 3.
+			if (jobId === undefined) this.db.prepare("DELETE FROM jobs WHERE kind = 'memory.reembed' AND locked_by IS NULL").run();
+			else this.db.prepare("DELETE FROM jobs WHERE id = ? AND kind = 'memory.reembed'").run(jobId);
+		}
 		return { embedded, skipped };
 	}
 
