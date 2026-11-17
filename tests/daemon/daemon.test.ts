@@ -376,9 +376,10 @@ describe("the daemon", () => {
 			expect(runs[1]).toMatchObject({ kind: "memory.consolidate", status: "ok", detail: expect.stringContaining("rows 0 → 0") });
 			expect(runs[0]).toMatchObject({ kind: "wiki.render", status: "ok", detail: "rendered 0 page(s), 0 section(s)" });
 			// A job that ran waits rather than spinning, and new work makes it due again (store.queueJob).
-			expect(d.jobs.snapshot().jobs.map((job) => job.kind).sort()).toEqual(["memory.consolidate", "memory.reembed", "wiki.render"]);
-			expect(d.jobs.queued()).toBe(3);
-			expect((await healthAt(d.port)).jobs).toBe(3);
+			// The re-embed row closed itself (T45); what is left are the two periodic kinds these handlers queued.
+			expect(d.jobs.snapshot().jobs.map((job) => job.kind).sort()).toEqual(["memory.consolidate", "wiki.render"]);
+			expect(d.jobs.queued()).toBe(2);
+			expect((await healthAt(d.port)).jobs).toBe(2);
 		} finally {
 			await d.dispose();
 		}
@@ -473,6 +474,9 @@ describe("the daemon", () => {
 			expect(d.jobs.snapshot().jobRuns.find((run) => run.kind === "memory.reembed")).toMatchObject({ status: "ok", detail: "re-embedded 1, skipped 0" });
 			// Repaired: the vectors are now the daemon's own, and there is nothing left to queue.
 			expect(store.store.indexSummary()).toMatchObject({ rows: 1, stale: 0 });
+			// T45: the row the runner claimed is gone, not an hour out. The two follow-ups this handler queues
+			// (`memory.consolidate`, `wiki.render`) are periodic and stay — plan D1 — so this asks by kind.
+			expect(d.jobs.snapshot().jobs.filter((job) => job.kind === "memory.reembed")).toEqual([]);
 		} finally {
 			await d.close();
 			db.dispose();

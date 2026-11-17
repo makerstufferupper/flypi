@@ -464,8 +464,8 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 	const handlers: Record<string, JobHandler> = {
 		// The kinds this build can run. `secrets.reencrypt` landed in Phase 5.5; `memory.consolidate` and
 		// `wiki.render` are Phase 6 — one line each in this map, and the queue needs nothing else.
-		"memory.reembed": async () => {
-			const result = await options.store.reembed();
+		"memory.reembed": async (job) => {
+			const result = await options.store.reembed({ jobId: job.id });
 			// A new vector space is a different set of near pairs, so the merge pass runs again over it
 			// (docs/memory.md Phase 6: "re-run the merge pass after every `memory.reembed`"). Queued, not run
 			// inline: a sweep belongs to the same idle moment the re-embed did.

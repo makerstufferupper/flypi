@@ -134,18 +134,23 @@ describe("the job queue", () => {
 
 	it("an attempt is still on the record after its queue row closes", async () => {
 		const db = openTestDb();
-		const store = new MemoryStore(db);
+		const store = new MemoryStore(db, wordEmbedder());
 		store.queueJob("memory.reembed", { runAt: CLOCK });
 		const queue = queueOn(db);
 
-		// What `reembed()` really does: the index is clean, so the queue row is deleted. The history of the
-		// run is not part of that cleanup.
-		await runDueJobs(queue, { "memory.reembed": () => { db.prepare("DELETE FROM jobs WHERE id = ?").run(1); return "re-embedded 4"; } });
+		// No memory rows, so the index is clean and the close fires; the record of the run is not part of it.
+		await runDueJobs(queue, {
+			// The real close, reached the way the runner reaches it: the handler passes the id it was handed
+			// (src/daemon/index.ts:468), so this row cannot drift from `runDueJobs` again — T45's bug hid behind
+			// a hand-written delete here that ignored the lock.
+			"memory.reembed": async (job) => { await store.reembed({ jobId: job.id }); return "re-embedded 4"; },
+		});
 
 		expect(queue.snapshot()).toEqual({
 			jobs: [],
 			jobRuns: [{ kind: "memory.reembed", status: "ok", startedAt: CLOCK, finishedAt: CLOCK, detail: "re-embedded 4" }],
 		});
+		expect(db.prepare("SELECT count(*) AS n FROM jobs").get()).toEqual({ n: 0 });
 		db.close();
 	});
 
