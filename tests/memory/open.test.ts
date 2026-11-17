@@ -412,5 +412,8 @@ describe("the index queue keeps one owner", () => {
 		// The close has one owner too: both arms live in the store, and a caller that closes its own rows is
 		// how T45 happened in the first place (the runner held the row the store was trying to delete).
 		expect(copies("DELETE FROM jobs"), "a second place that closes a job row").toEqual([["src/memory/store.ts", 2]]);
+		// The runner addresses a row by its claim in exactly two statements — record() and release(). A third
+		// one keyed on `id` alone is how a finished re-embed stamped the sweep that took the freed row id (T45).
+		expect(copies("locked_by IS NOT NULL"), "a statement that addresses a row by its claim").toEqual([["src/daemon/jobs.ts", 2]]);
 	});
 });

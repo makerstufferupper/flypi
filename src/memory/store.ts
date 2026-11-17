@@ -811,12 +811,12 @@ export class MemoryStore {
 			.prepare("SELECT count(*) AS n FROM memories WHERE status = 'active' AND embedding IS NOT NULL AND (embed_model IS NOT ? OR embed_quantized IS NOT ?)")
 			.get(identity.model, identity.quantized ? 1 : 0) as { n: number };
 		if (left.n === 0) {
-			// The runner holds the row it is fixing: `runDueJobs` claims before it calls the handler
-			// (src/daemon/jobs.ts:144) and releases it an hour later (:160, :91-92), so `locked_by IS NULL` can
-			// never match the row this call was asked to run and a finished repair is rescheduled for ever
-			// (T45). A pass that came from a job closes that row; every other caller — `npm run reembed:memory`,
-			// which locks nothing — closes any unclaimed row of the kind, which is what stops one process
-			// deleting another process's in-flight job: one writer per file, docs/risks.md risk 3.
+			// The runner holds the row it is fixing: `runDueJobs` claims it before it calls the handler and
+			// `JobQueue.release` reschedules it an hour later, so `locked_by IS NULL` can never match the row
+			// this call was asked to run and a finished repair is rescheduled for ever (T45). A pass that came
+			// from a job closes that row; every other caller — `npm run reembed:memory`, which locks nothing —
+			// closes any unclaimed row of the kind, which is what stops one process deleting another process's
+			// in-flight job: one writer per file, docs/risks.md risk 3.
 			if (jobId === undefined) this.db.prepare("DELETE FROM jobs WHERE kind = 'memory.reembed' AND locked_by IS NULL").run();
 			else this.db.prepare("DELETE FROM jobs WHERE id = ? AND kind = 'memory.reembed'").run(jobId);
 		}

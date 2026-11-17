@@ -369,13 +369,13 @@ describe("the daemon", () => {
 			// A wait with a deadline: nothing asked for this pass, and no socket was open when it ran. The
 			// re-embed queues the merge pass (a new vector space is a different set of near pairs), and a sweep
 			// queues the wiki render — so the Phase 6 chain runs end to end with nobody connected.
-			for (let waited = 0; waited < 5000 && d.jobs.snapshot().jobRuns.length < 3; waited += 20) await sleep(20);
+			for (let waited = 0; waited < 2500 && d.jobs.snapshot().jobRuns.length < 3; waited += 20) await sleep(20);
 			const runs = d.jobs.snapshot().jobRuns;
 			expect(runs.map((run) => run.kind)).toEqual(["wiki.render", "memory.consolidate", "memory.reembed"]);
 			expect(runs[2]).toMatchObject({ kind: "memory.reembed", status: "ok", detail: "re-embedded 0, skipped 0" });
 			expect(runs[1]).toMatchObject({ kind: "memory.consolidate", status: "ok", detail: expect.stringContaining("rows 0 → 0") });
 			expect(runs[0]).toMatchObject({ kind: "wiki.render", status: "ok", detail: "rendered 0 page(s), 0 section(s)" });
-			// A job that ran waits rather than spinning, and new work makes it due again (store.queueJob).
+			// The queue has settled to what these handlers queued, and the health page reports the same count.
 			// The re-embed row closed itself (T45); what is left are the two periodic kinds these handlers queued.
 			expect(d.jobs.snapshot().jobs.map((job) => job.kind).sort()).toEqual(["memory.consolidate", "wiki.render"]);
 			expect(d.jobs.queued()).toBe(2);
