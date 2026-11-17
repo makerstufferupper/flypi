@@ -71,24 +71,33 @@ export class JobQueue {
 		return this.clock();
 	}
 
-	/** Record one attempt — see the file header for why this happens after the run, not before. */
+	/**
+	 * Record one attempt — see the file header for why this happens after the run, not before. It links to
+	 * the row that still carries our claim, because that is the row this attempt ran.
+	 */
 	record(job: Job, startedAt: string, status: "ok" | "failed", detail?: string): void {
-		// A job that finished its work closes its own queue row (`reembed()` does), so the id may be gone by
-		// the time the attempt is recorded: link it when it is still there, and let the record stand alone
-		// when it is not. The kind is copied, so the history never loses what ran.
+		// A job that finished its work closes its own queue row (`reembed()` does), so the record has to be
+		// able to stand alone; the kind is copied, so the history never loses what ran. `job_id` links the
+		// attempt to the row it ran, which is the row that still carries our claim: a handler that closed its
+		// own row frees the id, and SQLite hands that rowid to the next insert (`jobs.id` is a rowid alias,
+		// src/memory/db.ts:46), so the row sitting on it may be a different kind entirely.
 		this.db
-			.prepare("INSERT INTO job_runs (job_id, kind, started_at, finished_at, status, detail) VALUES ((SELECT id FROM jobs WHERE id = ?), ?, ?, ?, ?, ?)")
+			.prepare("INSERT INTO job_runs (job_id, kind, started_at, finished_at, status, detail) VALUES ((SELECT id FROM jobs WHERE id = ? AND locked_by IS NOT NULL), ?, ?, ?, ?, ?)")
 			.run(job.id, job.kind, startedAt, this.clock(), status, detail ?? null);
 	}
 
 	/**
 	 * Release the claim. A job that failed keeps its `next_run_at` (the plan's rule: a failed sweep is
 	 * retried on the next tick, not rescheduled into next week); a job that ran waits out `RESCHEDULE_MS`.
+	 * Only a row still carrying our claim is touched — see `record` for the row that took a freed id.
 	 */
 	release(id: number, { failed }: { failed: boolean }): void {
 		const at = this.clock();
+		// The same rule on the reschedule: releasing a claim this process no longer holds would stamp the
+		// row that took the freed id an hour out — which is how a finished re-embed deferred the very sweep it
+		// had just queued (T45).
 		this.db
-			.prepare("UPDATE jobs SET locked_by = NULL, locked_at = NULL, next_run_at = ? WHERE id = ?")
+			.prepare("UPDATE jobs SET locked_by = NULL, locked_at = NULL, next_run_at = ? WHERE id = ? AND locked_by IS NOT NULL")
 			.run(failed ? at : new Date(Date.parse(at) + RESCHEDULE_MS).toISOString(), id);
 	}
 

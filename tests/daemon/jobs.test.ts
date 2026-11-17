@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { JobQueue, runDueJobs, startJobLoop } from "../../src/daemon/jobs.ts";
-import { openTestDb } from "../helpers/memory-db.ts";
+import { openTestDb, wordEmbedder } from "../helpers/memory-db.ts";
 import { tempConnectedVault } from "../helpers/secret-vault.ts";
 
 const CLOCK = "2026-10-11T09:00:00.000Z";
@@ -146,6 +146,53 @@ describe("the job queue", () => {
 			jobs: [],
 			jobRuns: [{ kind: "memory.reembed", status: "ok", startedAt: CLOCK, finishedAt: CLOCK, detail: "re-embedded 4" }],
 		});
+		db.close();
+	});
+
+	it("a job that closed its own row is not rescheduled by the release that follows it", async () => {
+		const db = openTestDb();
+		const store = new MemoryStore(db, wordEmbedder());
+		const queue = queueOn(db);
+		store.queueJob("memory.reembed", { runAt: CLOCK });
+		const job = queue.dueNow()[0]!;
+		queue.claim(job.id, "4242");
+
+		// The handler work as `src/daemon/index.ts:472` does it: a clean index closes the row the call came
+		// from, and the sweep the re-embed just queued goes in behind it.
+		await store.reembed({ jobId: job.id });
+		store.queueJob("memory.consolidate", { runAt: CLOCK });
+		// `jobs.id` is a rowid alias with no AUTOINCREMENT (src/memory/db.ts:46), so SQLite hands the freed id
+		// straight to the next insert — the row sitting on it is now a different kind entirely.
+		expect((db.prepare("SELECT kind FROM jobs WHERE id = ?").get(job.id) as { kind: string }).kind).toBe("memory.consolidate");
+
+		queue.release(job.id, { failed: false });
+
+		// The sweep belongs to the idle moment the re-embed had, not to an hour from now.
+		expect((db.prepare("SELECT next_run_at FROM jobs WHERE id = ?").get(job.id) as { next_run_at: string }).next_run_at).toBe(CLOCK);
+		expect(queue.dueNow().map((row) => row.kind)).toEqual(["memory.consolidate"]);
+		db.close();
+	});
+
+	it("an attempt does not link itself to a row that took the freed id", async () => {
+		const db = openTestDb();
+		const store = new MemoryStore(db, wordEmbedder());
+		const queue = queueOn(db);
+		store.queueJob("memory.reembed", { runAt: CLOCK });
+		const job = queue.dueNow()[0]!;
+		queue.claim(job.id, "4242");
+		await store.reembed({ jobId: job.id });
+		store.queueJob("memory.consolidate", { runAt: CLOCK });
+		expect((db.prepare("SELECT kind FROM jobs WHERE id = ?").get(job.id) as { kind: string }).kind).toBe("memory.consolidate");
+
+		queue.record(job, CLOCK, "ok", "re-embedded 1");
+
+		// The record keeps its own copy of the kind, so an attempt that lost its row is still readable; what
+		// it must not do is claim the scheduler tab that a re-embed ran on the consolidate row.
+		expect((db.prepare("SELECT job_id FROM job_runs").get() as { job_id: number | null }).job_id).toBeNull();
+		// The other arm: a row the handler left open still carries the claim, and the attempt does link to it.
+		queue.claim(job.id, "4242");
+		queue.record({ id: job.id, kind: "memory.consolidate", payload: {} }, CLOCK, "ok", "nothing to merge");
+		expect((db.prepare("SELECT job_id FROM job_runs ORDER BY id DESC LIMIT 1").get() as { job_id: number | null }).job_id).toBe(job.id);
 		db.close();
 	});
 
