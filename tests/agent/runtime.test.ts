@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { createFlypiSession, FlypiConfigError, resolveConfiguredModel } from "../../src/agent/runtime.ts";
 import { flypiPaths } from "../../src/agent/paths.ts";
-import { createTempFlypiRoot, withProviderConfig } from "../helpers/flypi-root.ts";
+import { agentDirEnv, createTempFlypiRoot, withProviderConfig } from "../helpers/flypi-root.ts";
+import { createStubModel } from "../helpers/stub-model.ts";
 
 /** A checkout configured against a provider that is never contacted: resolution must not make network calls. */
 function configuredRoot(settings: Record<string, unknown> = { defaultProvider: "lmstudio", defaultModel: "qwen3" }): string {
@@ -160,6 +161,39 @@ describe("createFlypiSession: the shared wiring the server and probe use", () =>
 			expect(created.session.model).toMatchObject({ provider: "lmstudio", id: "qwen3" });
 		} finally {
 			created.session.dispose();
+		}
+	});
+
+	// The pin, asserted where it is written: pi's `getAgentDir()` takes `$PI_CODING_AGENT_DIR` at call time, so
+	// the variable — not just the paths flypi passes — has to name this root. Unset before the call, because
+	// another row in this worker may have left its own root there.
+	it("pins PI_CODING_AGENT_DIR to the root's own agent dir", async () => {
+		const root = configuredRoot();
+		const env = agentDirEnv(undefined);
+		try {
+			const stub = await createStubModel();
+			const created = await createFlypiSession({ root, modelRuntime: stub.modelRuntime, model: stub.model });
+			try {
+				expect(process.env.PI_CODING_AGENT_DIR).toBe(flypiPaths(root).agentDir);
+			} finally {
+				created.session.dispose();
+			}
+		} finally {
+			env.restore();
+		}
+	});
+
+	// …and a value that is not this root's is refused rather than rewritten: that value is somebody's decision,
+	// and it is exactly the one this variable must not carry (docs/risks.md risk 1).
+	it("refuses a foreign PI_CODING_AGENT_DIR before it builds anything", async () => {
+		const root = configuredRoot();
+		const env = agentDirEnv(join("/tmp", "foreign-agent"));
+		try {
+			await expect(createFlypiSession({ root })).rejects.toThrow(
+				/PI_CODING_AGENT_DIR is set to \/tmp\/foreign-agent; flypi needs .*\.flypi\/agent/,
+			);
+		} finally {
+			env.restore();
 		}
 	});
 });

@@ -14,7 +14,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { assertFlypiOwned, flypiPaths, type FlypiPaths } from "./paths.ts";
+import { forceFlypiAgentDir, flypiPaths, type FlypiPaths } from "./paths.ts";
 import { mcpCredentials, usesMcpOAuth } from "./pi-mcp.ts";
 import { importEnvCredential, readAuth, resolveCredential } from "./onboarding.ts";
 import { memoryConfig } from "../memory/config.ts";
@@ -111,7 +111,7 @@ export async function createFlypiSession(options: {
 	memoryRecall?: boolean;
 } = {}): Promise<{ session: FlypiSession; paths: FlypiPaths; modelRuntime: ModelRuntime }> {
 	const paths = flypiPaths(options.root ?? process.cwd());
-	assertFlypiOwned(paths);
+	forceFlypiAgentDir(paths);
 
 	const modelRuntime =
 		options.modelRuntime ??
@@ -127,9 +127,10 @@ export async function createFlypiSession(options: {
 	const resuming = sessionManager.buildSessionContext().messages.length > 0;
 	const model = options.model ?? (resuming ? undefined : resolveConfiguredModel(paths, modelRuntime, options.env));
 
-	// MCP is not part of an SDK session unless the host asks for it (docs/sdk.md), and pi's own MCP
-	// config loader reads `$PI_CODING_AGENT_DIR` (else `~/.pi/agent`) rather than the `agentDir` passed
-	// below — so both the extension and where it reads from are flypi's job (docs/risks.md risk 1).
+	// MCP is not part of an SDK session unless the host asks for it (docs/sdk.md). pi's own MCP config loader takes
+	// `$PI_CODING_AGENT_DIR` (else `~/.pi/agent`), and the pin taken at the top of this function forces it to this
+	// root, so that default and the `agentDir` passed below name the same file by construction — the config is
+	// still read and handed over explicitly, because which servers exist is the half flypi owns (risk 1).
 	const mcpConfig = options.mcpConfig ?? readFlypiMcpConfig(paths);
 	// pi keeps an OAuth server's tokens in `mcp-auth.json` in *its* agent dir, which for flypi would be the
 	// host `~/.pi/agent` — the same config bleed as the config file itself (risk 1). Only built when an entry

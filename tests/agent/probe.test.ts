@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { flypiPaths } from "../../src/agent/paths.ts";
+import { childEnv } from "../helpers/flypi-root.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 const probe = join(root, "scripts", "probe.ts");
@@ -15,7 +16,9 @@ function runProbe(args: string[], env: Record<string, string> = {}) {
 		const stdout = execFileSync(process.execPath, [tsx, probe, ...args], {
 			cwd: root,
 			encoding: "utf8",
-			env: { ...process.env, LMSTUDIO_API_KEY: "", ...env },
+			// The probe runs against a root of its own, so the parent's pinned `PI_CODING_AGENT_DIR` is not its
+			// answer and it would refuse the value rather than resolve its own root.
+			env: childEnv({ LMSTUDIO_API_KEY: "", ...env }),
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		return { stdout, stderr: "", code: 0 };

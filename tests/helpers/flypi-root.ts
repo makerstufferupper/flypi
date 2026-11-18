@@ -32,6 +32,37 @@ export function hostPiRoot(prefix = "flypi-hostpi-"): { root: string; restore():
 	};
 }
 
+/**
+ * Set `PI_CODING_AGENT_DIR` for the duration of one row and hand back the state the process had before
+ * (`value`): the pin is process-global and vitest shares `process.env` between the files in a worker, so a row
+ * that leaves it set makes the next row in that worker answer for a value it never set. `undefined` means unset.
+ */
+export function agentDirEnv(value: string | undefined): { value: string | undefined; restore(): void } {
+	const saved = process.env.PI_CODING_AGENT_DIR;
+	if (value === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = value;
+	return {
+		value: saved,
+		restore: () => {
+			if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = saved;
+		},
+	};
+}
+
+/**
+ * The env for a child process that owns a different flypi root: flypi pins `PI_CODING_AGENT_DIR` for its own
+ * root, so whatever the parent's last session left there is not this child's answer — and a child cannot tell
+ * that value from an operator's, so it refuses it (docs/risks.md risk 1). The same narrowing the suite already
+ * does for the sibling variable: `noRootEnv()` in tests/daemon/cli.test.ts, `LMSTUDIO_API_KEY: ""` in
+ * tests/agent/probe.test.ts.
+ */
+export function childEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+	const env = { ...process.env };
+	delete env.PI_CODING_AGENT_DIR;
+	return { ...env, ...extra };
+}
+
 export function sessionFiles(root: string): string[] {
 	try {
 		return readdirSync(join(root, ".flypi", "sessions"));

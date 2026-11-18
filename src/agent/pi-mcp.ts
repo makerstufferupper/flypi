@@ -78,8 +78,9 @@ export function loadPiMcpRuntime(): Promise<PiMcpRuntime> {
 
 /**
  * The credential store, pointed at flypi's own agent dir. pi's default is `mcp-auth.json` in *its* agent dir
- * (`$PI_CODING_AGENT_DIR`, else `~/.pi/agent`), which is the config bleed this repo refuses everywhere else
- * (risk 1) — so every consumer passes this: a session's connections, the status probe, and a sign-in.
+ * (`$PI_CODING_AGENT_DIR`, else `~/.pi/agent`) — and flypi pins that variable to its own agent dir at every
+ * entry point, so the two now coincide. Passing it explicitly stays as belt-and-braces, and every consumer does:
+ * a session's connections, the status probe, and a sign-in (risk 1).
  */
 export async function mcpCredentials(paths: FlypiPaths): Promise<PiMcpCredentials & { tokens(name: string, serverUrl: string): { access_token?: string } | undefined }> {
 	const pi = await loadPiMcpRuntime();

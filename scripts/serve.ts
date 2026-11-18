@@ -8,7 +8,7 @@
  */
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { flypiPaths } from "../src/agent/paths.ts";
+import { flypiPaths, forceFlypiAgentDir } from "../src/agent/paths.ts";
 import { memoryEndpoint } from "../src/agent/config-files.ts";
 import { memoryConfig } from "../src/memory/config.ts";
 import { openMemory } from "../src/memory/open.ts";
@@ -27,6 +27,9 @@ const flagValue = (name: string): string | undefined => {
 };
 
 const paths = flypiPaths(resolve(flagValue("--root") ?? process.cwd()));
+// The host-`~/.pi` guard and the pin, before this process's first write (docs/risks.md risk 1): served straight
+// by `npm run serve`, this entry point reached no `startFlypiDaemon`, so it had neither.
+forceFlypiAgentDir(paths);
 // The backend's own database, and this process is its only writer (docs/risks.md risk 3): it is the process
 // that runs pi sessions, so it is the process that knows whether a turn was in flight. The memory store is
 // not opened here at all — this half has no business with it, and the agent reaches memory over MCP.

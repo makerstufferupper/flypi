@@ -109,3 +109,23 @@ export function assertFlypiOwned(paths: FlypiPaths): void {
 		}
 	}
 }
+
+/** The last value flypi itself wrote, so a second root in one process is not mistaken for an operator's. */
+let flypiAgentDirEnv: string | undefined;
+
+/**
+ * Pin pi's implicit agent dir to flypi's explicit one: pi's `getAgentDir()` (and every extension that calls it
+ * for settings, custom agents, per-agent memory or transcripts) takes `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`.
+ * An operator's own value that is not this root's agent dir is refused rather than overwritten — that value is a
+ * decision, and it is exactly the one this variable must not carry. The path invariant is checked first, so a root
+ * that is itself wrong reports the root and not the variable (docs/risks.md risk 1).
+ */
+export function forceFlypiAgentDir(paths: FlypiPaths): void {
+	assertFlypiOwned(paths);
+	const current = process.env.PI_CODING_AGENT_DIR;
+	if (current !== undefined && current !== "" && current !== paths.agentDir && current !== flypiAgentDirEnv) {
+		throw new Error(`PI_CODING_AGENT_DIR is set to ${current}; flypi needs ${paths.agentDir} — unset it or point it there`);
+	}
+	process.env.PI_CODING_AGENT_DIR = paths.agentDir;
+	flypiAgentDirEnv = paths.agentDir;
+}

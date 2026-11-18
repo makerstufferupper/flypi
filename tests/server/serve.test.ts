@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
+import { childEnv } from "../helpers/flypi-root.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 const cli = join(root, "node_modules", "tsx", "dist", "cli.mjs");
@@ -16,6 +17,10 @@ describe("npm run serve", () => {
 	it("prints a connect URL and answers a prompt over it", { timeout: 30_000 }, async () => {
 		const child = spawn(process.execPath, [cli, serve, "--port", "0", "--token", "let-me-in"], {
 			cwd: root,
+			// The child owns this checkout as *its* root, so the parent's `PI_CODING_AGENT_DIR` — whatever root a
+			// session in this worker pinned it to — is not its answer, and it would refuse the value rather than
+			// resolve its own.
+			env: childEnv(),
 			stdio: ["ignore", "pipe", "inherit"],
 		});
 		let output = "";

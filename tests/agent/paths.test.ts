@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DAEMON_FILE, assertFlypiOwned, flypiPaths, healthUrl, memoryMcpUrl } from "../../src/agent/paths.ts";
-import { hostPiRoot } from "../helpers/flypi-root.ts";
+import { DAEMON_FILE, assertFlypiOwned, flypiPaths, forceFlypiAgentDir, healthUrl, memoryMcpUrl } from "../../src/agent/paths.ts";
+import { agentDirEnv, hostPiRoot } from "../helpers/flypi-root.ts";
 
 describe("flypiPaths", () => {
 	it("puts every flypi path under .flypi/", () => {
@@ -138,6 +138,98 @@ describe("assertFlypiOwned (risk 1: never touch host ~/.pi)", () => {
 		} finally {
 			if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = saved;
+		}
+	});
+});
+
+// The guard only refuses what every caller can survive; this is the strict half, and it is the one that closes
+// the hole the guard leaves open on purpose (decision 2): unset is not refused, it is replaced.
+describe("forceFlypiAgentDir (the pin: pi's implicit agent dir is flypi's)", () => {
+	// An operator's own value is a decision, and the message has to carry both halves of it: what is set and
+	// what flypi needs. Matched on the whole sentence (decision 13) — `is set to <x>` is what makes it fixable.
+	it("refuses another root's agent dir, naming the value and the directory it needs", () => {
+		const env = agentDirEnv(join("/other", ".flypi", "agent"));
+		try {
+			expect(() => forceFlypiAgentDir(flypiPaths("/repo"))).toThrow(
+				/PI_CODING_AGENT_DIR is set to \/other\/\.flypi\/agent; flypi needs \/repo\/\.flypi\/agent — unset it or point it there/,
+			);
+			expect(process.env.PI_CODING_AGENT_DIR).toBe(join("/other", ".flypi", "agent")); // refused, not overwritten
+		} finally {
+			env.restore();
+		}
+	});
+
+	// The guard accepts this value (absolute, nowhere near host `~/.pi`), so strict equality with this root's
+	// agent dir lives here — which is what refuses a wrong directory *under* the root it was asked for.
+	it("refuses a value under <root>/.flypi that is not the agent dir", () => {
+		const env = agentDirEnv(join("/repo", ".flypi", "elsewhere"));
+		try {
+			expect(() => forceFlypiAgentDir(flypiPaths("/repo"))).toThrow(/PI_CODING_AGENT_DIR is set to \/repo\/\.flypi\/elsewhere/);
+		} finally {
+			env.restore();
+		}
+	});
+
+	// The order inside the helper is load-bearing, not style: the root invariant outranks the environment
+	// invariant, so a root that is itself wrong reports the root even when the variable is foreign too. Without
+	// the value planted here nothing distinguishes the two statements — measured at this commit, swapping the two
+	// statements leaves `npm test` green, because every other row's value is one flypi wrote itself.
+	it("reports the root, not the variable, when both are wrong", () => {
+		const host = hostPiRoot(); // a root inside host `~/.pi`: check 1's case
+		const env = agentDirEnv("/tmp/foreign-agent"); // and a variable the helper's own check would refuse
+		try {
+			expect(() => forceFlypiAgentDir(flypiPaths(host.root))).toThrow(/host pi directory/);
+		} finally {
+			env.restore();
+			host.restore();
+		}
+	});
+
+	// What every process in the suite runs with today, and the case the assignment exists for: replaced, not refused.
+	it("replaces a PI_CODING_AGENT_DIR that is unset", () => {
+		const env = agentDirEnv(undefined);
+		try {
+			forceFlypiAgentDir(flypiPaths("/repo"));
+			expect(process.env.PI_CODING_AGENT_DIR).toBe("/repo/.flypi/agent");
+		} finally {
+			env.restore();
+		}
+	});
+
+	// Empty is unset to pi as well (`if (envDir)` in dist/config.js), so it is overwritten rather than refused.
+	it("replaces a PI_CODING_AGENT_DIR that is empty", () => {
+		const env = agentDirEnv("");
+		try {
+			forceFlypiAgentDir(flypiPaths("/repo"));
+			expect(process.env.PI_CODING_AGENT_DIR).toBe("/repo/.flypi/agent");
+		} finally {
+			env.restore();
+		}
+	});
+
+	// The daemon's own state after its first force, and what a restart of the same root re-reads.
+	it("keeps a PI_CODING_AGENT_DIR that already names this root's agent dir", () => {
+		const env = agentDirEnv("/repo/.flypi/agent");
+		try {
+			expect(() => forceFlypiAgentDir(flypiPaths("/repo"))).not.toThrow();
+			expect(process.env.PI_CODING_AGENT_DIR).toBe("/repo/.flypi/agent");
+		} finally {
+			env.restore();
+		}
+	});
+
+	// Two roots in one process is what the module-level `flypiAgentDirEnv` exists for: `process.env` is global
+	// while flypi's own pin is not this root's any more, so the second root must not meet the first as though an
+	// operator had written it (decision 4 — vitest reuses a worker across files, and a tools process visits two).
+	it("gives each root forced in one process its own value", () => {
+		const env = agentDirEnv(undefined);
+		try {
+			forceFlypiAgentDir(flypiPaths("/repo-a"));
+			expect(process.env.PI_CODING_AGENT_DIR).toBe("/repo-a/.flypi/agent");
+			forceFlypiAgentDir(flypiPaths("/repo-b"));
+			expect(process.env.PI_CODING_AGENT_DIR).toBe("/repo-b/.flypi/agent");
+		} finally {
+			env.restore();
 		}
 	});
 });

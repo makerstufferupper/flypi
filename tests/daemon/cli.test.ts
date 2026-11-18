@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DAEMON_FILE } from "../../src/agent/paths.ts";
+import { childEnv } from "../helpers/flypi-root.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
 const cli = join(repo, "scripts", "flypi.mjs");
@@ -26,7 +27,9 @@ function tempRoot(): string {
 }
 
 function flypi(root: string, ...args: string[]) {
-	const result = spawnSync(process.execPath, [cli, ...args], { cwd: root, env: { ...process.env, FLYPI_ROOT: root }, encoding: "utf8", timeout: 60_000 });
+	// `childEnv`: the root this CLI owns is not the one the parent's last session pinned, and a flypi process
+	// refuses a `PI_CODING_AGENT_DIR` that names somebody else's directory rather than guessing.
+	const result = spawnSync(process.execPath, [cli, ...args], { cwd: root, env: childEnv({ FLYPI_ROOT: root }), encoding: "utf8", timeout: 60_000 });
 	return { code: result.status, out: `${result.stdout ?? ""}${result.stderr ?? ""}` };
 }
 
@@ -43,16 +46,17 @@ async function freePort(): Promise<number> {
 	return port;
 }
 
-/** The env without FLYPI_ROOT, so a test can tell the default from the override. */
+/** The env without FLYPI_ROOT, so a test can tell the default from the override — and without the parent's
+ *  pinned `PI_CODING_AGENT_DIR`, which belongs to a root these children do not own. */
 const noRootEnv = () => {
-	const env = { ...process.env };
+	const env = childEnv();
 	delete env.FLYPI_ROOT;
 	return env;
 };
 
 /** The same shape as `flypi` above, for the cases that must control cwd and env themselves. */
 function sh(script: string, cwd: string, env: NodeJS.ProcessEnv, ...args: string[]) {
-	const result = spawnSync(process.execPath, [script, ...args], { cwd, env, encoding: "utf8", timeout: 30_000 });
+	const result = spawnSync(process.execPath, [script, ...args], { cwd, env: childEnv(env), encoding: "utf8", timeout: 30_000 });
 	return { code: result.status, out: `${result.stdout ?? ""}${result.stderr ?? ""}` };
 }
 
@@ -212,7 +216,9 @@ describe("the daemon CLI", () => {
 		const port = await freePort();
 		const child = spawn(process.execPath, [cli, "start", "--foreground", "--port", String(port), "--host", "127.0.0.1"], {
 			cwd: root,
-			env: { ...process.env, FLYPI_ROOT: root },
+			// `start --foreground` spawns `scripts/serve-daemon.ts` with the inherited env, and that daemon owns
+			// this root, not the one the parent's last session pinned.
+			env: childEnv({ FLYPI_ROOT: root }),
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		const out: string[] = [];

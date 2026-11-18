@@ -14,7 +14,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { assertFlypiOwned, DAEMON_FILE, memoryMcpUrl, type FlypiPaths } from "../agent/paths.ts";
+import { DAEMON_FILE, forceFlypiAgentDir, memoryMcpUrl, type FlypiPaths } from "../agent/paths.ts";
 import { applyConfigEdits, ensureAgentConfig, ensureMemoryEntry, memoryEndpoint } from "../agent/config-files.ts";
 import { applyPackageEdits, autoExtensions, checkPackageUpdates, readPackageCheck, writePackageCheck } from "../agent/packages.ts";
 import { CONSOLIDATE_JOB, consolidate, sweepDue } from "../memory/consolidate.ts";
@@ -98,8 +98,9 @@ export function readDaemonInfo(root: string): DaemonInfo | null {
 
 export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHandle> {
 	// This process writes `daemon.json`, `mcp.json`, the empty config pair and the update stamps, and some of
-	// those writers take a bare root, so the host-`~/.pi` guard (docs/risks.md risk 1) runs here, once, first.
-	assertFlypiOwned(options.paths);
+	// those writers take a bare root, so the host-`~/.pi` guard (docs/risks.md risk 1) runs here, once, first —
+	// and with it the pin, so nothing later in this process reaches pi's default agent dir.
+	forceFlypiAgentDir(options.paths);
 	const log = options.log ?? ((line: string) => console.log(line));
 	// Named once: it goes in the health page, the pid file and the server's own version banner, and a
 	// daemon that reported three different versions would be a bug nobody could see.
