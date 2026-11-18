@@ -37,7 +37,12 @@ export function hostPiRoot(prefix = "flypi-hostpi-"): { root: string; restore():
  * halves of risk 1 are read through it: `assertFlypiOwned` asks where the host `~/.pi` is, and pi's
  * `getAgentDir()` falls back to `homedir()/.pi/agent` in exactly the process where flypi's pin did not land.
  * So a row that wants to watch the host agent dir has to be handed one rather than point at the operator's.
- * `USERPROFILE` is what Windows reads (as in `hostPiRoot` above). `undefined` means unset.
+ * `USERPROFILE` is what Windows reads (as in `hostPiRoot` above).
+ *
+ * `undefined` means unset, which is a footgun rather than a neutral input: with `HOME` deleted `os.homedir()` falls
+ * back to the operator's *real* home (verified on darwin — it printed the real home after `delete process.env.HOME`),
+ * so a caller asking for "no host" gets the opposite of what it asked for. No caller passes `undefined` today; the one
+ * caller, `plantedHome` in tests/agent/agent-dir-isolation.test.ts, always passes a planted home.
  */
 export function homeEnv(value: string | undefined): { value: string | undefined; restore(): void } {
 	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };

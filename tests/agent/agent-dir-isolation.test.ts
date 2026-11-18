@@ -86,6 +86,8 @@ describe("agent-dir isolation (pi's defaults resolve inside the root, not in ~/.
 				// A subagent's child session: no session dir, so pi answers `<getAgentDir()>/sessions/<encoded cwd>`.
 				const child = SessionManager.create(paths.root);
 				child.appendMessage({ role: "user", content: "a subagent prompt", timestamp: 0 });
+				// Host first: a wrong-dir pin fails the assertions below inside the root, so this row's namesake runs at all.
+				expect(walk(host.home)).toEqual(before);
 				// Not a null result: a transcript really was written, and it really is inside the declared agent dir.
 				// The resolved path is the expect message, so a leak names the file it wrote where it must not write.
 				const file = child.getSessionFile()!;
@@ -95,7 +97,6 @@ describe("agent-dir isolation (pi's defaults resolve inside the root, not in ~/.
 				created.session.dispose();
 			}
 			expect(existsSync(join(host.home, ".pi", "agent", "extensions", "evil.ts"))).toBe(true);
-			expect(walk(host.home)).toEqual(before);
 		} finally {
 			env.restore();
 			host.restore();
@@ -107,6 +108,8 @@ describe("agent-dir isolation (pi's defaults resolve inside the root, not in ~/.
 	// `getDefaultSessionDirPath(cwd)`, which follows `getAgentDir()`), so it stays green in the exact case that
 	// writes into the host. The directory is the half that decides, and it is compared against flypi's declared
 	// `paths.agentDir` — not against `getAgentDir()`, which would agree with any value the pin wrote.
+	// R13: pinning `<agentDir>/sessions` buys isolation, not visibility — the UI lists `paths.sessionsDir`
+	// (`session-registry.ts:254`) and refuses anything outside it (`:312-313`), so T46.2 owns a transcript landing here.
 	it("answers pi's own default session dir with the root, and writes the transcript there", () => {
 		const host = plantedHome();
 		const env = agentDirEnv(undefined);
