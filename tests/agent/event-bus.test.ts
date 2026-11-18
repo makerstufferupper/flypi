@@ -30,7 +30,14 @@ interface ProbeEvent {
 }
 
 /**
- * An extension flypi has never heard of, on channels of its own so rows cannot hear each other.
+ * An extension flypi has never heard of, on channels namespaced per row.
+ *
+ * The namespaces are insurance, not the thing that keeps the rows apart. Measured with both rows on identical
+ * channels, all three rows still pass: row 1 finishes its assertions and disposes before row 2 starts, and
+ * `dispose()` removes that probe's subscription from the shared bus (`AgentSession.dispose()` →
+ * `runner.invalidate()`, core/agent-session.js:1022, core/extensions/loader.js:144-153). What stops a row hearing
+ * another is the ordering plus that teardown, not the channel name — so the rows stay independent only as long as
+ * they do not overlap; never make them concurrent.
  *
  * Both emits are outside a handler: the first runs from the extension's *own* bus subscription, the second
  * from a timer with nothing in flight at all. Neither is a lifecycle event pi would have delivered, which is
@@ -64,15 +71,21 @@ function listen(channel: string): { events: ProbeEvent[]; stop(): void } {
 	return { events, stop };
 }
 
+/** Every wait below gives up after this, and the assertion that reports it names it. */
+const busWaitMs = 3000;
+
 /**
- * Wait for the bus to say what it was going to say. pi runs a handler inside an async wrapper
- * (`core/event-bus.js`), so delivery is not synchronous even though nothing here awaits anything. On the
- * timeout this returns normally and the `expect` below reports what did arrive — an empty list, which is the
- * answer a loader with a bus of its own gives — rather than a timeout standing in for it.
+ * Wait for the bus to say what it was going to say, and return the message to report with if it stayed silent.
+ * pi runs a handler inside an async wrapper (`core/event-bus.js`), so delivery is not synchronous even though
+ * nothing here awaits anything. On the timeout this returns normally and the `expect` below reports what did
+ * arrive — an empty list, which is the answer a loader with a bus of its own gives — rather than a timeout
+ * standing in for it. The returned message is what keeps those two distinguishable in the log: without it a slow
+ * machine's red reads as a bare `expected [] to deeply equal …`, the same line a wrong payload produces.
  */
-async function until(ready: () => boolean, timeoutMs = 3000): Promise<void> {
+async function until(label: string, ready: () => boolean, timeoutMs = busWaitMs): Promise<string> {
 	const deadline = Date.now() + timeoutMs;
 	while (!ready() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+	return `no ${label} within ${timeoutMs}ms`;
 }
 
 describe("one event bus per process", () => {
@@ -87,13 +100,13 @@ describe("one event bus per process", () => {
 		const created = await createFlypiSession({ root, modelRuntime: stub.modelRuntime, model: stub.model });
 		try {
 			// The timer emit: nothing pi emitted, so nothing else would have put a message on this bus.
-			await until(() => loaded.events.length > 0);
-			expect(loaded.events).toEqual([{ from: "one" }]);
+			const loadedWait = await until('"flypi:test/single/loaded" event', () => loaded.events.length > 0);
+			expect(loaded.events, loadedWait).toEqual([{ from: "one" }]);
 			// And back the other way: flypi emits, the extension's subscription callback answers. One bus, both
 			// directions; a loader with a bus of its own answers to nobody.
 			flypiEventBus().emit("flypi:test/single/ping", { n: 1 });
-			await until(() => pong.events.length > 0);
-			expect(pong.events).toEqual([{ from: "one", echo: { n: 1 } }]);
+			const pongWait = await until('"flypi:test/single/pong" reply', () => pong.events.length > 0);
+			expect(pong.events, pongWait).toEqual([{ from: "one", echo: { n: 1 } }]);
 		} finally {
 			loaded.stop();
 			pong.stop();
@@ -116,11 +129,11 @@ describe("one event bus per process", () => {
 		const first = await createFlypiSession({ root: rootA, modelRuntime: stub.modelRuntime, model: stub.model });
 		const second = await createFlypiSession({ root: rootB, modelRuntime: stub.modelRuntime, model: stub.model });
 		try {
-			await until(() => loaded.events.length >= 2);
-			expect(loaded.events.map((event) => event.from).sort()).toEqual(["first", "second"]);
+			const loadedWait = await until('two "flypi:test/pair/loaded" events', () => loaded.events.length >= 2);
+			expect(loaded.events.map((event) => event.from).sort(), loadedWait).toEqual(["first", "second"]);
 			flypiEventBus().emit("flypi:test/pair/ping", { n: 2 });
-			await until(() => pong.events.length >= 2);
-			expect(pong.events.map((event) => event.from).sort()).toEqual(["first", "second"]);
+			const pongWait = await until('two "flypi:test/pair/pong" replies', () => pong.events.length >= 2);
+			expect(pong.events.map((event) => event.from).sort(), pongWait).toEqual(["first", "second"]);
 		} finally {
 			loaded.stop();
 			pong.stop();
