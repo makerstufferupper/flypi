@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 /** `.flypi/daemon.json`, relative to a root. Owned here so a plain-.mjs caller and the daemon cannot
  *  disagree; tests/daemon/daemon-file.test.ts pins the CLI's copy of the spelling. */
@@ -94,5 +94,16 @@ export function assertFlypiOwned(paths: FlypiPaths): void {
 	}
 	if (paths.agentDir !== join(paths.root, ".flypi", "agent")) {
 		throw new Error(`agentDir must be .flypi/agent, got ${paths.agentDir}`);
+	}
+	// pi's own `getAgentDir()` takes `$PI_CODING_AGENT_DIR` at call time, so an exported value re-points code
+	// flypi never passes a path to (docs/risks.md risk 1). Empty means unset to pi too (`if (envDir)`).
+	const env = process.env.PI_CODING_AGENT_DIR;
+	if (env !== undefined && env !== "") {
+		const target = resolve(env === "~" || env.startsWith("~/") ? join(homedir(), env.slice(1)) : env);
+		if (!isAbsolute(env) || target === host || target.startsWith(host + "/")) {
+			throw new Error(
+				`PI_CODING_AGENT_DIR must name a flypi agent dir, got ${env} — unset it or point it at ${paths.agentDir}`,
+			);
+		}
 	}
 }
