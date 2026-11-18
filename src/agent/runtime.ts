@@ -14,6 +14,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { flypiEventBus } from "./bus.ts";
 import { forceFlypiAgentDir, flypiPaths, type FlypiPaths } from "./paths.ts";
 import { mcpCredentials, usesMcpOAuth } from "./pi-mcp.ts";
 import { importEnvCredential, readAuth, resolveCredential } from "./onboarding.ts";
@@ -160,6 +161,10 @@ export async function createFlypiSession(options: {
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: paths.root,
 		agentDir: paths.agentDir,
+		// Without this pi mints a bus of its own for this loader alone, and an extension that emits outside a
+		// handler reaches only it — in a daemon with several conversations, no listener anywhere would hear it.
+		// One bus per process instead (src/agent/bus.ts says why and what it fixes).
+		eventBus: flypiEventBus(),
 		// The loader, not an extension: these say the same thing on every turn, and a per-turn
 		// `before_agent_start` handler could only repeat them. The memory sentence used to sit at the top of
 		// the recalled block; there it rode in the newest message, the one region a prompt cache re-pays at
