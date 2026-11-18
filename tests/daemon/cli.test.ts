@@ -267,6 +267,9 @@ describe("the daemon CLI", () => {
 			);
 			expect(run.code, run.out).not.toBe(0);
 			expect(run.out).toMatch(/PI_CODING_AGENT_DIR is set to \/tmp\/foreign-agent/);
+			// …and in one line, the way `scripts/serve.ts` says it: `flypi start` prints this log to the operator, so
+			// a tsx stack from this entry point is what a human reads for a mistake the message already explains.
+			expect(run.out, run.out).not.toMatch(/\n\s+at /);
 			expect(existsSync(join(root, ".flypi", "memory", "flypi.db")), run.out).toBe(false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });

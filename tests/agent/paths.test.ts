@@ -170,6 +170,21 @@ describe("forceFlypiAgentDir (the pin: pi's implicit agent dir is flypi's)", () 
 		}
 	});
 
+	// The strict-equality rule itself, which no row above pins: every one of them sets a value after some earlier row
+	// already forced this root, so decision 4's escape (`flypiAgentDirEnv`) accepts it — measured, comparing against
+	// `paths.sessionsDir` instead of `paths.agentDir` left `npm test` green. `sessionsDir` is a value flypi can never
+	// have written into this variable, so the escape cannot rescue the mutation and this row dies under it.
+	it("refuses a PI_CODING_AGENT_DIR that names another directory of the same root", () => {
+		const env = agentDirEnv(flypiPaths("/repo").sessionsDir);
+		try {
+			expect(() => forceFlypiAgentDir(flypiPaths("/repo"))).toThrow(
+				/PI_CODING_AGENT_DIR is set to \/repo\/\.flypi\/sessions; flypi needs \/repo\/\.flypi\/agent — unset it or point it there/,
+			);
+		} finally {
+			env.restore();
+		}
+	});
+
 	// The order inside the helper is load-bearing, not style: the root invariant outranks the environment
 	// invariant, so a root that is itself wrong reports the root even when the variable is foreign too. Without
 	// the value planted here nothing distinguishes the two statements — measured at this commit, swapping the two

@@ -37,7 +37,14 @@ const paths = flypiPaths(resolve(flagValue("--root") ?? process.cwd()));
 // `PI_CODING_AGENT_DIR` from inside `startFlypiDaemon` is therefore a refusal that already did the work. The
 // call is idempotent for a root, so the one `startFlypiDaemon` makes stays — and covers a caller that gets here
 // some other way. docs/risks.md risk 1.
-forceFlypiAgentDir(paths);
+try {
+	// One line rather than a tsx stack, like the sibling `scripts/serve.ts`: `scripts/flypi.mjs` prints the tail of
+	// this process's log to the operator, and a stack is what they would read for a mistake the message explains.
+	forceFlypiAgentDir(paths);
+} catch (error) {
+	console.error((error as Error).message);
+	process.exit(1);
+}
 const config = memoryConfig(paths);
 if (flagValue("--embeddings")) config.embeddings.provider = flagValue("--embeddings") === "none" ? "none" : "transformers";
 if (flagValue("--judge")) config.judge.provider = flagValue("--judge") === "none" ? "none" : "transformers";
