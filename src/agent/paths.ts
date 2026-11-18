@@ -48,8 +48,9 @@ export interface FlypiPaths {
 	mcpLogPath: string;
 	/**
 	 * pi's MCP OAuth state (client registration, access/refresh tokens, the pending PKCE verifier), keyed by
-	 * server name and URL. Named here because pi's default is `<agent-dir>/mcp-auth.json` of *its* agent dir,
-	 * which for flypi would be the host `~/.pi/agent` (risk 1).
+	 * server name and URL. Named here because pi's default is `<agent-dir>/mcp-auth.json` of *its* agent dir; after
+	 * `forceFlypiAgentDir` took hold that is exactly this file, so naming it is belt-and-braces for a process that
+	 * never came through a flypi entry point — where that default is still the host `~/.pi/agent` (risk 1).
 	 */
 	mcpAuthPath: string;
 	/** The vault's key file (docs/secrets.md): mode 0600, created on first use. Never the model keys. */

@@ -28,8 +28,15 @@ const flagValue = (name: string): string | undefined => {
 
 const paths = flypiPaths(resolve(flagValue("--root") ?? process.cwd()));
 // The host-`~/.pi` guard and the pin, before this process's first write (docs/risks.md risk 1): served straight
-// by `npm run serve`, this entry point reached no `startFlypiDaemon`, so it had neither.
-forceFlypiAgentDir(paths);
+// by `npm run serve`, this entry point reached no `startFlypiDaemon`, so it had neither. The refusal is a
+// mistake the message already explains, so it is printed rather than thrown — the one-line rule `scripts/probe.ts`
+// keeps for this file family. The library path (`runtime.ts`, `daemon/index.ts`) keeps throwing; its caller decides.
+try {
+	forceFlypiAgentDir(paths);
+} catch (error) {
+	console.error((error as Error).message);
+	process.exit(1);
+}
 // The backend's own database, and this process is its only writer (docs/risks.md risk 3): it is the process
 // that runs pi sessions, so it is the process that knows whether a turn was in flight. The memory store is
 // not opened here at all — this half has no business with it, and the agent reaches memory over MCP.

@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { childEnv } from "../helpers/flypi-root.ts";
+import { childEnv, createTempFlypiRoot } from "../helpers/flypi-root.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 const cli = join(root, "node_modules", "tsx", "dist", "cli.mjs");
@@ -63,6 +64,30 @@ describe("npm run serve", () => {
 			]);
 			expect(exited, `the child would not stop on SIGTERM; it printed:\n${output}`).toBe(true);
 			expect(child.exitCode).toBe(0);
+		}
+	});
+
+	// `scripts/probe.ts:32-36` is the house rule for this file family: a one-line message on any problem, never a
+	// stack. The refusal already names the variable, the value and the directory, so a tsx stack under it only
+	// buries the sentence — and stderr is piped here for the same reason: with it inherited, all this file could
+	// read from a refusing child was its exit code.
+	it("refuses a foreign PI_CODING_AGENT_DIR in one line, not a stack", { timeout: 30_000 }, async () => {
+		const tmp = createTempFlypiRoot();
+		const child = spawn(process.execPath, [cli, serve, "--root", tmp, "--port", "0"], {
+			cwd: tmp,
+			env: childEnv({ PI_CODING_AGENT_DIR: "/tmp/foreign-agent" }),
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let output = "";
+		child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
+		try {
+			const [code] = (await withDeadline(once(child, "exit"), 25_000, `the refusing child never exited; it printed:\n${output}`)) as [number | null];
+			expect(code, output).not.toBe(0);
+			expect(output, output).toMatch(/PI_CODING_AGENT_DIR is set to \/tmp\/foreign-agent/);
+			expect(output, output).not.toMatch(/\n\s+at /);
+		} finally {
+			child.kill("SIGKILL");
+			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
 });

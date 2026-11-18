@@ -245,6 +245,34 @@ describe("the daemon CLI", () => {
 		}
 	}, 120_000);
 
+	it("refuses a foreign PI_CODING_AGENT_DIR before it opens the memory store", () => {
+		// The refusal inside `startFlypiDaemon` is not early enough: `scripts/serve-daemon.ts` opens the memory
+		// store before it gets there, which creates `<root>/.flypi/memory/flypi.db` and — with the default
+		// embedder — can download ~1 GB into `<root>/.flypi/models`. `flypi start` and the container's PID 1 both
+		// come through that script, so the exported value has to be refused ahead of the first byte written.
+		const root = tempRoot();
+		const serveDaemon = join(repo, "node_modules", "tsx", "dist", "cli.mjs");
+		try {
+			const run = sh(
+				serveDaemon,
+				root,
+				{ PI_CODING_AGENT_DIR: "/tmp/foreign-agent" },
+				join(repo, "scripts", "serve-daemon.ts"),
+				"--root",
+				root,
+				"--embeddings",
+				"none",
+				"--judge",
+				"none",
+			);
+			expect(run.code, run.out).not.toBe(0);
+			expect(run.out).toMatch(/PI_CODING_AGENT_DIR is set to \/tmp\/foreign-agent/);
+			expect(existsSync(join(root, ".flypi", "memory", "flypi.db")), run.out).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
 	it("restart keeps the port and interface the last start asked for", async () => {
 		// A bare `flypi restart` otherwise drops --port and --host, and in a container that moves the daemon
 		// off the published port: the URL in the browser stops working and nothing on screen says why.

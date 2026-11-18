@@ -132,9 +132,11 @@ export async function createFlypiSession(options: {
 	// root, so that default and the `agentDir` passed below name the same file by construction — the config is
 	// still read and handed over explicitly, because which servers exist is the half flypi owns (risk 1).
 	const mcpConfig = options.mcpConfig ?? readFlypiMcpConfig(paths);
-	// pi keeps an OAuth server's tokens in `mcp-auth.json` in *its* agent dir, which for flypi would be the
-	// host `~/.pi/agent` — the same config bleed as the config file itself (risk 1). Only built when an entry
-	// could use it, because loading pi's OAuth machinery means loading its MCP client.
+	// pi keeps an OAuth server's tokens in `mcp-auth.json` in *its* agent dir — the same file as
+	// `paths.mcpAuthPath` now that the pin at the top of this function forces `$PI_CODING_AGENT_DIR` here.
+	// The store is still passed explicitly: the pin only holds for a process that came through a flypi entry
+	// point, and a signed-in token is not worth betting on which process this was (docs/risks.md risk 1).
+	// Only built when an entry could use it, because loading pi's OAuth machinery means loading its MCP client.
 	const mcpCredentialsStore = mcpConfig.servers.some((server) => server.config.enabled !== false && usesMcpOAuth(server.config))
 		? await mcpCredentials(paths)
 		: undefined;
@@ -175,7 +177,9 @@ export async function createFlypiSession(options: {
 				loadConfig: () => mcpConfig,
 				logPath: paths.mcpLogPath,
 				// Where a signed-in server's token comes from: `.flypi/agent/mcp-auth.json`, the file the settings
-				// view's sign-in writes (src/agent/mcp-signin.ts). Left out, pi would read the host's.
+				// view's sign-in writes (src/agent/mcp-signin.ts). Left out, pi would use `<agentDir>/mcp-auth.json`
+				// of its own agent dir — the same file after the pin, but only in a process that took it, so the
+				// path is named rather than inherited.
 				...(mcpCredentialsStore ? { credentials: mcpCredentialsStore } : {}),
 			}),
 			// The only route to an MCP server the model was not given its tools for: `exposure: "deferred"`,

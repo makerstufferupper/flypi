@@ -207,12 +207,16 @@ describe("forceFlypiAgentDir (the pin: pi's implicit agent dir is flypi's)", () 
 		}
 	});
 
-	// The daemon's own state after its first force, and what a restart of the same root re-reads.
+	// The daemon's own state after its first force, and what a restart of the same root re-reads. Only the no-throw
+	// half is pinned: this row's value *is* `paths.agentDir`, so reading it back proved nothing — measured green
+	// with the assignment deleted (mutation A). `not.toThrow()` is the row that dies under F, the equality rule
+	// pointed at another directory, and only when nothing forced this root earlier in the module: run on its own it
+	// fails, run after the two rows above the `flypiAgentDirEnv` escape saves it — which is why `npm test` as a
+	// whole stays green under F.
 	it("keeps a PI_CODING_AGENT_DIR that already names this root's agent dir", () => {
 		const env = agentDirEnv("/repo/.flypi/agent");
 		try {
 			expect(() => forceFlypiAgentDir(flypiPaths("/repo"))).not.toThrow();
-			expect(process.env.PI_CODING_AGENT_DIR).toBe("/repo/.flypi/agent");
 		} finally {
 			env.restore();
 		}
