@@ -33,6 +33,27 @@ export function hostPiRoot(prefix = "flypi-hostpi-"): { root: string; restore():
 }
 
 /**
+ * Move the process's home for the duration of one row. `os.homedir()` takes `$HOME` at call time, and both
+ * halves of risk 1 are read through it: `assertFlypiOwned` asks where the host `~/.pi` is, and pi's
+ * `getAgentDir()` falls back to `homedir()/.pi/agent` in exactly the process where flypi's pin did not land.
+ * So a row that wants to watch the host agent dir has to be handed one rather than point at the operator's.
+ * `USERPROFILE` is what Windows reads (as in `hostPiRoot` above). `undefined` means unset.
+ */
+export function homeEnv(value: string | undefined): { value: string | undefined; restore(): void } {
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+	for (const key of ["HOME", "USERPROFILE"]) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	return {
+		value: saved.HOME,
+		restore: () => {
+			for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+		},
+	};
+}
+
+/**
  * Set `PI_CODING_AGENT_DIR` for the duration of one row and hand back the state the process had before
  * (`value`): the pin is process-global and vitest shares `process.env` between the files in a worker, so a row
  * that leaves it set makes the next row in that worker answer for a value it never set. `undefined` means unset.

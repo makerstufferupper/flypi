@@ -50,6 +50,7 @@ export const PI_COMPAT: { imports: PiImport[]; deep: PiDeepImport[] } = {
 				"SettingsManager",
 				"SessionManager",
 				"ModelRuntime",
+				"getAgentDir",
 				"getPackageDir",
 				"createMcpExtension",
 				"createToolSearchExtension",
