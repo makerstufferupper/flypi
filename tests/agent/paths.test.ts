@@ -68,7 +68,9 @@ describe("assertFlypiOwned (risk 1: never touch host ~/.pi)", () => {
 		const saved = process.env.PI_CODING_AGENT_DIR;
 		try {
 			process.env.PI_CODING_AGENT_DIR = join(homedir(), ".pi", "agent"); // `homedir()` is the temp one now
-			expect(() => assertFlypiOwned(flypiPaths("/repo"))).toThrow(/PI_CODING_AGENT_DIR/);
+			expect(() => assertFlypiOwned(flypiPaths("/repo"))).toThrow(
+				/PI_CODING_AGENT_DIR .* got .* — unset it or point it at \/repo\/\.flypi\/agent/,
+			);
 		} finally {
 			if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = saved;
@@ -119,6 +121,19 @@ describe("assertFlypiOwned (risk 1: never touch host ~/.pi)", () => {
 		const saved = process.env.PI_CODING_AGENT_DIR;
 		try {
 			delete process.env.PI_CODING_AGENT_DIR;
+			expect(() => assertFlypiOwned(flypiPaths("/repo"))).not.toThrow();
+		} finally {
+			if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = saved;
+		}
+	});
+
+	// pi treats an empty value as unset (`if (envDir)` in dist/config.js) and falls back to `~/.pi/agent`, so the
+	// guard deliberately does not refuse it — like unset, that is "not flypi's yet" and the assignment overwrites it.
+	it("passes a PI_CODING_AGENT_DIR that is empty", () => {
+		const saved = process.env.PI_CODING_AGENT_DIR;
+		try {
+			process.env.PI_CODING_AGENT_DIR = "";
 			expect(() => assertFlypiOwned(flypiPaths("/repo"))).not.toThrow();
 		} finally {
 			if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;

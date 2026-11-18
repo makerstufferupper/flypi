@@ -99,7 +99,9 @@ export function assertFlypiOwned(paths: FlypiPaths): void {
 	// flypi never passes a path to (docs/risks.md risk 1). Empty means unset to pi too (`if (envDir)`).
 	const env = process.env.PI_CODING_AGENT_DIR;
 	if (env !== undefined && env !== "") {
-		const target = resolve(env === "~" || env.startsWith("~/") ? join(homedir(), env.slice(1)) : env);
+		// A `~` value is refused by the absolute check before it is ever compared: pi expands it, flypi never
+		// lets one through, because resolving it would mean trusting a home this process does not own.
+		const target = resolve(env);
 		if (!isAbsolute(env) || target === host || target.startsWith(host + "/")) {
 			throw new Error(
 				`PI_CODING_AGENT_DIR must name a flypi agent dir, got ${env} — unset it or point it at ${paths.agentDir}`,
