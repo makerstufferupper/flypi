@@ -604,8 +604,10 @@ function kept<T>(pairs: Record<string, T>): Record<string, T> {
 	return Object.fromEntries(Object.entries(pairs).filter(([, value]) => value !== undefined && value !== ""));
 }
 
-/** A file that is not there yet starts empty; one that will not parse is never overwritten. */
-function readForWrite(path: string): Record<string, unknown> {
+/** A file that is not there yet starts empty; one that will not parse is never overwritten. Exported for
+ *  `readAgentTypes` (src/agent/subagent-agents.ts), which reads the default pair out of `settings.json` and has no
+ *  business writing anything. */
+export function readForWrite(path: string): Record<string, unknown> {
 	if (!existsSync(path)) return {};
 	return parseJsonObject(readFileSync(path, "utf8"), path);
 }

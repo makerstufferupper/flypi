@@ -9,15 +9,16 @@
  * symlinks, so a `link.md` pointing out of the source dir would otherwise be copied *through* into the agent dir.
  *
  * Every row works in a temp root (`docs/testing.md`); the two rows that need a host `~/.pi` plant one, and the
- * operator's own home is never read. The resolution rows need no filesystem and no runtime at all, except the two
- * that read a checkout's available models — where an endpoint that is never contacted is the point, not a risk.
+ * operator's own home is never read. The resolution rows need no filesystem and no runtime at all, except the few
+ * that read a checkout's available models (`availableModels`, and `readAgentTypes` when the caller passes no set) —
+ * where an endpoint that is never contacted is the point, not a risk.
  */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import { availableModels, hostAgentsDir, importAgentFiles, listAgentFiles, resolveAgentModel, type AgentFileRow, type AvailableModel } from "../../src/agent/subagent-agents.ts";
+import { availableModels, hostAgentsDir, importAgentFiles, listAgentFiles, readAgentTypes, resolveAgentModel, type AgentFileRow, type AvailableModel } from "../../src/agent/subagent-agents.ts";
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
 import { agentDirEnv, createTempFlypiRoot, homeEnv, withProviderConfig } from "../helpers/flypi-root.ts";
 
@@ -366,9 +367,48 @@ describe("resolveAgentModel", () => {
 		expect(answer).toEqual({ model: "LMStudio/Qwen3", runsOn: "lmstudio/qwen3", resolvable: true });
 	});
 
-	it("calls a `model:` with no provider unresolvable, rather than guessing which provider was meant", () => {
+	// The extension normalises `.` to `-` before it scores anything (`model-resolver.ts:53,64`), so the dot in a
+	// version is cosmetic and `anthropic/claude-haiku-4.5` matches the id `claude-haiku-4-5`. Measured against the
+	// extension's own `resolveModel`, this is one of five asks where flypi said `resolvable: false` while the run
+	// would have got exactly the model the file named — the warning is the thing that was wrong, not the match.
+	it("resolves the ask whose dots are the extension's dashes", () => {
+		const haiku: AvailableModel = { provider: "anthropic", modelId: "claude-haiku-4-5", reasoning: true };
+
+		expect(resolveAgentModel(row({ model: "anthropic/claude-haiku-4.5" }), [haiku], fallback)).toEqual({
+			model: "anthropic/claude-haiku-4.5",
+			runsOn: "anthropic/claude-haiku-4-5",
+			resolvable: true,
+		});
+	});
+
+	// A bare `model: qwen3` is a legitimate ask, not a malformed one: the extension matches an exact id against every
+	// provider it can see (`model-resolver.ts:64,88`). The row here used to call it unresolvable against a set that
+	// held no such id at all, where the extension fails too — so it never touched the divergence it claimed to pin.
+	it("resolves a bare `model:` against the provider that serves that id", () => {
+		expect(resolveAgentModel(row({ model: "qwen3" }), [plain], fallback)).toEqual({
+			model: "qwen3",
+			runsOn: "lmstudio/qwen3",
+			resolvable: true,
+		});
+	});
+
+	it("calls a bare `model:` nothing serves unresolvable", () => {
 		expect(resolveAgentModel(row({ model: "spark-x2.6-4b" }), [plain], fallback)).toEqual({
 			model: "spark-x2.6-4b",
+			runsOn: "lmstudio/qwen3",
+			resolvable: false,
+		});
+	});
+
+	// What flypi deliberately does **not** promise. The extension would fuzzy-match the substring `haiku` to
+	// `anthropic/claude-haiku-4-5` (score 60 + length, `model-resolver.ts:76`); flypi stops at the two normalisations
+	// and warns. That is the allowed direction — a warning may be conservative, because the cost is one needless
+	// "will run on the conversation's model instead" line — while naming a model the run will not use never is.
+	it("warns rather than claim a model the extension would only fuzzy-match", () => {
+		const haiku: AvailableModel = { provider: "anthropic", modelId: "claude-haiku-4-5", reasoning: true };
+
+		expect(resolveAgentModel(row({ model: "haiku" }), [haiku], fallback)).toEqual({
+			model: "haiku",
 			runsOn: "lmstudio/qwen3",
 			resolvable: false,
 		});
@@ -401,6 +441,41 @@ describe("resolveAgentModel", () => {
 			runsOn: "nv/nemotron",
 			resolvable: true,
 			thinkingUnsupported: true,
+		});
+	});
+
+	// `null` is not the only "no". pi's rule (`getSupportedThinkingLevels`, pi-ai/dist/models.js:696-703) is
+	// `if (level === "xhigh" || level === "max") return mapped !== undefined`: for **those two** a missing key is a
+	// "no" as well, while for `low`/`high`/… a missing key means provider defaults. The two files on this machine
+	// that ask `xhigh` (`~/.pi/agent/agents/researcher.md`, `reviewer.md`) land on a model whose map is `{low, high}`
+	// — pi clamps the level and flypi would have said nothing at all.
+	it("says so when the model's map does not name `xhigh` at all", () => {
+		const short_map: AvailableModel = { provider: "nv", modelId: "nemotron", reasoning: true, thinkingLevelMap: { low: "low", high: "high" } };
+
+		expect(resolveAgentModel(row({ model: "nv/nemotron", thinking: "xhigh" }), [short_map], fallback)).toEqual({
+			model: "nv/nemotron",
+			runsOn: "nv/nemotron",
+			resolvable: true,
+			thinkingUnsupported: true,
+		});
+	});
+
+	// …and the other half of the same rule: a `null` refuses an ordinary level too, so the missing-key case is not the
+	// only one the `xhigh`/`max` exception sits next to.
+	it("says so when a level that is not `xhigh` is mapped to null", () => {
+		const no_low: AvailableModel = { provider: "nv", modelId: "nemotron", reasoning: true, thinkingLevelMap: { low: null, high: "high" } };
+
+		expect(resolveAgentModel(row({ model: "nv/nemotron", thinking: "low" }), [no_low], fallback).thinkingUnsupported).toBe(true);
+	});
+
+	// `off` is a level the extension lists (`pi-subagents/src/types.ts:24`) and the only one pi offers a model that
+	// cannot think (`models.js:694-695`), so asking it of a non-reasoning model is the ask succeeding — the panel
+	// would warn on every local-endpoint file that spells its default out.
+	it("is quiet when a model that cannot think was asked for no thinking", () => {
+		expect(resolveAgentModel(row({ model: "lmstudio/qwen3", thinking: "off" }), [plain], fallback)).toEqual({
+			model: "lmstudio/qwen3",
+			runsOn: "lmstudio/qwen3",
+			resolvable: true,
 		});
 	});
 
@@ -478,11 +553,17 @@ describe("availableModels", () => {
 		]);
 	});
 
-	// The proof rather than the inference. `ModelRuntime.create` gets no `allowModelNetwork`, which is what keeps
-	// pi's catalog refresh local (`model-runtime.js:100`, the same call `src/agent/runtime.ts:119-121` makes), and
-	// asking a provider whether it is available resolves a credential — no provider in the pi this pins ships the
-	// optional `apiKey.check` hook (`pi-ai/dist/auth/types.d.ts:180`). Stubbing `fetch` makes all of that a red row
-	// the day it stops holding, for every provider `availableModels` walks and not just this root's two.
+	// The proof rather than the inference, and read it as what is actually pinned: **no call originates inside
+	// `availableModels`** on the pi this repo pins. The spy has teeth for exactly that — a literal `await fetch(...)`
+	// in the function reddens this row — and no provider in this pi ships the optional `apiKey.check` hook
+	// (`pi-ai/dist/auth/types.d.ts:180`), so resolving a credential sends nothing either.
+	//
+	// What it does **not** pin is the absence of `allowModelNetwork` (`model-runtime.js:100`, the option
+	// `src/agent/runtime.ts:119-121` also leaves unset): measured on this pin, adding `allowModelNetwork: true` to the
+	// `ModelRuntime.create` call keeps every row here green — with an `openrouter` credential in the fixture as well —
+	// because pi makes no catalog request from this path at all. So "flypi never asks pi to refresh over the network
+	// from here" is a comment-level contract on `availableModels`, not one this suite can turn red; there is nothing
+	// cheap to pin, and the honest sentence about the spy beats a fake assertion that would make the old one true.
 	it("asks no provider anything", async () => {
 		const paths = twoProviderRoot();
 		vi.stubGlobal("fetch", () => {
@@ -494,6 +575,112 @@ describe("availableModels", () => {
 			expect(models.some((model) => model.provider === "lmstudio" && model.modelId === "qwen3")).toBe(true);
 		} finally {
 			vi.unstubAllGlobals();
+		}
+	});
+});
+
+describe("readAgentTypes", () => {
+	/**
+	 * A checkout whose `settings.json` names the default pair and whose only credential is one local endpoint, with
+	 * the three shapes the panel lists written into flypi's own agents dir: a file that asks for a model flypi
+	 * serves, one that asks nothing, and one that asks a model nobody here serves.
+	 *
+	 * `settings` is a parameter because one row needs the root nobody configured: `createTempFlypiRoot` writes a
+	 * `{}` `settings.json`, which is that root.
+	 */
+	function typedRoot(settings: Record<string, unknown> = { defaultProvider: "lmstudio", defaultModel: "qwen3" }): FlypiPaths {
+		const root = withProviderConfig(createTempFlypiRoot(), settings, { lmstudio: { type: "api_key", key: "local" } });
+		const paths = flypiPaths(root);
+		mkdirSync(paths.agentsDir, { recursive: true });
+		writeFileSync(join(paths.agentsDir, "scout.md"), "---\ndescription: read the repo\nmodel: lmstudio/qwen3\n---\nbody\n");
+		writeFileSync(join(paths.agentsDir, "coder.md"), "---\ndescription: write the code\n---\nbody\n");
+		writeFileSync(join(paths.agentsDir, "pilot.md"), "---\ndescription: fly it\nmodel: playred-lms/spark-x2.6-4b\n---\nbody\n");
+		return paths;
+	}
+
+	/** A set handed in by a caller that already paid for it — so these rows need no runtime. */
+	const served: AvailableModel[] = [{ provider: "lmstudio", modelId: "qwen3", reasoning: false }];
+
+	// The join the request path would otherwise get wrong: `runsOn` for an inherited row is the *root's* default
+	// rather than a choice the file made, the unresolvable ask still names what the run lands on, and the available
+	// set is not part of any row — two credentialed providers measured **402 entries**, and a row carries only its
+	// own answer. The deep equality below is the assertion that says so.
+	it("joins the files with the answer about each one's model, and writes nothing", async () => {
+		const paths = typedRoot();
+		const before = readdirSync(paths.agentDir);
+
+		const { rows, errors } = await readAgentTypes(paths, served);
+
+		expect(errors).toEqual([]);
+		expect(rows).toEqual([
+			{ type: "coder", file: join(paths.agentsDir, "coder.md"), description: "write the code", runsOn: "lmstudio/qwen3", resolvable: true, inherited: true },
+			{ type: "pilot", file: join(paths.agentsDir, "pilot.md"), description: "fly it", model: "playred-lms/spark-x2.6-4b", runsOn: "lmstudio/qwen3", resolvable: false },
+			{ type: "scout", file: join(paths.agentsDir, "scout.md"), description: "read the repo", model: "lmstudio/qwen3", runsOn: "lmstudio/qwen3", resolvable: true },
+		]);
+		expect(readdirSync(paths.agentDir)).toEqual(before); // reads only, like `listAgentFiles`
+	});
+
+	// The other half of the signature: a caller that did not pay for the set gets it read. Pass `[]` where the set
+	// is meant to be read and `scout` turns red here — that is the row's teeth.
+	it("reads the available set itself when the caller did not already pay for it", async () => {
+		const paths = typedRoot();
+		writeFileSync(join(paths.agentsDir, "researcher.md"), "---\ndescription: read it once\nthinking: xhigh\n---\nbody\n");
+
+		const { rows, errors } = await readAgentTypes(paths);
+
+		expect(errors).toEqual([]);
+		expect(rows.map((row) => [row.type, row.resolvable, row.runsOn, row.thinkingUnsupported])).toEqual([
+			["coder", true, "lmstudio/qwen3", undefined],
+			["pilot", false, "lmstudio/qwen3", undefined],
+			// The real `researcher.md` on a root whose default cannot think: inherits, and the level it asks is the
+			// one that model has never offered.
+			["researcher", true, "lmstudio/qwen3", true],
+			["scout", true, "lmstudio/qwen3", undefined],
+		]);
+	});
+
+	// A fresh root where nobody configured a model has no conversation default to name, and `runsOn:
+	// "undefined/undefined"`, or a guessed model, would be a claim rather than an answer. The file's own facts stay;
+	// `scout`'s `runsOn` stays too, because that model the set really does hold.
+	it("names no model for a row whose answer would be the default that is not there", async () => {
+		const paths = typedRoot({});
+
+		const { rows, errors } = await readAgentTypes(paths, served);
+
+		expect(errors).toEqual([]);
+		expect(rows).toEqual([
+			{ type: "coder", file: join(paths.agentsDir, "coder.md"), description: "write the code", resolvable: true, inherited: true },
+			{ type: "pilot", file: join(paths.agentsDir, "pilot.md"), description: "fly it", model: "playred-lms/spark-x2.6-4b", resolvable: false },
+			{ type: "scout", file: join(paths.agentsDir, "scout.md"), description: "read the repo", model: "lmstudio/qwen3", runsOn: "lmstudio/qwen3", resolvable: true },
+		]);
+		expect(rows.filter((row) => Object.hasOwn(row, "runsOn")).map((row) => row.type)).toEqual(["scout"]);
+	});
+
+	// One broken file, one sentence — five `resolvable: false` warnings would be five lies about five models the run
+	// could not serve. Mechanism note: `ModelRuntime.create` swallows every malformed `models.json` on the pi this
+	// repo pins (measured at `fabced1`: broken JSON, wrong shapes, an unreadable file and `modelsPath` a directory
+	// all create fine and answer an empty set), so no file on disk provokes the throw and the spy is how the row
+	// reaches it. The claim pinned is about `readAgentTypes`, not about pi.
+	it("says one sentence, and claims no model at all, when the set cannot be read", async () => {
+		const paths = typedRoot();
+		const spy = vi.spyOn(ModelRuntime, "create").mockRejectedValue(new Error(`${paths.modelsPath}: expected a JSON object, got a string`));
+		try {
+			const { rows, errors } = await readAgentTypes(paths);
+
+			expect(errors).toEqual([expect.stringContaining("expected a JSON object")]);
+			for (const row of rows) {
+				expect(Object.hasOwn(row, "resolvable"), row.type).toBe(false);
+				expect(Object.hasOwn(row, "runsOn"), row.type).toBe(false);
+				expect(Object.hasOwn(row, "thinkingUnsupported"), row.type).toBe(false);
+			}
+			// The files are still the files: what each one *asked for* is the row's own words, not a model claim.
+			expect(rows.map((row) => [row.type, row.model])).toEqual([
+				["coder", undefined],
+				["pilot", "playred-lms/spark-x2.6-4b"],
+				["scout", "lmstudio/qwen3"],
+			]);
+		} finally {
+			spy.mockRestore();
 		}
 	});
 });

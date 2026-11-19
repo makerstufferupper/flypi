@@ -8,7 +8,8 @@
  * parent's model and says nothing (`pi-subagents/src/index.ts:1965-1972`), so a panel that stayed silent would lie.
  * `availableModels` is the only I/O in the second half (pi's runtime, no more than a session start already opens)
  * and `resolveAgentModel` is a pure function over a row, that set and a fallback, so the answer is testable with no
- * runtime at all.
+ * runtime at all. `readAgentTypes` is where the two halves meet — one call for the panel, with the root's default
+ * pair and the errors worth rendering beside the rows.
  *
  * What is **not** answered here is the level a running subagent was actually given: pi clamps per model
  * (`clampThinkingLevel`, pi-ai/dist/models.js:705-720) and that truth needs a session, so it belongs to the fleet's
@@ -40,6 +41,7 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { readForWrite } from "./config-files.ts";
 import { assertFlypiOwned, type FlypiPaths } from "./paths.ts";
 
 /**
@@ -225,7 +227,8 @@ export interface ModelRef {
 export interface AvailableModel extends ModelRef {
 	/** pi's `Model.reasoning` (pi-ai/dist/types.d.ts:650): false means no thinking level is on offer at all. */
 	reasoning: boolean;
-	/** pi's `Model.thinkingLevelMap`: a `null` value marks a level this model cannot do (pi-ai/dist/models.js:693-703). */
+	/** pi's `Model.thinkingLevelMap`: a `null` marks a level this model cannot do, and for `xhigh`/`max` a missing
+	 *  key means the same thing (pi's `getSupportedThinkingLevels`, pi-ai/dist/models.js:693-703). */
 	thinkingLevelMap?: Record<string, string | null | undefined>;
 }
 
@@ -233,10 +236,13 @@ export interface AvailableModel extends ModelRef {
 export interface AgentModelAnswer {
 	/** What the file asked for, or nothing when it inherits. */
 	model?: string;
-	/** "provider/modelId" the subagent will actually run on: the asked model, or the conversation default. */
-	runsOn: string;
-	/** False when the file named a model flypi cannot serve — the warning row. */
-	resolvable: boolean;
+	/** "provider/modelId" the subagent will actually run on: the asked model, or the conversation default.
+	 *  Absent when flypi has no model to name — a root whose `settings.json` never configured a default has no
+	 *  conversation model, and `undefined/undefined` or a guessed one would be a claim, not an answer. */
+	runsOn?: string;
+	/** False when the file named a model flypi cannot serve — the warning row. Absent when flypi could not ask at
+	 *  all (`readAgentTypes` hands that case to `errors`), which is neither a warning nor an all-clear. */
+	resolvable?: boolean;
 	/** True when the file asked for a thinking level the resolved model cannot do. */
 	thinkingUnsupported?: boolean;
 	/** True when the file asked for no model, so `runsOn` is the conversation's model and not a choice this file made —
@@ -258,16 +264,9 @@ function modelKey(ref: ModelRef): string {
 	return modelLabel(ref).toLowerCase();
 }
 
-/**
- * The `model:` as an address, split where the extension splits it — the first `/` is the provider
- * (`pi-subagents/src/model-resolver.ts:49-51`). A `model:` with no `/` is not an address flypi can check, so it
- * stays unresolvable rather than becoming a guess about which provider the operator meant.
- */
-function askedModel(ask: string | undefined): ModelRef | undefined {
-	if (!ask) return undefined;
-	const slash = ask.indexOf("/");
-	return slash === -1 ? undefined : { provider: ask.slice(0, slash), modelId: ask.slice(slash + 1) };
-}
+/** The two normalisations the extension applies before it matches (`model-resolver.ts:53,64`). Its scoring
+ *  tail is deliberately not mirrored: flypi cannot import the package, so a second scorer could only drift. */
+const norm = (s: string) => s.toLowerCase().replace(/\./g, "-");
 
 /**
  * The models flypi could serve right now, read the way the debug panel reads them
@@ -301,29 +300,93 @@ export async function availableModels(paths: FlypiPaths): Promise<AvailableModel
  *
  * The `fallback` is `defaultProvider`/`defaultModel` from `settings.json`, passed in by the caller: this module does
  * not decide what "the conversation's model" means, and a row that guessed would be wrong for every conversation
- * that picked one.
+ * that picked one. It is optional because a fresh root has none, and a row about a model that does not exist is the
+ * one answer worse than no answer (`runsOn` is absent for exactly that case).
  *
- * Only the extension's **first** resolution tier is repeated here — the asked `provider/modelId` matched against the
- * available set. Its fuzzy and cross-provider tiers (`model-resolver.ts:59-110`) are deliberately not
- * reimplemented: a second resolver is a second thing to keep in step, and whichever way the extension lands, an ask
- * that is not in the available set is a run on a model other than the one the file named.
+ * Only the extension's **first** resolution tier is repeated here — the asked address, as a string and as a bare id,
+ * matched against the available set, with the two normalisations its resolver applies first. Its scoring tail and
+ * the cross-provider retry (`model-resolver.ts:59-110`) are deliberately not reimplemented: flypi cannot import the
+ * package (plan D10), so a second scorer could only drift from the first one in silence. The asymmetry that leaves
+ * is deliberate and one-directional: flypi warns about what it cannot match, and a warning may be conservative — a
+ * needless "will run on the conversation's model instead" line costs a sentence — but it must never claim a model
+ * the run will not use.
  */
-export function resolveAgentModel(row: AgentFileRow, available: readonly AvailableModel[], fallback: ModelRef): AgentModelAnswer {
-	const asked = askedModel(row.model);
-	const served = asked ? available.find((model) => modelKey(model) === modelKey(asked)) : undefined;
+export function resolveAgentModel(row: AgentFileRow, available: readonly AvailableModel[], fallback?: ModelRef): AgentModelAnswer {
+	const ask = row.model === undefined ? undefined : norm(row.model);
+	// The exact tier over `provider/modelId` (`model-resolver.ts:46-57`) plus the same exact match on the bare id,
+	// which is how the extension reads a `model:` that names no provider: an exact id scores 100 over every provider
+	// (`:64,88`), so a `model: qwen3` legitimately lands on `lmstudio/qwen3`.
+	const served = ask === undefined ? undefined : available.find((model) => norm(modelKey(model)) === ask || norm(model.modelId) === ask);
+	// What the run lands on, when flypi is able to name it.
+	const landsOn = served ?? fallback;
 	const answer: AgentModelAnswer = {
 		...(row.model ? { model: row.model } : {}),
 		// The silent degrade, stated: an ask that does not resolve runs on the parent's model
 		// (`pi-subagents/src/index.ts:1965-1972`), so one row carries both halves of "asked X, will run on Y".
-		runsOn: modelLabel(served ?? fallback),
-		// Asked and could not be served is the warning; asked nothing is the conversation's own model. A `model:`
-		// that is not an address at all counts as asked-and-not-served, because the panel quotes what the file wrote.
+		...(landsOn ? { runsOn: modelLabel(landsOn) } : {}),
+		// Asked and could not be served is the warning; asked nothing is the conversation's own model.
 		resolvable: !row.model || !!served,
 		...(!row.model ? { inherited: true } : {}),
 	};
-	// Which model that run lands on: the ask when it resolved, the conversation's model otherwise — and when flypi
-	// cannot see that model at all it says nothing about levels, rather than promising one it has not checked.
-	const lands = served ?? available.find((model) => modelKey(model) === modelKey(fallback));
-	if (row.thinking && lands && (!lands.reasoning || lands.thinkingLevelMap?.[row.thinking] === null)) answer.thinkingUnsupported = true;
+	// Which model that run lands on, as an entry of the available set — and when flypi cannot see that model at all
+	// it says nothing about levels, rather than promising one it has not checked. The `off` ask never warns: pi
+	// offers it to a model that cannot think (`models.js:694-695`) and the extension lists it as a level
+	// (`pi-subagents/src/types.ts:24`), so asking it of a local endpoint is the ask succeeding.
+	const lands = landsOn ? available.find((model) => norm(modelKey(model)) === norm(modelKey(landsOn))) : undefined;
+	if (row.thinking && row.thinking !== "off" && lands) {
+		const lv = row.thinking;
+		const mapped = lands.thinkingLevelMap?.[lv];
+		// pi's rule, in pi's order (`getSupportedThinkingLevels`, pi-ai/dist/models.js:696-703): a `null` refuses the
+		// level at **any** level, and for `xhigh`/`max` a *missing key* refuses it too — pi answers
+		// `mapped !== undefined` for those two, so a map of `{low, high}` cannot do `xhigh`, which is what
+		// `researcher.md` and `reviewer.md` both ask. For every other level a missing key *is* provider defaults,
+		// which is no warning here. The doc comment beside `thinkingLevelMap` ("missing keys use provider defaults")
+		// is wrong for `xhigh`/`max`; the code is the truth.
+		const unmapped = mapped === null || ((lv === "xhigh" || lv === "max") && mapped === undefined);
+		if (!lands.reasoning || unmapped) answer.thinkingUnsupported = true;
+	}
 	return answer;
+}
+
+/** One agent file plus the answer about its model — what the panel lists. `runsOn` and `resolvable` are optional
+ *  because the resource row (sub-task 3) renders `errors` and omits both when flypi could not ask at all. */
+export interface AgentTypeRow extends AgentFileRow, AgentModelAnswer {}
+
+/**
+ * The list, the model answer for every row and the root's own default, joined — one function because that join is
+ * what a caller gets wrong: the fallback has to come from `settings.json` through `readForWrite`, an `inherited`
+ * row's `runsOn` is the conversation's default rather than something the file chose, and the available set is never
+ * part of a row.
+ *
+ * **Nothing this returns carries the available set.** With two credentialed providers it measured **402 entries**,
+ * and a row carries its own answer; whoever writes the `subagentAgents` resource (sub-task 3) keeps it off the wire.
+ *
+ * `models` is a parameter so a caller (or a test) that already paid for `availableModels` can reuse it; it defaults
+ * to reading them. Reads only, like `listAgentFiles` — nothing on this path writes, and `availableModels` is the one
+ * read that goes near pi's runtime.
+ *
+ * A set that cannot be read is **one** sentence in `errors` and rows with no model claims, not `resolvable: false`
+ * on every row: five warnings would be five claims about five models the run could not serve, from one file pi
+ * would not parse. House style of `readPackages().errors` (src/agent/packages.ts).
+ */
+export async function readAgentTypes(paths: FlypiPaths, models?: readonly AvailableModel[]): Promise<{ rows: AgentTypeRow[]; errors: string[] }> {
+	const errors: string[] = [];
+	// The conversation's model, as `settings.json` holds it — the same two keys `readConfig` reads
+	// (src/agent/config-files.ts:203-204). No pair is a state, not an error: a fresh root has none. A settings.json
+	// that will not parse **throws** through here, like every other `readForWrite` caller in that module; the panel
+	// already reports that file through `readConfig().errors`, so sub-task 3 must not swallow it into `errors` here.
+	const settings = readForWrite(paths.settingsPath);
+	const provider = str(settings.defaultProvider);
+	const modelId = str(settings.defaultModel);
+	const fallback = provider && modelId ? { provider, modelId } : undefined;
+	let available: readonly AvailableModel[] | undefined = models;
+	if (available === undefined) {
+		try {
+			available = await availableModels(paths);
+		} catch (error) {
+			errors.push((error as Error).message); // pi's own sentence, which names the file it could not read
+		}
+	}
+	const rows = listAgentFiles(paths).map((row) => ({ ...row, ...(available ? resolveAgentModel(row, available, fallback) : {}) }));
+	return { rows, errors };
 }
