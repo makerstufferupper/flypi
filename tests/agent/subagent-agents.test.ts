@@ -381,6 +381,26 @@ describe("resolveAgentModel", () => {
 		});
 	});
 
+	// The full address wins, whatever order the available set is in. The extension short-circuits on an exact
+	// `provider/modelId` before it scores anything (`model-resolver.ts:52-57`), and pi's own openrouter catalog ships
+	// ids that keep their slash — `anthropic/claude-haiku-4.5` is in `pi-ai/dist/providers/data/openrouter.json` — so
+	// one `find` testing both arms can answer `openrouter/anthropic/claude-haiku-4.5` for the ask
+	// `anthropic/claude-haiku-4.5` whenever openrouter sorts first, while the run itself goes to
+	// `anthropic/claude-haiku-4-5`. Naming a model the run will not use is the one direction the contract above forbids,
+	// and those two providers are credentialed together on an ordinary machine.
+	it("names the provider the full address selects, not the first entry that matches one part of the ask", () => {
+		const openrouter: AvailableModel = { provider: "openrouter", modelId: "anthropic/claude-haiku-4.5", reasoning: true };
+		const anthropic: AvailableModel = { provider: "anthropic", modelId: "claude-haiku-4-5", reasoning: true };
+
+		expect(resolveAgentModel(row({ model: "anthropic/claude-haiku-4.5" }), [openrouter, anthropic], fallback)).toEqual({
+			model: "anthropic/claude-haiku-4.5",
+			runsOn: "anthropic/claude-haiku-4-5",
+			resolvable: true,
+		});
+		// The ordering that already worked, so what is pinned is "the full address", not "whichever entry sorts first".
+		expect(resolveAgentModel(row({ model: "anthropic/claude-haiku-4.5" }), [anthropic, openrouter], fallback).runsOn).toBe("anthropic/claude-haiku-4-5");
+	});
+
 	// A bare `model: qwen3` is a legitimate ask, not a malformed one: the extension matches an exact id against every
 	// provider it can see (`model-resolver.ts:64,88`). The row here used to call it unresolvable against a set that
 	// held no such id at all, where the extension fails too — so it never touched the divergence it claimed to pin.
@@ -476,6 +496,22 @@ describe("resolveAgentModel", () => {
 			model: "lmstudio/qwen3",
 			runsOn: "lmstudio/qwen3",
 			resolvable: true,
+		});
+	});
+
+	// …and a model that *can* think can refuse `off` the same way, because pi's rule is one test for every level: a
+	// `null` mapping is a "no" at any level (`models.js:697-699`). Real entries ship `"off": null` — `claude-fable-5`,
+	// `claude-sonnet-5-5` and `claude-opus-5-5` in `pi-ai/dist/providers/data/anthropic.json` — so `thinking: off`
+	// there is clamped up to the lowest level the model has, and a row that stayed quiet about it was quiet about the
+	// one direction this feature exists to surface.
+	it("says so when a reasoning model maps `off` itself to null", () => {
+		const fable: AvailableModel = { provider: "anthropic", modelId: "claude-fable-5", reasoning: true, thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" } };
+
+		expect(resolveAgentModel(row({ model: "anthropic/claude-fable-5", thinking: "off" }), [fable], fallback)).toEqual({
+			model: "anthropic/claude-fable-5",
+			runsOn: "anthropic/claude-fable-5",
+			resolvable: true,
+			thinkingUnsupported: true,
 		});
 	});
 
@@ -601,11 +637,23 @@ describe("readAgentTypes", () => {
 	/** A set handed in by a caller that already paid for it — so these rows need no runtime. */
 	const served: AvailableModel[] = [{ provider: "lmstudio", modelId: "qwen3", reasoning: false }];
 
+	/**
+	 * No provider credential in the environment for the duration of one row. pi's builtin providers take a key from
+	 * `process.env` when the root's `auth.json` has none (`pi-ai/dist/auth/context.js:18-21`, where empty means
+	 * absent), so "flypi was left with no model to serve" is otherwise a statement about the machine running the
+	 * suite: measured with `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` and `OPENROUTER_API_KEY`
+	 * exported, the empty set these two rows are about became 484 entries.
+	 */
+	function withoutProviderEnv(): { restore(): void } {
+		for (const name of Object.keys(process.env)) if (/(KEY|TOKEN|SECRET)$/i.test(name)) vi.stubEnv(name, "");
+		return { restore: () => vi.unstubAllEnvs() };
+	}
+
 	// The join the request path would otherwise get wrong: `runsOn` for an inherited row is the *root's* default
 	// rather than a choice the file made, the unresolvable ask still names what the run lands on, and the available
 	// set is not part of any row — two credentialed providers measured **402 entries**, and a row carries only its
 	// own answer. The deep equality below is the assertion that says so.
-	it("joins the files with the answer about each one's model, and writes nothing", async () => {
+	it("joins the files with the answer about each one's model, and writes nothing when the set was handed in", async () => {
 		const paths = typedRoot();
 		const before = readdirSync(paths.agentDir);
 
@@ -617,7 +665,8 @@ describe("readAgentTypes", () => {
 			{ type: "pilot", file: join(paths.agentsDir, "pilot.md"), description: "fly it", model: "playred-lms/spark-x2.6-4b", runsOn: "lmstudio/qwen3", resolvable: false },
 			{ type: "scout", file: join(paths.agentsDir, "scout.md"), description: "read the repo", model: "lmstudio/qwen3", runsOn: "lmstudio/qwen3", resolvable: true },
 		]);
-		expect(readdirSync(paths.agentDir)).toEqual(before); // reads only, like `listAgentFiles`
+		expect(readdirSync(paths.agentDir)).toEqual(before); // reads only, like `listAgentFiles` — on **this** path, where the
+		// set was injected; the read path lets pi persist its catalog cache beside `models.json` (`availableModels`).
 	});
 
 	// The other half of the signature: a caller that did not pay for the set gets it read. Pass `[]` where the set
@@ -660,7 +709,9 @@ describe("readAgentTypes", () => {
 	// could not serve. Mechanism note: `ModelRuntime.create` swallows every malformed `models.json` on the pi this
 	// repo pins (measured at `fabced1`: broken JSON, wrong shapes, an unreadable file and `modelsPath` a directory
 	// all create fine and answer an empty set), so no file on disk provokes the throw and the spy is how the row
-	// reaches it. The claim pinned is about `readAgentTypes`, not about pi.
+	// reaches it. The claim pinned is about `readAgentTypes`, not about pi — and it is a **different failure** from the
+	// unreadable file the next two rows pin: that one pi swallows into an empty available set and never throws, so
+	// this spy is how the row reaches the arm where a runtime fails outright.
 	it("says one sentence, and claims no model at all, when the set cannot be read", async () => {
 		const paths = typedRoot();
 		const spy = vi.spyOn(ModelRuntime, "create").mockRejectedValue(new Error(`${paths.modelsPath}: expected a JSON object, got a string`));
@@ -681,6 +732,52 @@ describe("readAgentTypes", () => {
 			]);
 		} finally {
 			spy.mockRestore();
+		}
+	});
+
+	// The failure pi swallows, and the one that used to be silent: `ModelRuntime.create` does **not** throw on a
+	// `models.json` it cannot parse (re-measured on this pin for broken JSON, `providers: "nope"`, a top-level array,
+	// a malformed model and a junk `modelsPath` — every one answers an empty set). On a root whose providers are
+	// declared in that file — the lmstudio/local shape — an empty set means every row warns "will run on the
+	// conversation's model" while `errors` stays empty, so the panel blames the operator's agent files for one
+	// unreadable `models.json`. Naming the file is the whole sentence.
+	it("names the file when an unreadable `models.json` leaves flypi with no model to serve", async () => {
+		const paths = typedRoot();
+		writeFileSync(paths.modelsPath, "{ this is not json\n");
+		const env = withoutProviderEnv();
+		try {
+			const { rows, errors } = await readAgentTypes(paths);
+
+			expect(errors).toEqual([expect.stringContaining(paths.modelsPath)]);
+			// The rows keep the claims the existing rules give them for an empty set: nothing in it can be named, so
+			// every ask falls back to the settings default — including `scout`, whose model the file really did declare.
+			expect(rows.map((row) => [row.type, row.resolvable, row.runsOn, row.inherited])).toEqual([
+				["coder", true, "lmstudio/qwen3", true],
+				["pilot", false, "lmstudio/qwen3", undefined],
+				["scout", false, "lmstudio/qwen3", undefined],
+			]);
+		} finally {
+			env.restore();
+		}
+	});
+
+	// The other side of the same check: a root that never had a `models.json` has no file to blame. The empty set is
+	// its real state (onboarding has not run) and the rows' own warnings are the answer, so the sentence stays out.
+	it("blames no file when the root has no `models.json` at all", async () => {
+		const paths = typedRoot();
+		rmSync(paths.modelsPath);
+		const env = withoutProviderEnv();
+		try {
+			const { rows, errors } = await readAgentTypes(paths);
+
+			expect(errors).toEqual([]);
+			expect(rows.map((row) => [row.type, row.resolvable, row.runsOn])).toEqual([
+				["coder", true, "lmstudio/qwen3"],
+				["pilot", false, "lmstudio/qwen3"],
+				["scout", false, "lmstudio/qwen3"],
+			]);
+		} finally {
+			env.restore();
 		}
 	});
 });

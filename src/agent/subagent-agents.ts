@@ -274,9 +274,14 @@ const norm = (s: string) => s.toLowerCase().replace(/\./g, "-");
  * `models.json`, is what the extension's resolver accepts (`model-resolver.ts:46-47`): a provider with no
  * credential is not a model a subagent can run on, however carefully it is written into the file.
  *
- * Local. `ModelRuntime.create` gets the same two paths a session start passes (`src/agent/runtime.ts:119-121`) and
- * no `allowModelNetwork`, so pi keeps the catalog refresh off the network (`model-runtime.js:100`), and asking one
- * provider whether it is available resolves a credential rather than calling it.
+ * Local, and **not a pure read**: `ModelRuntime.create` derives pi's catalog cache from `dirname(modelsPath)` and
+ * persists it to `models-store.json` there, and creates `authPath` when the root has none (`model-runtime.js:80,85`;
+ * measured in a temp root as the file appearing, content `{}`). A session start makes the identical call
+ * (`src/agent/runtime.ts:119-121`), so nothing new lands in any root and no guard is needed — but a settings-panel
+ * refresh touching those paths is worth knowing, because whoever reads this signature next will assume a read is pure.
+ * The call gets the same two paths a session start passes and no `allowModelNetwork`, so pi keeps the catalog refresh
+ * off the network (`model-runtime.js:100`), and asking one provider whether it is available resolves a credential
+ * rather than calling it.
  */
 export async function availableModels(paths: FlypiPaths): Promise<AvailableModel[]> {
 	const runtime = await ModelRuntime.create({ authPath: paths.authPath, modelsPath: paths.modelsPath });
@@ -313,10 +318,20 @@ export async function availableModels(paths: FlypiPaths): Promise<AvailableModel
  */
 export function resolveAgentModel(row: AgentFileRow, available: readonly AvailableModel[], fallback?: ModelRef): AgentModelAnswer {
 	const ask = row.model === undefined ? undefined : norm(row.model);
-	// The exact tier over `provider/modelId` (`model-resolver.ts:46-57`) plus the same exact match on the bare id,
-	// which is how the extension reads a `model:` that names no provider: an exact id scores 100 over every provider
-	// (`:64,88`), so a `model: qwen3` legitimately lands on `lmstudio/qwen3`.
-	const served = ask === undefined ? undefined : available.find((model) => norm(modelKey(model)) === ask || norm(model.modelId) === ask);
+	// The extension's exact tier over the **full** address comes first (`model-resolver.ts:52-57`), and only then the
+	// same exact match on the bare id, which is how it reads a `model:` that names no provider: an exact id scores 100
+	// over every provider (`:64,88`), so a `model: qwen3` legitimately lands on `lmstudio/qwen3`. Two passes rather than
+	// one `find` with both arms: pi's openrouter catalog ships ids that keep their slash
+	// (`anthropic/claude-haiku-4.5`, `pi-ai/dist/providers/data/openrouter.json`), so such an entry satisfies the ask
+	// `anthropic/claude-haiku-4.5` on its id alone and would be named for a run that went to
+	// `anthropic/claude-haiku-4-5`, where the extension short-circuits on the full address before it scores anything.
+	const served =
+		ask === undefined ? undefined :
+		available.find((model) => norm(modelKey(model)) === ask) ??
+		// The one ask this cannot settle: a bare id that really exists under two credentialed providers. flypi takes the
+		// first in its own ordering, the extension the first in its, and the tie needs the resolver itself (plan D10) — so
+		// `runsOn` says which model flypi matched, not a promise about which one ran.
+		available.find((model) => norm(model.modelId) === ask);
 	// What the run lands on, when flypi is able to name it.
 	const landsOn = served ?? fallback;
 	const answer: AgentModelAnswer = {
@@ -329,21 +344,25 @@ export function resolveAgentModel(row: AgentFileRow, available: readonly Availab
 		...(!row.model ? { inherited: true } : {}),
 	};
 	// Which model that run lands on, as an entry of the available set — and when flypi cannot see that model at all
-	// it says nothing about levels, rather than promising one it has not checked. The `off` ask never warns: pi
-	// offers it to a model that cannot think (`models.js:694-695`) and the extension lists it as a level
-	// (`pi-subagents/src/types.ts:24`), so asking it of a local endpoint is the ask succeeding.
+	// it says nothing about levels, rather than promising one it has not checked. The ask is measured against pi's rule
+	// whole, in pi's order (`getSupportedThinkingLevels`, pi-ai/dist/models.js:692-706): a model that cannot think
+	// supports `off` and nothing else, and for a reasoning model a `null` mapping refuses **any** level — `off`
+	// included, which `claude-fable-5`, `claude-sonnet-5-5` and `claude-opus-5-5` really do map
+	// (`pi-ai/dist/providers/data/anthropic.json`). A blanket "`off` never warns" guard is not pi's rule: it hides the
+	// reasoning models that refuse to think at all.
 	const lands = landsOn ? available.find((model) => norm(modelKey(model)) === norm(modelKey(landsOn))) : undefined;
-	if (row.thinking && row.thinking !== "off" && lands) {
+	if (row.thinking && lands) {
 		const lv = row.thinking;
 		const mapped = lands.thinkingLevelMap?.[lv];
-		// pi's rule, in pi's order (`getSupportedThinkingLevels`, pi-ai/dist/models.js:696-703): a `null` refuses the
-		// level at **any** level, and for `xhigh`/`max` a *missing key* refuses it too — pi answers
-		// `mapped !== undefined` for those two, so a map of `{low, high}` cannot do `xhigh`, which is what
+		// pi's order: a `null` refuses the level at **any** level, and for `xhigh`/`max` a *missing key* refuses it too —
+		// pi answers `mapped !== undefined` for those two, so a map of `{low, high}` cannot do `xhigh`, which is what
 		// `researcher.md` and `reviewer.md` both ask. For every other level a missing key *is* provider defaults,
 		// which is no warning here. The doc comment beside `thinkingLevelMap` ("missing keys use provider defaults")
 		// is wrong for `xhigh`/`max`; the code is the truth.
-		const unmapped = mapped === null || ((lv === "xhigh" || lv === "max") && mapped === undefined);
-		if (!lands.reasoning || unmapped) answer.thinkingUnsupported = true;
+		const unsupported = lands.reasoning
+			? mapped === null || ((lv === "xhigh" || lv === "max") && mapped === undefined)
+			: lv !== "off";
+		if (unsupported) answer.thinkingUnsupported = true;
 	}
 	return answer;
 }
@@ -362,8 +381,9 @@ export interface AgentTypeRow extends AgentFileRow, AgentModelAnswer {}
  * and a row carries its own answer; whoever writes the `subagentAgents` resource (sub-task 3) keeps it off the wire.
  *
  * `models` is a parameter so a caller (or a test) that already paid for `availableModels` can reuse it; it defaults
- * to reading them. Reads only, like `listAgentFiles` — nothing on this path writes, and `availableModels` is the one
- * read that goes near pi's runtime.
+ * to reading them. **With `models` passed** this is reads-only, like `listAgentFiles`; **without it** the read goes
+ * through pi's runtime, which persists its catalog cache to `models-store.json` beside `models.json` exactly as a
+ * session start does (`availableModels`, `src/agent/runtime.ts:119-121`).
  *
  * A set that cannot be read is **one** sentence in `errors` and rows with no model claims, not `resolvable: false`
  * on every row: five warnings would be five claims about five models the run could not serve, from one file pi
@@ -383,6 +403,14 @@ export async function readAgentTypes(paths: FlypiPaths, models?: readonly Availa
 	if (available === undefined) {
 		try {
 			available = await availableModels(paths);
+			// The real failure pi does **not** report: `ModelRuntime.create` swallows a `models.json` it cannot parse and
+			// answers an empty set, so on a root whose providers are declared in that file every row would warn "will run
+			// on the conversation's model" with nothing to explain it. One sentence naming the operator's own file, before
+			// the panel blames an agent file for it. A root that never had the file is a different state (onboarding has
+			// not run) and gets no sentence.
+			if (available.length === 0 && existsSync(paths.modelsPath)) {
+				errors.push(`${paths.modelsPath} defines no model flypi can serve — check that file before blaming an agent file`);
+			}
 		} catch (error) {
 			errors.push((error as Error).message); // pi's own sentence, which names the file it could not read
 		}
