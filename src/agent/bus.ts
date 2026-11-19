@@ -44,10 +44,13 @@ export interface FlypiEventBus {
  * The view is what closes it, because every channel a conversation uses is namespaced by that conversation:
  * an emit made inside one runs **that conversation's** handlers only (`tests/agent/event-bus.test.ts` row 2,
  * which pins one handler invocation where the shared channel gave two), so inbound RPC is bound to the
- * conversation that made the request — the condition on declaring the package. Nothing is hidden from the host:
- * every emit reaches `on(channel, handler)`, and the handler's second argument names the conversation it came
- * from, which is the attribution T46.4's fleet store needs. `emitTo` is the reverse direction, the host speaking
- * into one conversation and no other. There is no broadcast verb, because the only one worth having is scoped.
+ * conversation that made the request — the condition on declaring the package. Nothing a conversation emits is
+ * hidden from the host: every emit **it** makes reaches `on(channel, handler)`, and the handler's second argument
+ * names the conversation it came from, which is the attribution T46.4's fleet store needs. `emitTo` is the reverse
+ * direction, the host speaking into one conversation and no other, and it is deliberately asymmetric about
+ * `on(...)`: a host listener hears what conversations say, never what the host told one of them. T46.4's fleet
+ * store is built on that second argument and must not assume it sees host→conversation deliveries. There is no
+ * broadcast verb, because the only one worth having is scoped.
  *
  * That a custom `{emit, on}` object is safe to hand pi was measured, not assumed. Outside `core/event-bus.js`
  * itself, the only code in pi's `dist/` that reads or writes the bus is the `pi.events` wrapper: one writer
@@ -88,6 +91,7 @@ export function flypiEventBus(): FlypiEventBus {
 	const router = createEventBus();
 	const extensionKey = (conversationId: string, channel: string) => `c\0${conversationId}\0${channel}`;
 	const hostKey = (channel: string) => `h\0${channel}`;
+	// shortcut: one entry per conversation and per review fork for the life of the process; upgrade = drop it on registry teardown.
 	const views = new Map<string, EventBus>();
 	shared = {
 		view(conversationId) {

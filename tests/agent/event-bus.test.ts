@@ -180,6 +180,8 @@ describe("one event bus per process", () => {
 		installProbe(rootA, "one-way", "first");
 		installProbe(rootB, "one-way", "second");
 		const pong = listen("flypi:test/one-way/pong");
+		// The host handle hears what conversations say, not what it tells one of them.
+		const ping = listen("flypi:test/one-way/ping");
 		const stub = await createStubModel({ authPath: flypiPaths(rootA).authPath });
 		const first = await createFlypiSession({ root: rootA, modelRuntime: stub.modelRuntime, model: stub.model, conversationId: "bus-one-way-a" });
 		const second = await createFlypiSession({ root: rootB, modelRuntime: stub.modelRuntime, model: stub.model, conversationId: "bus-one-way-b" });
@@ -188,8 +190,10 @@ describe("one event bus per process", () => {
 			const pongWait = await until('"flypi:test/one-way/pong" reply', () => pong.events.length > 0);
 			await new Promise((resolve) => setTimeout(resolve, 50));
 			expect(pong.events.map((event) => event.from), pongWait).toEqual(["first"]);
+			expect(ping.events).toEqual([]);
 		} finally {
 			pong.stop();
+			ping.stop();
 			first.session.dispose();
 			second.session.dispose();
 		}
