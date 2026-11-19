@@ -295,4 +295,38 @@ describe("the default flypi ships", () => {
 			session.dispose();
 		}
 	});
+
+	// The state T51 put every root in: the daemon's seed declared the default, and this row says what happens
+	// when the code is *already there* — pi resolves an `npm:` source by looking for
+	// `<agentDir>/npm/node_modules/<name>` and only installs when it is missing (`package-manager.js:1030`), so
+	// the fabricated directory is also what keeps this row off the network. Green with
+	// `npm_config_registry=http://127.0.0.1:9/` is the proof: had pi asked npm, the install would have failed
+	// and this row would be in the degrade half above instead of holding a loaded tool.
+	it("hands the conversation the default's own tool when the code is already installed under the root", async () => {
+		const root = createTempFlypiRoot();
+		const paths = flypiPaths(root);
+		ensureAgentConfig(paths);
+		expect(await ensureSubagentDefaults(paths)).toEqual([paths.settingsPath, join(paths.agentDir, "subagents.json")]);
+		// Built, never installed: pi's npm layout and the shape the rows of tests/agent/packages.test.ts fake,
+		// with one extension that registers the tool the real package registers.
+		const dir = join(paths.agentDir, "npm", "node_modules", "@tintinweb", "pi-subagents");
+		mkdirSync(join(dir, "extensions"), { recursive: true });
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@tintinweb/pi-subagents", version: "0.26.1", pi: { extensions: ["extensions/agent.ts"] } }, null, 2));
+		writeFileSync(
+			join(dir, "extensions", "agent.ts"),
+			"export default function (pi) {\n\tpi.registerTool({ name: \"Agent\", description: \"d\", parameters: {}, execute: async () => ({ content: [{ type: \"text\", text: \"ok\" }], details: undefined }) });\n}\n",
+		);
+		const stub = await createStubModel();
+		const { session } = await createFlypiSession({ root, modelRuntime: stub.modelRuntime, model: stub.model });
+		try {
+			// The tool the default package provides is in the conversation — the seeded `askBeforeUse` gate
+			// refuses a call, it does not hide the tool — and the package reads declared-and-installed with
+			// nothing said against it, so the degrade path never ran.
+			expect(await activeToolNames(session, ["Agent"])).toContain("Agent");
+			expect(readPackages(paths).packages[0]).toMatchObject({ source: DEFAULT_PACKAGES[0], installed: true, version: "0.26.1" });
+			expect(readPackages(paths).errors).toEqual([]);
+		} finally {
+			session.dispose();
+		}
+	});
 });

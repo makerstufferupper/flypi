@@ -384,6 +384,10 @@ export function prunePackageFailures(paths: FlypiPaths): void {
  *
  * A `remove` also records the source as declined (`recordPackageDecline`), and an `install` clears that:
  * this is the one place the panel's decision is observable, so it is the one place it gets written down.
+ * Both happen **after** `settings.flush()`, because that helper re-reads `settings.json` and writes the whole
+ * thing back by hand while pi holds a queued write to the same file. pi's `persistScopedSettings` happens to
+ * re-read too (`settings-manager.js:449-472`), so writing first would usually survive — usually is not a
+ * contract, and a writer that replaces the file with its own snapshot loses the other half.
  */
 export async function applyPackageEdits(paths: FlypiPaths, edits: PackageEdits): Promise<PackageSnapshot> {
 	// The panel's install writes the agent-dir files too — pi's package manager puts the code under
@@ -393,20 +397,26 @@ export async function applyPackageEdits(paths: FlypiPaths, edits: PackageEdits):
 	const { manager, settings } = packages(paths);
 	const unreadable = settingsErrors(settings);
 	if (unreadable.length > 0) throw new FlypiConfigError(unreadable.join("; "));
+	// What to record, in the order the edits ran: a source gets its entry only once pi's own call for *that*
+	// source succeeded, so an install that threw never clears a decline it did not make — and none of it is
+	// written until the flush below, which is when the file stops being pi's to write.
+	const decisions: [string, boolean][] = [];
 	for (const source of edits.install ?? []) {
 		await manager.installAndPersist(source);
 		// Re-installing is the operator changing their mind, and it is the only thing that clears a decline.
-		recordPackageDecline(paths, source, false);
+		decisions.push([source, false]);
 	}
 	for (const source of edits.remove ?? []) {
 		await manager.removeAndPersist(source);
 		// Every removed source, default or not: this module does not know which sources flypi declares, and it
 		// must not import what it does not need to (src/agent/config-files.ts imports this one, not the other way).
-		recordPackageDecline(paths, source, true);
+		decisions.push([source, true]);
 	}
 	for (const source of edits.update ?? []) await manager.update(source);
-	// pi queues settings writes; the file has to be on disk before the snapshot re-reads it.
+	// pi queues settings writes; the file has to be on disk before the snapshot re-reads it — and before the
+	// rewrite of it below, which is flypi's own read-modify-write of the same file.
 	await settings.flush();
+	for (const [source, declined] of decisions) recordPackageDecline(paths, source, declined);
 	const errors = settingsErrors(settings);
 	const snapshot = readPackages(paths);
 	return { ...snapshot, errors: [...errors, ...snapshot.errors] };

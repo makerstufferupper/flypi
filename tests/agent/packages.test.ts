@@ -6,7 +6,8 @@
  * actually reaches a flypi session — including a session that was already open when it was installed, which
  * is the part that silently loses MCP tools if the reload is done wrong.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_PACKAGES } from "../../src/agent/config-files.ts";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -158,7 +159,10 @@ describe("the packages the operator took out stay out", () => {
 		await applyPackageEdits(paths, { remove: [DEFAULT_PACKAGES[0]!] });
 		expect(readDeclinedPackages(paths)).toEqual([dir, ...DEFAULT_PACKAGES]);
 		// The rest of the file is pi's and stays pi's; the decline is written by the uninstall that already
-		// landed, so the declaration it removed is gone and the two agree.
+		// landed, so the declaration it removed is gone and the two agree. `settingsOf` runs after the `await`,
+		// and `applyPackageEdits` flushes pi's queued write before it returns, so this is the file as it stands
+		// once pi wrote it — not an intermediate state. (That the *order* is what it is gets pinned next door,
+		// where a content assertion could not see it.)
 		expect(settingsOf(paths)).toMatchObject({ defaultProvider: "lmstudio", defaultModel: "qwen3", packages: [] });
 		// Owner-only, like every other file in the agent dir (`writeJson`, src/agent/config-files.ts).
 		expect(statSync(paths.settingsPath).mode & 0o777).toBe(0o600);
@@ -167,6 +171,34 @@ describe("the packages the operator took out stay out", () => {
 		await applyPackageEdits(paths, { install: [dir] });
 		expect(readDeclinedPackages(paths)).toEqual(DEFAULT_PACKAGES);
 		expect(settingsOf(paths).packages).toHaveLength(1);
+	});
+
+	it("writes the decline only after pi's own write to settings.json has landed", async () => {
+		// The fact to pin here is the *order*, and the bytes at the end cannot pin it: pi's
+		// `persistScopedSettings` re-reads the file and rewrites only the field it was asked to set
+		// (`settings-manager.js:449-472`), so the decline survives whether flypi writes before or after pi's
+		// queued write — a content assertion stays green either way. Sampling inside pi's own `flush()` does see
+		// the difference: the flypi key must still be absent when that write has landed, and present by the time
+		// `applyPackageEdits` returns.
+		const { paths, dir } = rootWithPackage();
+		await applyPackageEdits(paths, { install: [dir] });
+		const declinedAtFlush: boolean[] = [];
+		const realFlush = SettingsManager.prototype.flush;
+		const spy = vi.spyOn(SettingsManager.prototype, "flush").mockImplementation(async function (this: SettingsManager) {
+			await realFlush.call(this);
+			declinedAtFlush.push(readFileSync(paths.settingsPath, "utf8").includes("packagesDeclined"));
+		});
+		try {
+			await applyPackageEdits(paths, { remove: [dir] });
+		} finally {
+			spy.mockRestore();
+		}
+		// A flush of somebody else's root could only ever add another `false`, hence "at least one, none true"
+		// rather than a bare `[false]`.
+		expect(declinedAtFlush.length).toBeGreaterThan(0);
+		expect(declinedAtFlush).not.toContain(true);
+		// And the one file holds both halves when the call returns: pi's `packages` and flypi's decline.
+		expect(settingsOf(paths)).toMatchObject({ packages: [], flypi: { packagesDeclined: [dir] } });
 	});
 
 	it("reads as nothing over a file with no flypi key, a key that is not a list, and one that will not parse", () => {

@@ -479,6 +479,41 @@ describe("config files: the subagent defaults a root gets once", () => {
 		expect(h.read("settingsPath").packages).toEqual(["/opt/extensions/my-pkg", "https://git.example.com/x/y.git#v1.2.3", filtered, ...DEFAULT_PACKAGES]);
 	});
 
+	it("leaves a packages value that is not a list exactly as the operator wrote it", async () => {
+		// A hand-written `"packages": "npm:foo"` is a line flypi cannot read, and `list()` answers `[]` for it —
+		// so appending the defaults to that answer would replace the operator's line with one flypi can read,
+		// destroying it in silence. The seed refuses instead, the way a `settings.json` that will not parse is
+		// refused: it writes no `packages`, and the other two defaults still land.
+		const h = agentRoot({ settings: { packages: "npm:foo", defaultProvider: "x" } });
+
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([h.paths.settingsPath, subagentsOf(h.paths)]);
+
+		expect(h.read("settingsPath")).toEqual({ packages: "npm:foo", defaultProvider: "x", permissions: { askBeforeUse: GATED } });
+		// Byte for byte, the operator's own line, with nothing appended to it.
+		expect(readFileSync(h.paths.settingsPath, "utf8")).toContain('"packages": "npm:foo"');
+		// And the defaults that could be written were: the gate's key above, and the extension's ceilings here.
+		expect(JSON.parse(readFileSync(subagentsOf(h.paths), "utf8"))).toEqual({ maxConcurrent: 4, maxConcurrentForeground: 5, maxConcurrentNested: 4, worktreeIsolation: false });
+
+		// A later start still refuses: no list, nothing to add to, so the line survives every restart.
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([]);
+		expect(h.read("settingsPath").packages).toBe("npm:foo");
+	});
+
+	it("keeps the plain default out when the root declined the pinned form of it", async () => {
+		// The identity rule from the other side. A root that *declares* `npm:@tintinweb/pi-subagents@0.26.1`
+		// gets no second entry (the row above); a root that **declined** it declined the package, not the string,
+		// so `samePackage` keeps the plain default out too — otherwise the panel's Remove on a pin would put the
+		// same extension back on the next start.
+		const pinned = "npm:@tintinweb/pi-subagents@0.26.1";
+		const h = agentRoot({ settings: { packages: [] } });
+		recordPackageDecline(h.paths, pinned, true);
+
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([h.paths.settingsPath, subagentsOf(h.paths)]);
+
+		expect(h.read("settingsPath").packages).toEqual([]);
+		expect(readDeclinedPackages(h.paths)).toEqual([pinned]);
+	});
+
 	it("keeps out what the settings panel removed, and puts it back when that decision is withdrawn", async () => {
 		// T46.2.2's promise, kept alive on the additive rule: an uninstall is never reversed in silence, because
 		// the panel's Remove records the decision where it was made. Through the real `applyPackageEdits` — the

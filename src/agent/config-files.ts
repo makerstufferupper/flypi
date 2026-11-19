@@ -322,6 +322,11 @@ export function ensureAgentConfig(paths: FlypiPaths): string[] {
  * filling it would put four tools back behind a refusal the file had just cleared. An existing
  * `subagents.json` is left alone, parseable or not, like every other file here.
  *
+ * A `packages` key that is **not a list** is left alone as well: `"packages": "npm:foo"` is a line flypi cannot
+ * read, and appending the defaults to `list(...)`'s answer for it would write an empty list over it. So a
+ * non-array declares nothing and gets no `packages` written (the other two defaults still land) — the same
+ * refusal a `settings.json` that will not parse gets.
+ *
  * `packages` is written through pi's `SettingsManager`, because pi owns this file — `applyPackageEdits`
  * (src/agent/packages.ts) installs through it, and its `persistScopedSettings` re-reads the file and rewrites
  * only the field it was asked to set (`@earendil-works/pi-coding-agent/dist/core/settings-manager.js:449-470`),
@@ -347,12 +352,17 @@ export function ensureAgentConfig(paths: FlypiPaths): string[] {
 export async function ensureSubagentDefaults(paths: FlypiPaths): Promise<string[]> {
 	assertFlypiOwned(paths);
 	const file = readForWrite(paths.settingsPath);
+	// A `packages` value that is not a list is a line flypi cannot read, and appending the defaults would write
+	// `list(...)`'s answer for it — an empty list — over the operator's own value. So nothing is declared and no
+	// `packages` is written at all, the refusal style of a file that will not parse, while the other two
+	// defaults still land.
+	const unreadable = "packages" in file && !Array.isArray(file.packages);
 	// Which of the defaults this root does not already declare, in the order `DEFAULT_PACKAGES` declares them,
-	// minus the ones the settings panel removed. An absent key and an empty list both gain all of them; what
-	// keeps one out is a decline, not an empty list — hence no `in` here.
+	// minus the ones the settings panel removed. An absent key and an empty list both gain all of them: what
+	// keeps one out is a decline, never an empty list, so `unreadable` above is the only `in` this needs.
 	const existing = list(file.packages) as PackageSource[];
 	const declined = readDeclinedPackages(paths);
-	const missing = DEFAULT_PACKAGES.filter(
+	const missing = unreadable ? [] : DEFAULT_PACKAGES.filter(
 		(source) =>
 			!existing.some((entry) => samePackage(sourceOf(entry), source)) &&
 			!declined.some((held) => samePackage(held, source)),
