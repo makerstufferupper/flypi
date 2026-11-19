@@ -231,6 +231,26 @@ describe("the packages the operator took out stay out", () => {
 		recordPackageDecline(paths, DEFAULT_PACKAGES[0]!, false);
 		expect(readFileSync(paths.settingsPath, "utf8")).toBe("{ packages: ]");
 	});
+
+	it("takes the key with it when the last decline is cleared, and keeps a sibling it does not own", () => {
+		// A remove-and-reinstall that worked is not a decision the operator's file has to keep recording, and the
+		// file belongs to pi: an empty `flypi` block is a thing that says nothing, in somebody else's config.
+		const { paths } = rootWithPackage({ packages: [] });
+		recordPackageDecline(paths, DEFAULT_PACKAGES[0]!, true);
+		expect(readDeclinedPackages(paths)).toEqual([...DEFAULT_PACKAGES]);
+		expect(settingsOf(paths)).toMatchObject({ flypi: { packagesDeclined: [...DEFAULT_PACKAGES] } });
+
+		recordPackageDecline(paths, DEFAULT_PACKAGES[0]!, false);
+
+		expect(readDeclinedPackages(paths)).toEqual([]);
+		expect("flypi" in settingsOf(paths)).toBe(false);
+
+		// A sibling key inside the block is not this writer's to remove, so the block stays for it.
+		writeFileSync(paths.settingsPath, JSON.stringify({ packages: [], flypi: { packagesDeclined: ["npm:x"], kept: 1 } }, null, 2));
+		recordPackageDecline(paths, "npm:x", false);
+		expect(settingsOf(paths)).toMatchObject({ flypi: { kept: 1 } });
+		expect("packagesDeclined" in (settingsOf(paths).flypi as Record<string, unknown>)).toBe(false);
+	});
 });
 
 /**

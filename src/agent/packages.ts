@@ -284,8 +284,12 @@ export function recordPackageDecline(paths: FlypiPaths, source: string, declined
 		// flypi key in the operator's file that says nothing.
 		if (!declined && !list.includes(source)) return;
 		const next = declined ? [...new Set([...list, source])] : list.filter((item) => item !== source);
-		flypi.packagesDeclined = next;
-		file.flypi = flypi;
+		// The last decline gone takes the key with it: pi owns this file, and a `flypi` block holding an empty
+		// list is a thing that says nothing, left in an operator's config by a remove-and-reinstall that worked.
+		if (next.length === 0) delete flypi.packagesDeclined;
+		else flypi.packagesDeclined = next;
+		if (Object.keys(flypi).length === 0) delete file.flypi;
+		else file.flypi = flypi;
 		// 0600 and its directory created, like every other file flypi writes in the agent dir (`writeJson`,
 		// src/agent/config-files.ts) — and, like that one, the mode is set as well as asked for, because
 		// `writeFileSync` only applies it when the file is new.
