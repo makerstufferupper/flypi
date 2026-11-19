@@ -4,15 +4,17 @@
  *
  * Two rules hold every row here. **An operator's own file is never overwritten**: the import is a convenience,
  * and a copy that replaced a hand-edited `scout.md` would destroy the one thing the operator wrote, in the one
- * place flypi writes on their behalf. **Only a regular `.md` is a candidate**: `copyFileSync` follows symlinks,
- * so a `link.md` pointing out of the source dir would otherwise be copied *through* into the agent dir.
+ * place flypi writes on their behalf — and the entry that is *there* includes a symlink or a fifo, which
+ * `existsSync` would have looked straight through. **Only a regular `.md` is a candidate**: `copyFileSync` follows
+ * symlinks, so a `link.md` pointing out of the source dir would otherwise be copied *through* into the agent dir.
  *
  * Every row works in a temp root (`docs/testing.md`); the two rows that need a host `~/.pi` plant one, and the
  * operator's own home is never read.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { hostAgentsDir, importAgentFiles, listAgentFiles } from "../../src/agent/subagent-agents.ts";
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
@@ -49,7 +51,12 @@ function plantedHome(prefix = "flypi-hostagents-"): { home: string; agentsDir: s
 /** The mode, as `ls -l` would show it. */
 const statMode = (file: string) => statSync(file).mode & 0o777;
 
-const agentFile = (description: string) => `---\ndescription: ${description}\nmodel: lmstudio/qwen3\nthinking: low\n---\n${description} body\n`;
+/**
+ * Quoted on purpose, with the body behind blank lines and leading spaces: pi's parser drops the quotes and trims
+ * the body, so an implementation that parsed the frontmatter and wrote it back out could not produce these bytes.
+ * The byte-identity rows below are the difference between "copied verbatim" and "re-written, looks the same".
+ */
+const agentFile = (description: string) => `---\ndescription: "${description} quoted on purpose"\nmodel: lmstudio/qwen3\nthinking: low\n---\n\n  ${description} body text that a re-serialiser would trim\n`;
 
 describe("importAgentFiles", () => {
 	it("never overwrites a type that is already in flypi's dir, and says it skipped", () => {
@@ -98,8 +105,39 @@ describe("importAgentFiles", () => {
 		for (const dest of report.copied) expect(statMode(dest), dest).toBe(0o600);
 	});
 
-	// The symlink row is the one that keeps `copyFileSync` from following a link out of the source dir: the file
-	// it points at is not in the source and would arrive in the agent dir under a name nothing there chose.
+	// The `existsSync` guard looked through the link instead of at the entry: a dangling `scout.md` pointing at
+	// `elsewhere/sensitive.md` — exactly what a stow-style dotfiles manager leaves behind — read as "not there", and
+	// `copyFileSync` wrote *through* it, creating a file outside flypi's dir and reporting it as copied.
+	it("will not write through a symlink planted at the destination, dangling or not", () => {
+		const { root, paths, source } = fixture();
+		mkdirSync(paths.agentsDir, { recursive: true });
+		const outside = join(root, "elsewhere", "sensitive.md"); // deliberately never created: the link dangles
+		mkdirSync(join(root, "elsewhere"), { recursive: true });
+		const dest = join(paths.agentsDir, "scout.md");
+		symlinkSync(outside, dest);
+		writeFileSync(join(source, "scout.md"), agentFile("scout"));
+
+		const report = importAgentFiles(paths, source);
+
+		expect(existsSync(outside)).toBe(false); // nothing was created outside flypi's dir
+		expect(readlinkSync(dest)).toBe(outside); // and the operator's link is the entry it was
+		expect(report.skipped).toEqual(["scout"]); // named by the filename: reading a link's target is not on offer
+		expect(report.copied).toEqual([]);
+	});
+
+	// A copy that died partway (ENOSPC, EIO) used to leave a truncated `scout.md` behind, which every later import
+	// reported as `skipped` — the operator could never re-import. The write goes to `scout.md.tmp` and is moved in.
+	it("leaves no `.tmp` beside the file it imported", () => {
+		const { paths, source } = fixture();
+		writeFileSync(join(source, "scout.md"), agentFile("scout"));
+
+		importAgentFiles(paths, source);
+
+		expect(readdirSync(paths.agentsDir)).toEqual(["scout.md"]);
+	});
+
+	// The symlink row is the one that keeps `copyFileSync` from following a link out of the source dir: the file it
+	// points at is not in the source and would arrive in the agent dir under a name nothing there chose.
 	it("ignores a `.txt`, a subdirectory and a symlink, and copies nothing through them", () => {
 		const { root, paths, source } = fixture();
 		writeFileSync(join(source, "scout.md"), agentFile("scout"));
@@ -155,6 +193,22 @@ describe("importAgentFiles", () => {
 		expect(readFileSync(join(paths.agentsDir, "scout.md"), "utf8")).toBe("OPERATOR'S OWN FILE\n");
 	});
 
+	// The same refusal one `ln -s` away: a source that is a *link* to flypi's dir resolves to somewhere else, so the
+	// `resolve` comparison let it through and the run walked the directory reporting every name as a skip.
+	it("refuses a source that is a symlink to flypi's own agents dir", () => {
+		const { root, paths } = fixture();
+		mkdirSync(paths.agentsDir, { recursive: true });
+		writeFileSync(join(paths.agentsDir, "scout.md"), "OPERATOR'S OWN FILE\n");
+		const link = join(root, "agents-link"); // the name the panel would hand in, now pointed at flypi's dir
+		symlinkSync(paths.agentsDir, link);
+
+		const report = importAgentFiles(paths, link);
+
+		expect(report.error).toContain("flypi's own agents directory");
+		expect(report).toMatchObject({ exists: false, copied: [], skipped: [], ignored: [] });
+		expect(readFileSync(join(paths.agentsDir, "scout.md"), "utf8")).toBe("OPERATOR'S OWN FILE\n");
+	});
+
 	// The default source is the host dir, not the agent dir pi resolves for itself: flypi pins
 	// `PI_CODING_AGENT_DIR` at process start, so `getAgentDir()` would answer with the write target here.
 	it("imports from the host `~/.pi/agent/agents` when the caller names no source", () => {
@@ -178,8 +232,24 @@ describe("listAgentFiles", () => {
 	it("is an empty list when flypi has no `agents/` dir yet", () => {
 		const { paths } = fixture();
 
-		expect(existsSync(paths.agentsDir)).toBe(false);
 		expect(listAgentFiles(paths)).toEqual([]);
+		// After the call, because the claim is "reads only": a `mkdirSync` in the read would leave this row green
+		// and make the settings panel's refresh a mutation.
+		expect(existsSync(paths.agentsDir)).toBe(false);
+	});
+
+	// The comment claims filename order and readdir makes no such promise: the container's ext4 returns hash order.
+	// Created in one order, asserted in another, and `Mike`/`alpha` pin the locale collation rather than byte order.
+	it("returns the rows in filename order, whatever order the directory hands back", () => {
+		const { paths } = fixture();
+		mkdirSync(paths.agentsDir, { recursive: true });
+		for (const name of ["zulu.md", "Mike.md", "alpha.md"]) writeFileSync(join(paths.agentsDir, name), `---\ndescription: ${name}\n---\nbody\n`);
+
+		expect(listAgentFiles(paths).map((row) => row.file)).toEqual([
+			join(paths.agentsDir, "alpha.md"),
+			join(paths.agentsDir, "Mike.md"),
+			join(paths.agentsDir, "zulu.md"),
+		]);
 	});
 
 	// Claude Code's rule, which the loader follows: `name:` IS the type. A panel that listed the filename instead
@@ -244,6 +314,17 @@ describe("hostAgentsDir", () => {
 		} finally {
 			env.restore();
 			host.restore();
+		}
+	});
+
+	// pi's own answer for the same directory, with flypi's pin removed: this pins `HOST_CONFIG_DIR` to pi's
+	// `CONFIG_DIR_NAME` without listing a string in `PI_COMPAT.imports[].values` (which would fail its own row).
+	it("is what pi's own `getAgentDir()` calls its agents dir, with the env unset", () => {
+		const env = agentDirEnv(undefined); // `getAgentDir()` reads the env at call time (dist/config.js:491-497)
+		try {
+			expect(hostAgentsDir()).toBe(join(getAgentDir(), "agents"));
+		} finally {
+			env.restore();
 		}
 	});
 });

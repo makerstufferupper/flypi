@@ -60,6 +60,13 @@ describe("assertFlypiOwned (risk 1: never touch host ~/.pi)", () => {
 		expect(() => assertFlypiOwned(paths)).toThrow(/agentDir must be \.flypi\/agent/);
 	});
 
+	// The field `importAgentFiles` writes into, so the guard that pinned `agentDir` and left this one free let a
+	// hand-built `FlypiPaths` point the import at the host tree — risk 1 through the one field nobody checked.
+	it("rejects an agentsDir that is not .flypi/agent/agents", () => {
+		const paths = { ...flypiPaths("/repo"), agentsDir: join(homedir(), ".pi", "agent", "agents") };
+		expect(() => assertFlypiOwned(paths)).toThrow(/agentsDir must be \.flypi\/agent\/agents/);
+	});
+
 	// pi's own `getAgentDir()` takes `$PI_CODING_AGENT_DIR` at call time, so an exported value re-points code
 	// flypi never passes a path to (docs/risks.md risk 1). `hostPiRoot` points `HOME` at a temp dir so the
 	// value under test can name the host agent dir without the run ever touching the real one.

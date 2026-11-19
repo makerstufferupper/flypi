@@ -103,6 +103,11 @@ export function assertFlypiOwned(paths: FlypiPaths): void {
 	if (paths.agentDir !== join(paths.root, ".flypi", "agent")) {
 		throw new Error(`agentDir must be .flypi/agent, got ${paths.agentDir}`);
 	}
+	// The one field a writer creates files in, so a hand-built `FlypiPaths` that points it at the host tree would
+	// write agent types into `~/.pi/agent/agents` past every other half of this guard (risk 1).
+	if (paths.agentsDir !== join(paths.agentDir, "agents")) {
+		throw new Error(`agentsDir must be .flypi/agent/agents, got ${paths.agentsDir}`);
+	}
 	// pi's own `getAgentDir()` takes `$PI_CODING_AGENT_DIR` at call time, so an exported value re-points code
 	// flypi never passes a path to (docs/risks.md risk 1). Empty means unset to pi too (`if (envDir)`).
 	const env = process.env.PI_CODING_AGENT_DIR;

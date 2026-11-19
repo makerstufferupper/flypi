@@ -18,11 +18,16 @@
  * directory never held. A subdirectory and a `.txt` are not types either. All three are named in `ignored`, so
  * "it copied nothing" and "it copied the wrong thing" stay two different answers.
  *
- * The copy is verbatim and the destination is `0600`, like every other file flypi writes in the agent dir
+ * The **list** applies `isFile()` too, which is a limit rather than parity with the loader: the extension follows a
+ * `link.md`, so a link flypi hides here is a type `Agent` offers — the import never creates one, and reading a fifo
+ * to name it would hang.
+ *
+ * The copy is verbatim, it lands whole or the operator finds the directory exactly as it was (written beside the
+ * destination, then moved), and the destination is `0600`, like every other file flypi writes in the agent dir
  * (`writeText`, src/agent/config-files.ts). Nothing here reformats, normalises or re-serialises a frontmatter
  * block: these files belong to the operator, and pi's loader is the only parser that has to agree with them.
  */
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -84,6 +89,15 @@ export interface AgentImportReport {
 	/** Set instead of throwing, when the import was refused before it read anything — the caller renders the
 	 *  sentence. Today there is one such case: the source *is* flypi's own dir. */
 	error?: string;
+}
+
+/** The directory as the filesystem really has it; one that does not exist yet has nothing to resolve. */
+function realDir(dir: string): string {
+	try {
+		return realpathSync(dir);
+	} catch {
+		return resolve(dir); // nothing there to follow, so `resolve` is the best answer to compare against
+	}
 }
 
 /** The extension's own field reader: a string or nothing (`custom-agents.ts:312-314`). */
@@ -149,14 +163,17 @@ export function listAgentFiles(paths: FlypiPaths): AgentFileRow[] {
  * never overwrite a name that already exists, report each copy.
  *
  * `assertFlypiOwned` runs first, because this is the module that writes in the agent dir (docs/risks.md risk 1).
- * A source that resolves to flypi's own dir is refused rather than run: every file would be "already there", the
- * copy would report a directory of nothing but skips, and the operator would be told the import worked.
+ * A source that *is* flypi's own dir — by path or by symlink — is refused rather than run: every file would be
+ * "already there", the copy would report a directory of nothing but skips, and the operator would be told the
+ * import worked.
  */
 export function importAgentFiles(paths: FlypiPaths, sourceDir = hostAgentsDir()): AgentImportReport {
 	assertFlypiOwned(paths);
 	const source = resolve(sourceDir);
 	const report: AgentImportReport = { source, exists: false, copied: [], skipped: [], ignored: [] };
-	if (source === resolve(paths.agentsDir)) return { ...report, error: `${source} is flypi's own agents directory — there is nothing to import from here` };
+	// `realpathSync`, not `resolve`: a source that is a *link* to the agents dir resolves to somewhere else and
+	// slips the guard, so the run would walk the whole directory reporting skips as a success.
+	if (realDir(sourceDir) === realDir(paths.agentsDir)) return { ...report, error: `${source} is flypi's own agents directory — there is nothing to import from here` };
 	if (!existsSync(source)) return report;
 	report.exists = true;
 	for (const entry of readdirSync(source, { withFileTypes: true })) {
@@ -166,15 +183,24 @@ export function importAgentFiles(paths: FlypiPaths, sourceDir = hostAgentsDir())
 			continue;
 		}
 		const dest = join(paths.agentsDir, entry.name);
-		if (existsSync(dest)) {
-			// The type that is already there, which is what the operator's file declares — the filename is only the
-			// fallback the loader itself uses.
-			report.skipped.push(agentRow(dest).type);
+		// `lstatSync`, not `existsSync`: the latter follows symlinks, so a dangling `scout.md` pointing outside the
+		// tree — exactly what a stow-style dotfiles manager leaves behind — reads as "not there", and the import
+		// writes that entry away (with a plain `copyFileSync`, *through* the link, into a file outside flypi's dir).
+		const existing = lstatSync(dest, { throwIfNoEntry: false });
+		if (existing) {
+			// A link, a fifo, anything that is not the regular file the loader would read: it is still *there*, and
+			// reading it to find its declared name is how a fifo turns a settings-panel click into a hang. A regular
+			// file is named by the type it declares; the filename is only the fallback the loader itself uses.
+			report.skipped.push(existing.isFile() ? agentRow(dest).type : basename(entry.name, ".md"));
 			continue;
 		}
 		mkdirSync(dirname(dest), { recursive: true });
-		copyFileSync(file, dest); // byte for byte, frontmatter and all
-		chmodSync(dest, 0o600); // copyFileSync keeps the source's mode; the agent dir's files are never group-readable
+		// Byte for byte, frontmatter and all, written beside the destination and moved in: a copy that dies partway
+		// (ENOSPC, EIO) must not leave a truncated `scout.md` that every later import reports as `skipped` forever.
+		const tmp = `${dest}.tmp`;
+		copyFileSync(file, tmp);
+		chmodSync(tmp, 0o600); // copyFileSync keeps the source's mode; the agent dir's files are never group-readable
+		renameSync(tmp, dest); // atomic within the dir: a half-copy is never what the operator finds
 		report.copied.push(dest);
 	}
 	return report;
