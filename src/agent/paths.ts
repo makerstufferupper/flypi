@@ -26,6 +26,12 @@ export interface FlypiPaths {
 	root: string;
 	/** pi's "agent directory": settings.json, models.json, auth.json, mcp.json. */
 	agentDir: string;
+	/**
+	 * `.flypi/agent/agents`: the agent types flypi's subagent extension can spawn (docs/risks.md risk 1 says
+	 * where they may not live — the host `~/.pi/agent/agents` is only ever read from, in `hostAgentsDir`). Named
+	 * once so no entrypoint can point at a second one by mistake; it is flypi's write target, so it belongs here.
+	 */
+	agentsDir: string;
 	/** pi session JSONL files. */
 	sessionsDir: string;
 	/** SQLite memory store (Phase 3) — the memory component's own database. */
@@ -66,6 +72,7 @@ export function flypiPaths(root: string = process.cwd()): FlypiPaths {
 	return {
 		root: base,
 		agentDir,
+		agentsDir: join(agentDir, "agents"),
 		sessionsDir: join(dir, "sessions"),
 		memoryDir: join(dir, "memory"),
 		memoryDbPath: join(dir, "memory", "flypi.db"),

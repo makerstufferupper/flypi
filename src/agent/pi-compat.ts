@@ -52,6 +52,7 @@ export const PI_COMPAT: { imports: PiImport[]; deep: PiDeepImport[] } = {
 				"ModelRuntime",
 				"getAgentDir",
 				"getPackageDir",
+				"parseFrontmatter",
 				"createEventBus",
 				"createMcpExtension",
 				"createToolSearchExtension",
