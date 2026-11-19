@@ -16,6 +16,7 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { flypiEventBus } from "./bus.ts";
+import { prunePackageFailures, recordPackageFailure } from "./packages.ts";
 import { forceFlypiAgentDir, flypiPaths, type FlypiPaths } from "./paths.ts";
 import { mcpCredentials, usesMcpOAuth } from "./pi-mcp.ts";
 import { importEnvCredential, readAuth, resolveCredential } from "./onboarding.ts";
@@ -163,7 +164,7 @@ export async function createFlypiSession(options: {
 	// most tests) still gets a scope of its own, because two sessions sharing one by accident is the leak this
 	// whole thing exists to close.
 	const conversationScope = options.conversationId ?? `session:${randomUUID()}`;
-	const resourceLoader = new DefaultResourceLoader({
+	const buildLoader = () => new DefaultResourceLoader({
 		cwd: paths.root,
 		agentDir: paths.agentDir,
 		// Without this pi mints a bus of its own for this loader alone, and an extension that emits outside a
@@ -217,7 +218,44 @@ export async function createFlypiSession(options: {
 			...(options.vault ? [createSecretsExtension(options.vault, { paths })] : []),
 		],
 	});
-	await resourceLoader.reload();
+	// A declared source that will not install costs that tool and not the conversation. pi awaits the install
+	// inside `resolve()` unguarded (`core/package-manager.js:1014`, awaits at `:1033`/`:1046`), so an npm or git
+	// failure throws through `resolve()` (`core/resource-loader.js:369`) — and since T46.2.2 flypi *declares*
+	// `DEFAULT_PACKAGES`, that failure sits on the default path: on a machine whose npm refuses the install
+	// (`npm_config_allow_scripts`, which `npx`/`npm run` export) no conversation could start at all.
+	// Degrade instead: name what failed where the settings panel already reads problems
+	// (`recordPackageFailure`, src/agent/packages.ts), then reload once more over what is on disk.
+	let resourceLoader = buildLoader();
+	try {
+		await resourceLoader.reload();
+	} catch (error) {
+		// Nothing declared is missing, so no declared source caused this: a flypi with nothing to drop that
+		// still cannot load is broken for real, and that failure has to reach the caller unchanged.
+		if (recordPackageFailure(paths, error).length === 0) throw error;
+		// pi's own offline switch: `isOfflineModeEnabled()` reads this at install time
+		// (`core/package-manager.js:38`) and the resolve path skips the install when it is set (`:1015`), so
+		// every source already on disk still loads. It is the only lever there is — the loader does not expose
+		// its package manager (`core/resource-loader.js:252`, private, and `resolve()`'s `onMissing` is never
+		// passed by the loader), so a per-loader switch cannot be asked for.
+		// shortcut: the variable is process-wide for the length of the awaited reload, so a conversation that
+		// starts concurrently can skip an install it would have made and come up without that extension itself;
+		// it self-heals on its next reload, and the window only opens when a declared source of ours is
+		// genuinely missing. Upgrade when pi gives a loader its own offline switch.
+		const previousOffline = process.env.PI_OFFLINE;
+		process.env.PI_OFFLINE = "1";
+		try {
+			resourceLoader = buildLoader();
+			await resourceLoader.reload();
+		} finally {
+			// Back exactly as it was, unset included: the daemon's daily update check
+			// (`updateConfiguredSources`, `:862`) reads the same variable and would stop answering.
+			if (previousOffline === undefined) delete process.env.PI_OFFLINE;
+			else process.env.PI_OFFLINE = previousOffline;
+		}
+	}
+	// The reload that worked settles the stamps: a source installed again, or taken out of settings.json, is
+	// no longer something to tell anybody. A source still missing keeps its stamp, for the panel to report.
+	prunePackageFailures(paths);
 
 	mkdirSync(paths.sessionsDir, { recursive: true });
 	const { session } = await createAgentSession({

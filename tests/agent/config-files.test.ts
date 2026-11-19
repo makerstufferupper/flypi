@@ -515,18 +515,17 @@ describe("config files: the subagent defaults a root gets once", () => {
 
 	it("seeds the key the permission gate actually reads", async () => {
 		// The rows above say what was written; this says it lands where a live session looks. The gate is an
-		// extension handler, so only a session can prove that, and it needs an `Agent` tool that exists — which
-		// rules out the package this root now declares, because npm on this machine refuses to install it (the
-		// half that survives that is T46.2.3). So the declaration is taken back out of the file and the fixture
-		// registers the tool: what is under test is the key, not the install.
+		// extension handler, so only a session can prove that, and it needs an `Agent` tool that exists — hence
+		// the fixture registers one. Whether the package this root declares installed too is the environment's
+		// business (on this machine npm refuses it, and the session degrades over it per src/agent/runtime.ts), and
+		// the row does not move with it: two registrations of one tool name collapse to one tool in pi, measured
+		// with a local package that registers `Agent` beside this fixture, and the gate refuses by name before
+		// either one runs — both markers unwritten, the refusal text the same in either world.
 		const root = createTempFlypiRoot();
 		const paths = flypiPaths(root);
 		rmSync(paths.settingsPath, { force: true });
 		ensureAgentConfig(paths);
 		expect(await ensureSubagentDefaults(paths)).toEqual([paths.settingsPath, subagentsOf(paths)]);
-		const seeded = JSON.parse(readFileSync(paths.settingsPath, "utf8")) as Record<string, unknown>;
-		delete seeded.packages;
-		writeFileSync(paths.settingsPath, JSON.stringify(seeded));
 
 		const marker = join(root, "spawned-by-agent.txt");
 		mkdirSync(join(paths.agentDir, "extensions"), { recursive: true });

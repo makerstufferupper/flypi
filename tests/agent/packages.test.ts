@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyPackageEdits, autoExtensions, dueForPackageCheck, npmName, publishedVersions, readPackages, readPackageCheck, writePackageCheck } from "../../src/agent/packages.ts";
+import { applyPackageEdits, autoExtensions, dueForPackageCheck, npmName, prunePackageFailures, publishedVersions, readPackages, readPackageCheck, recordPackageFailure, writePackageCheck } from "../../src/agent/packages.ts";
 import { FlypiConfigError, createFlypiSession, type FlypiSession } from "../../src/agent/runtime.ts";
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
@@ -133,6 +133,97 @@ describe("the packages a flypi checkout declares", () => {
 		writeFileSync(paths.settingsPath, JSON.stringify({ packages: ["npm:pi-web-access"] }, null, 2));
 		// The badge comes from the stamp: reading the list reaches no registry.
 		expect(readPackages(paths).packages[0]).toMatchObject({ source: "npm:pi-web-access", installed: false, update: true });
+	});
+});
+
+/**
+ * The stamp a failed install leaves behind (`.flypi/package-failures.json`; src/agent/runtime.ts writes it
+ * when a declared source costs the conversation nothing, docs/protocol.md `packages`). Asserted here because
+ * the session rows in tests/agent/package-degrade.test.ts can only catch it in one state: what it says, that
+ * it says it once, and the two ways it stops saying it.
+ */
+describe("the stamp a failed install leaves", () => {
+	/** The failure pi hands up, in the shape it arrives: npm's own message, multi-line, with its advice. */
+	const npmFailure = new Error(
+		"npm install @tintinweb/pi-subagents --prefix /r/.flypi/agent/npm --legacy-peer-deps failed with code 1\nnpm error code EALLOWSCRIPTS\nnpm error --allow-scripts is not allowed in project-scoped installs.\n" + "n".repeat(500),
+	);
+	const SOURCE = "npm:@tintinweb/pi-subagents";
+
+	/** A checkout that declares one source and has no code for it on disk. */
+	function rootWithFailure() {
+		const fixture = rootWithPackage();
+		writeFileSync(fixture.paths.settingsPath, JSON.stringify({ packages: [SOURCE] }, null, 2));
+		return fixture;
+	}
+
+	it("names the source that did not install, once, on one line — and survives a reload that did not fix it", () => {
+		const { paths } = rootWithFailure();
+		expect(recordPackageFailure(paths, npmFailure)).toEqual([SOURCE]);
+		const errors = readPackages(paths).errors;
+		// Once, and readable in a panel row: the settings errors and this one share `errors`, so an
+		// accidentally-appended-twice list would be the bug here.
+		expect(errors).toHaveLength(1);
+		expect(errors[0]!.startsWith(`${SOURCE} did not install: npm install @tintinweb/pi-subagents`)).toBe(true);
+		expect(errors[0]).toContain("EALLOWSCRIPTS");
+		// Whitespace-collapsed and cut short: no npm usage block, no stack.
+		expect(errors[0]!.split("\n")).toHaveLength(1);
+		expect(errors[0]!.length).toBeLessThanOrEqual(`${SOURCE} did not install: `.length + 300);
+		// The stamp itself is flypi's own file, beside the update stamp and never inside `<agentDir>`.
+		const stamp = JSON.parse(readFileSync(join(paths.root, ".flypi", "package-failures.json"), "utf8")) as Record<string, { failedAt: string; reason: string }>;
+		expect(Object.keys(stamp)).toEqual([SOURCE]);
+		expect(Date.parse(stamp[SOURCE]!.failedAt)).not.toBeNaN();
+		// A reload that worked without installing it (pi offline, or a retry) keeps the sentence: the
+		// conversation still does not have the extension.
+		prunePackageFailures(paths);
+		expect(readPackages(paths).errors).toEqual(errors);
+	});
+
+	it("takes its reason from anything the reload threw, not only an Error", () => {
+		const { paths } = rootWithFailure();
+		expect(recordPackageFailure(paths, "git exited 128")).toEqual([SOURCE]);
+		expect(readPackages(paths).errors[0]).toBe(`${SOURCE} did not install: git exited 128`);
+	});
+
+	it("stops reporting the source once its code is on disk, and drops the stamp when a reload says so", () => {
+		const { paths } = rootWithFailure();
+		recordPackageFailure(paths, npmFailure);
+		// The installed package, built the way the rows above fake one: pi's own npm layout.
+		const dir = join(paths.agentDir, "npm", "node_modules", "@tintinweb", "pi-subagents");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@tintinweb/pi-subagents", version: "0.26.0" }));
+		// Reported no more — that half happens on the read alone.
+		expect(readPackages(paths).errors).toEqual([]);
+		expect(readPackages(paths).packages[0]).toMatchObject({ source: SOURCE, installed: true, version: "0.26.0" });
+		// And the file goes away with the next reload that worked, which is where the factory clears it.
+		prunePackageFailures(paths);
+		expect(existsSync(join(paths.root, ".flypi", "package-failures.json"))).toBe(false);
+	});
+
+	it("says nothing about a source the operator took out of settings.json, and forgets it on the next reload", () => {
+		const { paths } = rootWithFailure();
+		recordPackageFailure(paths, npmFailure);
+		writeFileSync(paths.settingsPath, JSON.stringify({ packages: [] }, null, 2));
+		// A failure nobody can buy back has nobody to tell: the row is gone, so the sentence is gone.
+		expect(readPackages(paths).errors).toEqual([]);
+		prunePackageFailures(paths);
+		expect(existsSync(join(paths.root, ".flypi", "package-failures.json"))).toBe(false);
+	});
+
+	it("stamps nothing when the root declares nothing", () => {
+		const { paths } = rootWithPackage({ packages: [] });
+		// The failure that is not a package's fault: the caller has to surface it, and it has to stay unnamed.
+		expect(recordPackageFailure(paths, npmFailure)).toEqual([]);
+		expect(existsSync(join(paths.root, ".flypi", "package-failures.json"))).toBe(false);
+	});
+
+	it("is a read: readPackages never writes the stamp file", () => {
+		const { paths } = rootWithFailure();
+		recordPackageFailure(paths, npmFailure);
+		const file = join(paths.root, ".flypi", "package-failures.json");
+		const before = readFileSync(file);
+		readPackages(paths);
+		readPackages(paths);
+		expect(readFileSync(file)).toEqual(before);
 	});
 });
 

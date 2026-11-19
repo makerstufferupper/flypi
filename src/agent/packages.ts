@@ -21,7 +21,7 @@
  * A source that names a version (`npm:x@1.2.0`) or a git ref is pinned, and pi leaves pinned sources where
  * they are: naming a version is asking for that version.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { isNewer, published } from "../daemon/update.ts";
@@ -32,6 +32,16 @@ import { assertFlypiOwned, type FlypiPaths } from "./paths.ts";
 export const PACKAGE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** The answer, next to flypi's own update stamp, so the panel reports it without reaching the network. */
 export const PACKAGE_CHECK_FILE = join(".flypi", "package-check.json");
+/**
+ * Which declared sources failed to install, stamped by the session factory (`src/agent/runtime.ts`) and read
+ * back by `readPackages` below. Flypi's own state dir, beside `PACKAGE_CHECK_FILE`: `<agentDir>` is pi's and
+ * the operator's, and nothing on this path may add files to it.
+ *
+ * It exists because a declared source that cannot install no longer stops the conversation — it costs that one
+ * extension — so the loss has to be written down somewhere the settings panel already reads. The file is
+ * flypi's and is safe to delete by hand; the code deletes it when there is nothing left to say.
+ */
+export const PACKAGE_FAILURES_FILE = join(".flypi", "package-failures.json");
 /** shortcut: the picker offers the 30 newest releases; going further back means editing the source by hand. */
 export const PUBLISHED_LIST_MAX = 30;
 
@@ -69,6 +79,19 @@ export interface PackageEdits {
 	install?: string[];
 	remove?: string[];
 	update?: string[];
+}
+
+/** One source whose install failed, as the panel sees it. */
+export interface PackageFailure {
+	/** When the reload that failed ran. */
+	failedAt: string;
+	/** The install's own error, collapsed to one line — npm prints a usage block and git prints a hint. */
+	reason: string;
+}
+
+/** What the daemon stamped: which declared sources have no code on disk because their install failed. */
+export interface PackageFailures {
+	[source: string]: PackageFailure;
 }
 
 /** What the daemon wrote: which sources have an update waiting. */
@@ -132,27 +155,107 @@ function settingsErrors(settings: SettingsManager): string[] {
 export function readPackages(paths: FlypiPaths): PackageSnapshot {
 	const { manager, settings } = packages(paths);
 	const check = readPackageCheck(paths.root);
+	const failures = readPackageFailures(paths.root);
+	const rows = manager.listConfiguredPackages().map((entry) => {
+		const name = npmName(entry.source);
+		const version = entry.installedPath ? installedVersion(entry.installedPath) : undefined;
+		const versions = check?.versions?.[entry.source];
+		const available = versions?.filter((v) => !version || isNewer(version, v)).at(-1);
+		return {
+			source: entry.source,
+			scope: entry.scope,
+			installed: entry.installedPath !== undefined,
+			path: entry.installedPath ?? "",
+			...(version ? { version } : {}),
+			...(check?.updates.includes(entry.source) ? { update: true } : {}),
+			...(name ? { name } : {}),
+			...(versions?.length ? { versions } : {}),
+			...(available ? { available } : {}),
+		};
+	});
 	return {
-		packages: manager.listConfiguredPackages().map((entry) => {
-			const name = npmName(entry.source);
-			const version = entry.installedPath ? installedVersion(entry.installedPath) : undefined;
-			const versions = check?.versions?.[entry.source];
-			const available = versions?.filter((v) => !version || isNewer(version, v)).at(-1);
-			return {
-				source: entry.source,
-				scope: entry.scope,
-				installed: entry.installedPath !== undefined,
-				path: entry.installedPath ?? "",
-				...(version ? { version } : {}),
-				...(check?.updates.includes(entry.source) ? { update: true } : {}),
-				...(name ? { name } : {}),
-				...(versions?.length ? { versions } : {}),
-				...(available ? { available } : {}),
-			};
-		}),
+		packages: rows,
 		...(check ? { checkedAt: check.checkedAt } : {}),
-		errors: settingsErrors(settings),
+		// A source that failed to install is a problem to say, not an empty list — the same channel the
+		// unreadable `settings.json` uses. It is reported while the code is still missing (`installed`), which
+		// is what makes the sentence disappear by itself once the install works; reading writes nothing.
+		errors: [
+			...settingsErrors(settings),
+			...rows.flatMap((row) => {
+				const failure = row.installed ? undefined : failures[row.source];
+				return failure ? [`${row.source} did not install: ${failure.reason}`] : [];
+			}),
+		],
 	};
+}
+
+/** The stamps, or none: an unreadable stamp file is flypi's own state missing, not a configuration error. */
+function readPackageFailures(root: string): PackageFailures {
+	try {
+		return JSON.parse(readFileSync(join(root, PACKAGE_FAILURES_FILE), "utf8")) as PackageFailures;
+	} catch {
+		return {};
+	}
+}
+
+/** Write the stamps, and remove the file when there are none left — a root with nothing wrong has no file. */
+function writePackageFailures(root: string, failures: PackageFailures): void {
+	const file = join(root, PACKAGE_FAILURES_FILE);
+	if (Object.keys(failures).length === 0) {
+		rmSync(file, { force: true });
+		return;
+	}
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, `${JSON.stringify(failures, null, 2)}\n`);
+}
+
+/** One line a panel can render: pi's own message is the npm/git error, multi-line and with its usage block. */
+function oneLine(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	return message.replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
+/**
+ * Stamp the sources a failed reload can be blamed on, and hand them back: every declared source with no code
+ * on disk, which is exactly the set whose install pi attempted and lost (`installMissing`,
+ * `core/package-manager.js:1014`). A source that is on disk loaded, so it is not to be blamed for someone
+ * else's npm error — and an empty answer is how the caller learns the failure was not a package's fault.
+ *
+ * shortcut: keyed by source and written whole, so two conversations failing at once are last-writer-wins on
+ * the same content. Upgrade to a per-write lock if a stamp is ever more than one line of advice.
+ */
+export function recordPackageFailure(paths: FlypiPaths, error: unknown): string[] {
+	const sources = packages(paths)
+		.manager.listConfiguredPackages()
+		.filter((entry) => entry.installedPath === undefined)
+		.map((entry) => entry.source);
+	if (sources.length === 0) return sources;
+	const failures = readPackageFailures(paths.root);
+	const failedAt = new Date().toISOString();
+	const reason = oneLine(error);
+	for (const source of sources) failures[source] = { failedAt, reason };
+	writePackageFailures(paths.root, failures);
+	return sources;
+}
+
+/**
+ * Drop the stamps that no longer describe a problem, after a reload that worked: a source installed again, and
+ * one the operator took out of `settings.json` — a failure that is no longer declared has nobody left to tell,
+ * and `readPackages` stopped reporting it the moment the row went away. A source still missing keeps its stamp,
+ * which is the session that came up without it saying so.
+ */
+export function prunePackageFailures(paths: FlypiPaths): void {
+	const failures = readPackageFailures(paths.root);
+	if (Object.keys(failures).length === 0) return;
+	const stillMissing = new Map(
+		packages(paths)
+			.manager.listConfiguredPackages()
+			.map((entry) => [entry.source, entry.installedPath === undefined] as [string, boolean]),
+	);
+	for (const source of Object.keys(failures)) {
+		if (stillMissing.get(source) !== true) delete failures[source];
+	}
+	writePackageFailures(paths.root, failures);
 }
 
 /**
