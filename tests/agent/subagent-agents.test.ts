@@ -9,16 +9,17 @@
  * symlinks, so a `link.md` pointing out of the source dir would otherwise be copied *through* into the agent dir.
  *
  * Every row works in a temp root (`docs/testing.md`); the two rows that need a host `~/.pi` plant one, and the
- * operator's own home is never read.
+ * operator's own home is never read. The resolution rows need no filesystem and no runtime at all, except the two
+ * that read a checkout's available models — where an endpoint that is never contacted is the point, not a risk.
  */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
-import { hostAgentsDir, importAgentFiles, listAgentFiles } from "../../src/agent/subagent-agents.ts";
+import { describe, expect, it, vi } from "vitest";
+import { availableModels, hostAgentsDir, importAgentFiles, listAgentFiles, resolveAgentModel, type AgentFileRow, type AvailableModel } from "../../src/agent/subagent-agents.ts";
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
-import { agentDirEnv, createTempFlypiRoot, homeEnv } from "../helpers/flypi-root.ts";
+import { agentDirEnv, createTempFlypiRoot, homeEnv, withProviderConfig } from "../helpers/flypi-root.ts";
 
 /** A checkout of the operator's own, plus the directory the import reads from. */
 function fixture(): { root: string; paths: FlypiPaths; source: string } {
@@ -325,6 +326,174 @@ describe("hostAgentsDir", () => {
 			expect(hostAgentsDir()).toBe(join(getAgentDir(), "agents"));
 		} finally {
 			env.restore();
+		}
+	});
+});
+
+describe("resolveAgentModel", () => {
+	/** The conversation default, as `settings.json` holds it: a pair, not a display string. */
+	const fallback = { provider: "lmstudio", modelId: "qwen3" };
+	/** Never opened: the answer is a pure function of the row, the available set and the fallback. */
+	const scoutFile = "/root/.flypi/agent/agents/scout.md";
+	/** A listed file; only the two keys these rows are about ever change. */
+	const row = (fields: { model?: string; thinking?: string }): AgentFileRow => ({ type: "scout", file: scoutFile, ...fields });
+	/** A local endpoint that cannot think, and one that can. */
+	const plain: AvailableModel = { provider: "lmstudio", modelId: "qwen3", reasoning: false };
+
+	// The real case this feature exists for: the host's own `scout.md` names `playred-lms/spark-x2.6-4b`, whose
+	// endpoint is down. The extension falls back to the parent's model and says nothing
+	// (`pi-subagents/src/index.ts:1965-1972`), so a panel that stayed silent would lie about what actually runs.
+	it("says so when the file names a model flypi cannot serve, and names the model it will run on instead", () => {
+		const answer = resolveAgentModel(row({ model: "playred-lms/spark-x2.6-4b" }), [plain], fallback);
+
+		expect(answer).toEqual({ model: "playred-lms/spark-x2.6-4b", runsOn: "lmstudio/qwen3", resolvable: false });
+	});
+
+	it("leaves a file alone when flypi can serve what it asked for, on the model the file named", () => {
+		expect(resolveAgentModel(row({ model: "lmstudio/qwen3" }), [plain], fallback)).toEqual({
+			model: "lmstudio/qwen3",
+			runsOn: "lmstudio/qwen3",
+			resolvable: true,
+		});
+	});
+
+	// The extension compares `provider/modelId` lower-cased (`model-resolver.ts:46,53`), so an ask that differs only
+	// in case resolves — and a flypi that called it unresolvable would raise the warning for nothing. `runsOn` is the
+	// address the available set spells, which is also the one the panel already shows for that model.
+	it("matches the ask the way the extension does, case aside", () => {
+		const answer = resolveAgentModel(row({ model: "LMStudio/Qwen3" }), [plain], fallback);
+
+		expect(answer).toEqual({ model: "LMStudio/Qwen3", runsOn: "lmstudio/qwen3", resolvable: true });
+	});
+
+	it("calls a `model:` with no provider unresolvable, rather than guessing which provider was meant", () => {
+		expect(resolveAgentModel(row({ model: "spark-x2.6-4b" }), [plain], fallback)).toEqual({
+			model: "spark-x2.6-4b",
+			runsOn: "lmstudio/qwen3",
+			resolvable: false,
+		});
+	});
+
+	// Four of the five files the host ships are this shape; `scout.md` is the fifth. Warning here would be a lie in
+	// the common case: the file asked for nothing, so inheriting is the answer rather than a failure — and the panel
+	// needs the flag to say "inherits the conversation" instead of implying the file picked that model.
+	it("says a file with no `model:` inherits the conversation, instead of implying it chose one", () => {
+		expect(resolveAgentModel(row({}), [plain], fallback)).toEqual({ runsOn: "lmstudio/qwen3", resolvable: true, inherited: true });
+	});
+
+	// pi's own two truths about levels: `Model.reasoning` (`pi-ai/dist/types.d.ts:650`), read by pi's
+	// `supportsThinking` (`agent-session.js:2160-2161`), and a `null` in `Model.thinkingLevelMap`
+	// (`pi-ai/dist/models.js:697-699`). Both are about the model the run lands on, which is where pi clamps too.
+	it("says so when a file asks for a level on a model that cannot think at all", () => {
+		expect(resolveAgentModel(row({ model: "lmstudio/qwen3", thinking: "xhigh" }), [plain], fallback)).toEqual({
+			model: "lmstudio/qwen3",
+			runsOn: "lmstudio/qwen3",
+			resolvable: true,
+			thinkingUnsupported: true,
+		});
+	});
+
+	it("says so when the model it resolved to maps the asked level to null", () => {
+		const no_xhigh: AvailableModel = { provider: "nv", modelId: "nemotron", reasoning: true, thinkingLevelMap: { xhigh: null, high: "high" } };
+
+		expect(resolveAgentModel(row({ model: "nv/nemotron", thinking: "xhigh" }), [no_xhigh], fallback)).toEqual({
+			model: "nv/nemotron",
+			runsOn: "nv/nemotron",
+			resolvable: true,
+			thinkingUnsupported: true,
+		});
+	});
+
+	// The quiet side, both ways pi can mean it: a map that carries the level, and a reasoning model that declares no
+	// map at all. Flypi claims nothing about either — the level a run was *given* is pi's clamp and belongs to the
+	// fleet (`subagents:usage.requestedThinking`), not to this row.
+	it("is quiet when the model can do the level it was asked for", () => {
+		const maps: AvailableModel = { provider: "nv", modelId: "nemotron", reasoning: true, thinkingLevelMap: { xhigh: "xhigh" } };
+
+		expect(resolveAgentModel(row({ model: "nv/nemotron", thinking: "xhigh" }), [maps], fallback).thinkingUnsupported).toBeUndefined();
+		expect(resolveAgentModel(row({ model: "nv/nemotron", thinking: "low" }), [{ provider: "nv", modelId: "nemotron", reasoning: true }], fallback).thinkingUnsupported).toBeUndefined();
+	});
+
+	// A file that named no model inherits the *conversation's* model, and that is the model the level gets clamped
+	// against: `researcher.md`'s `xhigh` on a default that cannot think is a real warning, not the file's fault.
+	it("warns about the inherited model too, when it cannot do the asked level", () => {
+		expect(resolveAgentModel(row({ thinking: "xhigh" }), [plain], fallback)).toEqual({
+			runsOn: "lmstudio/qwen3",
+			resolvable: true,
+			inherited: true,
+			thinkingUnsupported: true,
+		});
+	});
+
+	// Both halves at once, which is the real `scout.md` on a machine whose `playred-lms` endpoint is down: the ask
+	// fails *and* the model it falls back to cannot think.
+	it("names both halves when the ask fails and the fallback cannot think either", () => {
+		expect(resolveAgentModel(row({ model: "playred-lms/spark-x2.6-4b", thinking: "low" }), [plain], fallback)).toEqual({
+			model: "playred-lms/spark-x2.6-4b",
+			runsOn: "lmstudio/qwen3",
+			resolvable: false,
+			thinkingUnsupported: true,
+		});
+	});
+
+	// A settings default whose provider lost its credential is a model flypi cannot look at, so the row says nothing
+	// about levels: promising one it has not checked is the same kind of lie as staying silent about the model.
+	it("says nothing about levels when it cannot see the model the run lands on", () => {
+		expect(resolveAgentModel(row({ thinking: "xhigh" }), [], fallback)).toEqual({ runsOn: "lmstudio/qwen3", resolvable: true, inherited: true });
+	});
+});
+
+describe("availableModels", () => {
+	// `withProviderConfig` gives the checkout a credential for one local endpoint (`tests/helpers/flypi-root.ts`);
+	// the file it writes is then replaced, because this row is about *which* providers come back: `nocreds` is in
+	// `models.json` exactly like the other and has no credential, so it is not a model a subagent can run on —
+	// availability, not the file, is what the extension's resolver accepts (`model-resolver.ts:46-47`).
+	function twoProviderRoot(): FlypiPaths {
+		const root = withProviderConfig(createTempFlypiRoot(), { defaultProvider: "lmstudio", defaultModel: "qwen3" }, { lmstudio: { type: "api_key", key: "local" } });
+		const paths = flypiPaths(root);
+		writeFileSync(
+			paths.modelsPath,
+			JSON.stringify({
+				providers: {
+					lmstudio: {
+						baseUrl: "http://127.0.0.1:1/v1",
+						api: "openai-completions",
+						models: [{ id: "qwen3", name: "Qwen3" }, { id: "nemotron", name: "Nemotron", reasoning: true, thinkingLevelMap: { xhigh: null } }],
+					},
+					nocreds: { baseUrl: "http://127.0.0.1:1/v1", api: "openai-completions", models: [{ id: "ghost", name: "Ghost" }] },
+				},
+			}),
+		);
+		return paths;
+	}
+
+	// Only this checkout's own providers are compared: an operator with a real credential in the environment would
+	// otherwise make an exact-equality row answer for their machine.
+	it("is pi's available set for this checkout, and not what `models.json` names", async () => {
+		const models = await availableModels(twoProviderRoot());
+
+		expect(models.filter((model) => model.provider === "lmstudio" || model.provider === "nocreds")).toEqual([
+			{ provider: "lmstudio", modelId: "qwen3", reasoning: false },
+			{ provider: "lmstudio", modelId: "nemotron", reasoning: true, thinkingLevelMap: { xhigh: null } },
+		]);
+	});
+
+	// The proof rather than the inference. `ModelRuntime.create` gets no `allowModelNetwork`, which is what keeps
+	// pi's catalog refresh local (`model-runtime.js:100`, the same call `src/agent/runtime.ts:119-121` makes), and
+	// asking a provider whether it is available resolves a credential — no provider in the pi this pins ships the
+	// optional `apiKey.check` hook (`pi-ai/dist/auth/types.d.ts:180`). Stubbing `fetch` makes all of that a red row
+	// the day it stops holding, for every provider `availableModels` walks and not just this root's two.
+	it("asks no provider anything", async () => {
+		const paths = twoProviderRoot();
+		vi.stubGlobal("fetch", () => {
+			throw new Error("availableModels reached the network");
+		});
+		try {
+			const models = await availableModels(paths);
+
+			expect(models.some((model) => model.provider === "lmstudio" && model.modelId === "qwen3")).toBe(true);
+		} finally {
+			vi.unstubAllGlobals();
 		}
 	});
 });

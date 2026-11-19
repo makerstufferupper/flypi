@@ -2,9 +2,18 @@
  * `.flypi/agent/agents/*.md` — the agent types flypi's subagent extension can spawn — and the one import that
  * fills that directory from the `~/.pi/agent/agents` the operator already keeps.
  *
- * What one file *says* is answered here; whether flypi can run what it asks for is not, because that answer needs
- * pi's model runtime and this module answers from the filesystem. A row therefore carries the model and thinking
- * level **as written**, so the caller can say "asked xhigh, runs high" instead of quietly dropping the ask.
+ * The two halves stay apart. **The files**: what a `.md` says, read from the filesystem, with the model and thinking
+ * level carried **as written**. **A model answer over them**: whether flypi can serve what a file asks for, which is
+ * the warning this feature exists for — the extension degrades a configured model that does not resolve to the
+ * parent's model and says nothing (`pi-subagents/src/index.ts:1965-1972`), so a panel that stayed silent would lie.
+ * `availableModels` is the only I/O in the second half (pi's runtime, no more than a session start already opens)
+ * and `resolveAgentModel` is a pure function over a row, that set and a fallback, so the answer is testable with no
+ * runtime at all.
+ *
+ * What is **not** answered here is the level a running subagent was actually given: pi clamps per model
+ * (`clampThinkingLevel`, pi-ai/dist/models.js:705-720) and that truth needs a session, so it belongs to the fleet's
+ * `subagents:usage.requestedThinking` and not to a settings-list row. This says whether the model the run lands on
+ * can do the asked level at all, which is knowable from pi's own `Model.reasoning` / `Model.thinkingLevelMap`.
  *
  * Two rules hold the whole file.
  *
@@ -30,7 +39,7 @@
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { assertFlypiOwned, type FlypiPaths } from "./paths.ts";
 
 /**
@@ -204,4 +213,117 @@ export function importAgentFiles(paths: FlypiPaths, sourceDir = hostAgentsDir())
 		report.copied.push(dest);
 	}
 	return report;
+}
+
+/** How a model is addressed inside flypi: the pair, never the `provider/modelId` string it displays as. */
+export interface ModelRef {
+	provider: string;
+	modelId: string;
+}
+
+/** One entry of the available set: the pair, plus the two fields of pi's `Model` that decide a thinking ask. */
+export interface AvailableModel extends ModelRef {
+	/** pi's `Model.reasoning` (pi-ai/dist/types.d.ts:650): false means no thinking level is on offer at all. */
+	reasoning: boolean;
+	/** pi's `Model.thinkingLevelMap`: a `null` value marks a level this model cannot do (pi-ai/dist/models.js:693-703). */
+	thinkingLevelMap?: Record<string, string | null | undefined>;
+}
+
+/** What the run will actually be, and what to say before it starts. */
+export interface AgentModelAnswer {
+	/** What the file asked for, or nothing when it inherits. */
+	model?: string;
+	/** "provider/modelId" the subagent will actually run on: the asked model, or the conversation default. */
+	runsOn: string;
+	/** False when the file named a model flypi cannot serve — the warning row. */
+	resolvable: boolean;
+	/** True when the file asked for a thinking level the resolved model cannot do. */
+	thinkingUnsupported?: boolean;
+	/** True when the file asked for no model, so `runsOn` is the conversation's model and not a choice this file made —
+	 *  four of the five agent files the host ships are this shape, and the panel says "inherits the conversation". */
+	inherited?: boolean;
+}
+
+/**
+ * The pair as the one display string flypi uses — `provider/modelId`, the same form a session reports its model in
+ * (`src/agent/runtime.ts:419-423`). The subagent extension takes a single string, so this is where the pair becomes
+ * one; nowhere else spells the format, or it would drift the moment one side changed.
+ */
+function modelLabel(ref: ModelRef): string {
+	return `${ref.provider}/${ref.modelId}`;
+}
+
+/** The address the extension compares: the same string, lower-cased, as its resolver does (`model-resolver.ts:46,53`). */
+function modelKey(ref: ModelRef): string {
+	return modelLabel(ref).toLowerCase();
+}
+
+/**
+ * The `model:` as an address, split where the extension splits it — the first `/` is the provider
+ * (`pi-subagents/src/model-resolver.ts:49-51`). A `model:` with no `/` is not an address flypi can check, so it
+ * stays unresolvable rather than becoming a guess about which provider the operator meant.
+ */
+function askedModel(ask: string | undefined): ModelRef | undefined {
+	if (!ask) return undefined;
+	const slash = ask.indexOf("/");
+	return slash === -1 ? undefined : { provider: ask.slice(0, slash), modelId: ask.slice(slash + 1) };
+}
+
+/**
+ * The models flypi could serve right now, read the way the debug panel reads them
+ * (`getProviders()` × `getAvailable(id)`, src/server/session-registry.ts:333-336) — because that set, and not
+ * `models.json`, is what the extension's resolver accepts (`model-resolver.ts:46-47`): a provider with no
+ * credential is not a model a subagent can run on, however carefully it is written into the file.
+ *
+ * Local. `ModelRuntime.create` gets the same two paths a session start passes (`src/agent/runtime.ts:119-121`) and
+ * no `allowModelNetwork`, so pi keeps the catalog refresh off the network (`model-runtime.js:100`), and asking one
+ * provider whether it is available resolves a credential rather than calling it.
+ */
+export async function availableModels(paths: FlypiPaths): Promise<AvailableModel[]> {
+	const runtime = await ModelRuntime.create({ authPath: paths.authPath, modelsPath: paths.modelsPath });
+	const perProvider = await Promise.all(
+		runtime
+			.getProviders()
+			.map(async (provider) =>
+				(await runtime.getAvailable(provider.id)).map((model) => ({
+					provider: provider.id,
+					modelId: model.id,
+					reasoning: model.reasoning,
+					thinkingLevelMap: model.thinkingLevelMap,
+				})),
+			),
+	);
+	return perProvider.flat();
+}
+
+/**
+ * Whether flypi can run what this row asks for, over the available set and the conversation's own model.
+ *
+ * The `fallback` is `defaultProvider`/`defaultModel` from `settings.json`, passed in by the caller: this module does
+ * not decide what "the conversation's model" means, and a row that guessed would be wrong for every conversation
+ * that picked one.
+ *
+ * Only the extension's **first** resolution tier is repeated here — the asked `provider/modelId` matched against the
+ * available set. Its fuzzy and cross-provider tiers (`model-resolver.ts:59-110`) are deliberately not
+ * reimplemented: a second resolver is a second thing to keep in step, and whichever way the extension lands, an ask
+ * that is not in the available set is a run on a model other than the one the file named.
+ */
+export function resolveAgentModel(row: AgentFileRow, available: readonly AvailableModel[], fallback: ModelRef): AgentModelAnswer {
+	const asked = askedModel(row.model);
+	const served = asked ? available.find((model) => modelKey(model) === modelKey(asked)) : undefined;
+	const answer: AgentModelAnswer = {
+		...(row.model ? { model: row.model } : {}),
+		// The silent degrade, stated: an ask that does not resolve runs on the parent's model
+		// (`pi-subagents/src/index.ts:1965-1972`), so one row carries both halves of "asked X, will run on Y".
+		runsOn: modelLabel(served ?? fallback),
+		// Asked and could not be served is the warning; asked nothing is the conversation's own model. A `model:`
+		// that is not an address at all counts as asked-and-not-served, because the panel quotes what the file wrote.
+		resolvable: !row.model || !!served,
+		...(!row.model ? { inherited: true } : {}),
+	};
+	// Which model that run lands on: the ask when it resolved, the conversation's model otherwise — and when flypi
+	// cannot see that model at all it says nothing about levels, rather than promising one it has not checked.
+	const lands = served ?? available.find((model) => modelKey(model) === modelKey(fallback));
+	if (row.thinking && lands && (!lands.reasoning || lands.thinkingLevelMap?.[row.thinking] === null)) answer.thinkingUnsupported = true;
+	return answer;
 }
