@@ -60,7 +60,7 @@ export const PI_COMPAT: { imports: PiImport[]; deep: PiDeepImport[] } = {
 				"AgentSessionEvent",
 				"CreateAgentSessionOptions",
 				"CustomMessageEntry",
-				"EventBusController",
+				"EventBus",
 				"ExtensionAPI",
 				"ExtensionContext",
 				"ExtensionFactory",

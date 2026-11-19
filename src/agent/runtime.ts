@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -158,13 +159,18 @@ export async function createFlypiSession(options: {
 						runReviewFork({ paths, modelRuntime, mcpConfig, memoryServer, vault: options.vault, tools: options.tools, parentSession: () => session }, parent),
 				}
 			: undefined;
+	// The bus scope, once per session. A session nobody gave a flypi conversation id to (the review fork below,
+	// most tests) still gets a scope of its own, because two sessions sharing one by accident is the leak this
+	// whole thing exists to close.
+	const conversationScope = options.conversationId ?? `session:${randomUUID()}`;
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: paths.root,
 		agentDir: paths.agentDir,
 		// Without this pi mints a bus of its own for this loader alone, and an extension that emits outside a
 		// handler reaches only it — in a daemon with several conversations, no listener anywhere would hear it.
-		// One bus per process instead (src/agent/bus.ts says why and what it fixes).
-		eventBus: flypiEventBus(),
+		// One bus for the process, then; what changed is that the *channel* is scoped, so an emit inside this
+		// conversation cannot run another conversation's handler (src/agent/bus.ts says what is left over).
+		eventBus: flypiEventBus().view(conversationScope),
 		// The loader, not an extension: these say the same thing on every turn, and a per-turn
 		// `before_agent_start` handler could only repeat them. The memory sentence used to sit at the top of
 		// the recalled block; there it rode in the newest message, the one region a prompt cache re-pays at
