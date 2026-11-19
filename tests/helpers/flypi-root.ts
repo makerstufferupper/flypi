@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_PACKAGES } from "../../src/agent/config-files.ts";
 
 /**
  * A throwaway flypi checkout. Tests never touch the repo's own `.flypi/`
@@ -98,14 +99,15 @@ export function sessionFiles(root: string): string[] {
 }
 
 /**
- * Say "this checkout declares no extension packages", which is not the same as saying nothing: an empty list is
- * the answer `ensureSubagentDefaults` respects (src/agent/config-files.ts), and it is what a test root wants,
- * because a *declared* package is one pi installs on session start and one the daemon's startup package check
- * asks the registry about. A test that starts a session, or records what was fetched, must not depend on npm
- * or a registry answering.
+ * Say "this checkout declares no extension packages", which is not the same as saying nothing. An empty list
+ * alone stopped being enough in T51: `ensureSubagentDefaults` adds flypi's default to a list that already
+ * exists, so what keeps a root empty is the record the settings panel's Remove writes — `flypi.packagesDeclined`
+ * — and this is that state. A test root wants it, because a *declared* package is one pi installs on session
+ * start and one the daemon's startup package check asks the registry about. A test that starts a session, or
+ * records what was fetched, must not depend on npm or a registry answering.
  */
 export function noPackages(root: string): string {
-	writeFileSync(join(root, ".flypi", "agent", "settings.json"), JSON.stringify({ packages: [] }));
+	writeFileSync(join(root, ".flypi", "agent", "settings.json"), JSON.stringify({ packages: [], flypi: { packagesDeclined: DEFAULT_PACKAGES } }));
 	return root;
 }
 

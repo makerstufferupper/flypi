@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DAEMON_FILE } from "../../src/agent/paths.ts";
 import { childEnv } from "../helpers/flypi-root.ts";
+import { DEFAULT_PACKAGES } from "../../src/agent/config-files.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
 const cli = join(repo, "scripts", "flypi.mjs");
@@ -22,9 +23,10 @@ const bin = join(repo, "bin", "flypi.mjs");
 function tempRoot(): string {
 	const root = mkdtempSync(join(tmpdir(), "flypi-cli-"));
 	mkdirSync(join(root, ".flypi", "agent"), { recursive: true });
-	// `packages: []` for the same reason `noPackages` exists in this suite's helpers: a declared package is one the
-	// daemon's startup pass asks the registry about, and a CLI row must not depend on the network.
-	writeFileSync(join(root, ".flypi", "agent", "settings.json"), JSON.stringify({ packages: [], memory: { embeddings: { provider: "none" }, judge: { provider: "none" } } }));
+	// `packages: []` *plus* the decline the settings panel writes for it, for the same reason `noPackages` exists
+	// in this suite's helpers: since T51 the daemon adds its default to a list that exists, and a declared
+	// package is one its startup pass asks the registry about — a CLI row must not depend on the network.
+	writeFileSync(join(root, ".flypi", "agent", "settings.json"), JSON.stringify({ packages: [], flypi: { packagesDeclined: DEFAULT_PACKAGES }, memory: { embeddings: { provider: "none" }, judge: { provider: "none" } } }));
 	return root;
 }
 

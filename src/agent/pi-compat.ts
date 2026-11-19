@@ -70,6 +70,7 @@ export const PI_COMPAT: { imports: PiImport[]; deep: PiDeepImport[] } = {
 				"McpExtensionOptions",
 				"McpServerConfig",
 				"McpServerEntry",
+				"PackageSource",
 				"SessionEntry",
 			],
 		},

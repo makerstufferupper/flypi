@@ -114,9 +114,10 @@ export function ensureConfig(root, env = process.env) {
 		// Absent, or a file with no choice in it yet — which is not a file with no key in it. The daemon's own
 		// first write declares the default packages and the gated tools (`DEFAULT_PACKAGES`,
 		// src/agent/config-files.ts), and a template written over that file would take the declaration back out,
-		// so the template goes *into* what is there and those keys stay. A checkout that started the daemon
-		// before it ever ran this script still gets its model template.
-		if (!existed || Object.keys(existing).every((key) => key === "packages" || key === "permissions")) {
+		// so the template goes *into* what is there and those keys stay. `flypi` is the daemon's third key (the
+		// package the settings panel declined, T51) and says nothing about a model either. A checkout that started
+		// the daemon before it ever ran this script still gets its model template.
+		if (!existed || Object.keys(existing).every((key) => key === "packages" || key === "permissions" || key === "flypi")) {
 			writeJson(file, { ...existing, ...template });
 			// `created` is what gets printed as "flypi: wrote …", so a file that kept keys of its own says so:
 			// it was merged into, not written.

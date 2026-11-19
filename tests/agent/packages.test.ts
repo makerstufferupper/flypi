@@ -7,10 +7,11 @@
  * is the part that silently loses MCP tools if the reload is done wrong.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { DEFAULT_PACKAGES } from "../../src/agent/config-files.ts";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyPackageEdits, autoExtensions, dueForPackageCheck, npmName, prunePackageFailures, publishedVersions, readPackages, readPackageCheck, recordPackageFailure, writePackageCheck } from "../../src/agent/packages.ts";
+import { applyPackageEdits, autoExtensions, dueForPackageCheck, npmName, prunePackageFailures, publishedVersions, readDeclinedPackages, readPackages, readPackageCheck, recordPackageDecline, recordPackageFailure, writePackageCheck } from "../../src/agent/packages.ts";
 import { FlypiConfigError, createFlypiSession, type FlypiSession } from "../../src/agent/runtime.ts";
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
@@ -133,6 +134,70 @@ describe("the packages a flypi checkout declares", () => {
 		writeFileSync(paths.settingsPath, JSON.stringify({ packages: ["npm:pi-web-access"] }, null, 2));
 		// The badge comes from the stamp: reading the list reaches no registry.
 		expect(readPackages(paths).packages[0]).toMatchObject({ source: "npm:pi-web-access", installed: false, update: true });
+	});
+});
+
+/**
+ * The decline behind the panel's Remove (`settings.json`'s `flypi.packagesDeclined`), asserted here because it
+ * is written by the code above — `applyPackageEdits` — and not by the seed that reads it
+ * (`ensureSubagentDefaults`, src/agent/config-files.ts, whose own rows prove what it does with the answer).
+ * The sources are the ones the rows above already use: a local path is what pi installs without a registry.
+ */
+describe("the packages the operator took out stay out", () => {
+	it("records a remove, writes nothing for an ordinary install, and forgets it on a re-install", async () => {
+		const { paths, dir } = rootWithPackage({ defaultProvider: "lmstudio", defaultModel: "qwen3", packages: [...DEFAULT_PACKAGES] });
+		expect(readDeclinedPackages(paths)).toEqual([]);
+
+		// An install of its own is not a decision about anything: no flypi key goes into the operator's file.
+		await applyPackageEdits(paths, { install: [dir] });
+		expect("flypi" in settingsOf(paths)).toBe(false);
+
+		// The panel's Remove, which is the only thing that means "not on this machine".
+		await applyPackageEdits(paths, { remove: [dir] });
+		expect(readDeclinedPackages(paths)).toEqual([dir]);
+		await applyPackageEdits(paths, { remove: [DEFAULT_PACKAGES[0]!] });
+		expect(readDeclinedPackages(paths)).toEqual([dir, ...DEFAULT_PACKAGES]);
+		// The rest of the file is pi's and stays pi's; the decline is written by the uninstall that already
+		// landed, so the declaration it removed is gone and the two agree.
+		expect(settingsOf(paths)).toMatchObject({ defaultProvider: "lmstudio", defaultModel: "qwen3", packages: [] });
+		// Owner-only, like every other file in the agent dir (`writeJson`, src/agent/config-files.ts).
+		expect(statSync(paths.settingsPath).mode & 0o777).toBe(0o600);
+
+		// Re-installing one source is the operator changing their mind about that source, and only that one.
+		await applyPackageEdits(paths, { install: [dir] });
+		expect(readDeclinedPackages(paths)).toEqual(DEFAULT_PACKAGES);
+		expect(settingsOf(paths).packages).toHaveLength(1);
+	});
+
+	it("reads as nothing over a file with no flypi key, a key that is not a list, and one that will not parse", () => {
+		// The packages panel still has to open over a broken `settings.json`, so the decline is a read that
+		// cannot fail — the same shape as `readPackages`' `errors` channel.
+		const { paths } = rootWithPackage({ packages: [] });
+		expect(readDeclinedPackages(paths)).toEqual([]);
+		writeFileSync(paths.settingsPath, JSON.stringify({ packages: [], flypi: { packagesDeclined: "npm:x" } }, null, 2));
+		expect(readDeclinedPackages(paths)).toEqual([]);
+		writeFileSync(paths.settingsPath, "{ packages: ]");
+		expect(readDeclinedPackages(paths)).toEqual([]);
+		// No settings.json at all: a fresh root, with nothing declined and nothing thrown.
+		expect(readDeclinedPackages(flypiPaths(join(tmpdir(), "flypi-no-such-decline-root")))).toEqual([]);
+		// And the panel's own channel says only the one true thing about the broken file, not two things.
+		const errors = readPackages(paths).errors;
+		expect(errors.join(" ")).toMatch(/settings\.json/);
+		expect(errors.filter((line) => line.includes("packagesDeclined"))).toEqual([]);
+	});
+
+	it("leaves a settings.json it cannot parse exactly as it is, rather than failing over it", () => {
+		// The writer swallows like the failure stamp's writer does: a decline that cannot be recorded is advice
+		// the next start loses, not an install to undo — and the file belongs to the operator to fix.
+		const { paths } = rootWithPackage();
+		writeFileSync(paths.settingsPath, "{ packages: ]");
+
+		recordPackageDecline(paths, DEFAULT_PACKAGES[0]!, true);
+
+		expect(readFileSync(paths.settingsPath, "utf8")).toBe("{ packages: ]");
+		expect(readDeclinedPackages(paths)).toEqual([]);
+		recordPackageDecline(paths, DEFAULT_PACKAGES[0]!, false);
+		expect(readFileSync(paths.settingsPath, "utf8")).toBe("{ packages: ]");
 	});
 });
 

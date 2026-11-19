@@ -16,7 +16,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { DAEMON_FILE, forceFlypiAgentDir, memoryMcpUrl, type FlypiPaths } from "../agent/paths.ts";
 import { applyConfigEdits, ensureAgentConfig, ensureMemoryEntry, ensureSubagentDefaults, memoryEndpoint } from "../agent/config-files.ts";
-import { applyPackageEdits, autoExtensions, checkPackageUpdates, readPackageCheck, writePackageCheck } from "../agent/packages.ts";
+import { applyPackageEdits, autoExtensions, checkPackageUpdates, readDeclinedPackages, readPackageCheck, writePackageCheck } from "../agent/packages.ts";
 import { CONSOLIDATE_JOB, consolidate, sweepDue } from "../memory/consolidate.ts";
 import { startMemoryServer, type MemoryServerHandle } from "../memory/mcp.ts";
 import type { MemoryStore } from "../memory/store.ts";
@@ -136,11 +136,16 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 	const blank = ensureAgentConfig(paths);
 	if (blank.length > 0) log(`flypi: wrote ${blank.join(" and ")} — no model is configured yet (the Settings tab adds one)`);
 	// The same defaults for a root that already existed, which is the only way they ever reach a running
-	// install. Every key is written once and then left alone forever, so a seeded root says this line at
-	// startup and an already-seeded one says nothing (src/agent/config-files.ts says why an empty
-	// `packages` list is left empty).
+	// install: the declared package is *added* to the list the root already has (T51), and the other two keys
+	// are written once and then left alone. So an already-seeded root says nothing here, and one that gained
+	// something says what it now holds — including what the settings panel declined, which stays out.
 	const seeded = await ensureSubagentDefaults(paths);
-	if (seeded.length > 0) log(`flypi: wrote ${seeded.join(" and ")} — the subagent defaults: the declared packages, the ask-before-use list and the ceilings, seeded once and editable in those files`);
+	if (seeded.length > 0) {
+		// `map`/`join` rather than a conditional: a root with nothing declined gets the plain sentence, and one
+		// that has a decline names each source the operator took out through the panel (T51).
+		const declined = readDeclinedPackages(paths).map((source) => `; ${source} stays out, removed in the Settings tab`).join("");
+		log(`flypi: wrote ${seeded.join(" and ")} — the subagent defaults: the declared packages, the ask-before-use list and the ceilings, added to what this root already has and editable in those files${declined}`);
+	}
 
 	const endpoint = memoryEndpoint(paths);
 	// The vault is in the memory database, so the daemon — the process that already owns that file — is the

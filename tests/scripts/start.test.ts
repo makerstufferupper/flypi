@@ -101,6 +101,27 @@ describe("the first run on a fresh machine", () => {
 		}
 	});
 
+	it("fills the template into a root whose only extra keys are the daemon's own", () => {
+		// T51 gives the daemon's file a third key: `flypi.packagesDeclined`, written by the settings panel's
+		// Remove. Like the other two it says nothing about a model, so this file is still "no choice in it yet"
+		// and the template goes into it — with the decline kept.
+		const fresh = mkdtempSync(join(tmpdir(), "flypi-start-declined-"));
+		try {
+			mkdirSync(join(fresh, ".flypi", "agent"), { recursive: true });
+			writeFileSync(join(fresh, ".flypi", "agent", "settings.json"), JSON.stringify({ packages: [], permissions: { askBeforeUse: ["Agent"] }, flypi: { packagesDeclined: ["npm:@tintinweb/pi-subagents"] } }));
+			writeFileSync(join(fresh, ".flypi", "agent", "models.json"), "{}");
+
+			const created = ensureConfig(fresh, {}).created;
+
+			expect(created).toContain("settings.json (merged)");
+			const settings = JSON.parse(readFileSync(join(fresh, ".flypi", "agent", "settings.json"), "utf8"));
+			expect(settings.defaultProvider).toBeTruthy();
+			expect(settings.flypi).toEqual({ packagesDeclined: ["npm:@tintinweb/pi-subagents"] });
+		} finally {
+			rmSync(fresh, { recursive: true, force: true });
+		}
+	});
+
 	it("leaves a config it did not write alone, including other MCP servers", () => {
 		rmSync(join(root, ".flypi", "agent", "mcp.json"));
 		writeFileSync(

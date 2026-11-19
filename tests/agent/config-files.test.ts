@@ -16,6 +16,7 @@ import {
 	memoryEndpoint,
 	readConfig,
 } from "../../src/agent/config-files.ts";
+import { applyPackageEdits, readDeclinedPackages, recordPackageDecline } from "../../src/agent/packages.ts";
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
 import { createFlypiSession, FlypiConfigError } from "../../src/agent/runtime.ts";
 import { createTempFlypiRoot, hostPiRoot } from "../helpers/flypi-root.ts";
@@ -414,19 +415,96 @@ describe("config files: the subagent defaults a root gets once", () => {
 		expect(statSync(h.paths.settingsPath).mode & 0o777).toBe(0o600);
 	});
 
-	it("does not re-add a package an operator uninstalled, and does not move the default pair", async () => {
+	it("adds the default to a root that already has a packages list, in the order it is asked for", async () => {
+		// The dev container's real `settings.json`: it named one extension, so T46.2.2's absent-only guard left
+		// it alone forever and flypi's own default was never declared there. Any root that ever used the packages
+		// panel is this shape (T51).
+		const h = agentRoot({
+			settings: { packages: ["npm:pi-ponytail"], defaultProvider: "x", defaultModel: "y", updates: { autoExtensions: false } },
+		});
+
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([h.paths.settingsPath, subagentsOf(h.paths)]);
+
+		// Appended after the operator's own entry, and nothing else in the file moved — the write still goes
+		// through pi's `SettingsManager`, which rewrites the one field it was asked to set.
+		expect(h.read("settingsPath")).toEqual({
+			packages: ["npm:pi-ponytail", ...DEFAULT_PACKAGES],
+			defaultProvider: "x",
+			defaultModel: "y",
+			permissions: { askBeforeUse: GATED },
+			updates: { autoExtensions: false },
+		});
+		expect(statSync(h.paths.settingsPath).mode & 0o777).toBe(0o600);
+		// The next start has nothing to add and says so by returning nothing.
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([]);
+	});
+
+	it("adds the default to an empty packages list as well: only the panel's Remove declines it", async () => {
+		// Replaces the row that read `packages: []` as "the operator uninstalled it, leave it empty forever".
+		// An empty list with no decline record is not that decision — the panel's Remove now records it, and the
+		// hand-edit that dropped the string from the file records nothing (src/agent/config-files.ts).
 		const h = agentRoot({ settings: { packages: [], defaultProvider: "x", defaultModel: "y" } });
 
 		expect(await ensureSubagentDefaults(h.paths)).toEqual([h.paths.settingsPath, subagentsOf(h.paths)]);
 
-		// `packages: []` is present, and it is an answer: it is what the settings panel leaves behind when the
-		// last package is uninstalled. The only thing this file gained is the gate's own key.
 		expect(h.read("settingsPath")).toEqual({
-			packages: [],
+			packages: DEFAULT_PACKAGES,
 			defaultProvider: "x",
 			defaultModel: "y",
 			permissions: { askBeforeUse: GATED },
 		});
+	});
+
+	it("does not add a second entry for a package the root already declares at a pinned version", async () => {
+		// Identity, not string equality: `npm:x@1.2.3` is the same package as `npm:x` (pi's own `npmName`, and
+		// what docs/pi-upgrades.md writes a pin back onto). A second entry would be the same extension twice.
+		const pinned = "npm:@tintinweb/pi-subagents@0.26.1";
+		const h = agentRoot({ settings: { packages: [pinned] } });
+
+		await ensureSubagentDefaults(h.paths);
+
+		expect(h.read("settingsPath").packages).toEqual([pinned]);
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([]);
+		expect(h.read("settingsPath").packages).toEqual([pinned]);
+	});
+
+	it("keeps a local path, a git URL and a filtered entry exactly as the file holds them", async () => {
+		// Only the default is added; the operator's own rows are neither reordered, rewritten nor deduped, and a
+		// filtered entry (pi's object form) naming the default counts as declaring it.
+		const filtered = { source: "npm:other-ext", include: ["extensions/a.ts"] };
+		const h = agentRoot({ settings: { packages: ["/opt/extensions/my-pkg", "https://git.example.com/x/y.git#v1.2.3", filtered] } });
+
+		await ensureSubagentDefaults(h.paths);
+
+		expect(h.read("settingsPath").packages).toEqual(["/opt/extensions/my-pkg", "https://git.example.com/x/y.git#v1.2.3", filtered, ...DEFAULT_PACKAGES]);
+	});
+
+	it("keeps out what the settings panel removed, and puts it back when that decision is withdrawn", async () => {
+		// T46.2.2's promise, kept alive on the additive rule: an uninstall is never reversed in silence, because
+		// the panel's Remove records the decision where it was made. Through the real `applyPackageEdits` — the
+		// same seam the rows of tests/agent/packages.test.ts use, pi's own `SettingsManager` underneath — because
+		// a decline written anywhere else would not be the panel's own.
+		const h = agentRoot();
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([h.paths.settingsPath, subagentsOf(h.paths)]);
+
+		// The npm source needs no registry to be taken *out*: pi's uninstall returns early when its install
+		// directory was never made, so this row asks nothing of the network.
+		await applyPackageEdits(h.paths, { remove: [DEFAULT_PACKAGES[0]!] });
+
+		expect(h.read("settingsPath").packages).toEqual([]);
+		expect(readDeclinedPackages(h.paths)).toEqual(DEFAULT_PACKAGES);
+		// The next daemon start adds nothing, and says nothing by returning nothing.
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([]);
+		expect(h.read("settingsPath").packages).toEqual([]);
+
+		// And a withdrawn decision is a default again. Clearing it here goes through the helper
+		// `applyPackageEdits` calls for every install source — an `install` of this source would run npm, which
+		// the rows above are kept free of; that the call happens on an install is pinned there.
+		recordPackageDecline(h.paths, DEFAULT_PACKAGES[0]!, false);
+
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([h.paths.settingsPath]);
+		expect(h.read("settingsPath").packages).toEqual(DEFAULT_PACKAGES);
+		expect(readConfig(h.paths).errors).toEqual([]);
 	});
 
 	it("leaves an askBeforeUse list the operator wrote alone: not extended, not replaced", async () => {

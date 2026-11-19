@@ -17,8 +17,9 @@
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, type PackageSource } from "@earendil-works/pi-coding-agent";
 import { FlypiConfigError } from "./runtime.ts";
+import { npmName, readDeclinedPackages } from "./packages.ts";
 import { assertFlypiOwned, memoryMcpUrl, type FlypiPaths } from "./paths.ts";
 
 /** pi's own rule for MCP server names (docs/mcp.md "Configuration rules"), which tools are named after. */
@@ -297,12 +298,29 @@ export function ensureAgentConfig(paths: FlypiPaths): string[] {
 
 /**
  * The subagent defaults, into a root that predates them: the declared package, the four gated names and the
- * extension's ceilings. Every one of the three is written **only when its own key is absent**, and that guard
- * is the whole function: an operator who took `@tintinweb/pi-subagents` out of the settings panel is left with
- * `packages: []` — present, and empty — and a default that filled the empty list would reverse that uninstall
- * in silence, on every daemon start, with nothing in the file to show for the decision. The same rule one level
- * down, on `permissions.askBeforeUse`: a list somebody edited is theirs and nothing is appended to it. An
- * existing `subagents.json` is left alone, parseable or not, like every other file here.
+ * extension's ceilings.
+ *
+ * **The default package is added to whatever the root already lists.** T46.2.2 wrote it only where the
+ * `packages` key was absent, which left out every root that ever used the packages panel — the dev container's
+ * own `settings.json` says `packages: ["npm:pi-ponytail"]`, so flypi's default had never been declared there
+ * and nothing would ever declare it. Whether the list already holds it is a question about the *package*, not
+ * the string: `npm:@tintinweb/pi-subagents@0.26.1` declares it as surely as `npm:@tintinweb/pi-subagents`, so
+ * `npmName` decides for `npm:` sources and a path or a git URL matches nothing but itself and is left exactly
+ * as the operator wrote it.
+ *
+ * What takes a default out for good is the settings panel's **Remove**: `applyPackageEdits`
+ * (src/agent/packages.ts) records the source as declined when it uninstalls it, and re-installing clears it.
+ * A declined default is never added again. The limit, stated rather than hidden: **hand-editing
+ * `settings.json` to drop the default records no intent, so the next start puts it back** — the file cannot
+ * tell an uninstall from a typo, and the panel is the interface that means "not on this machine". That list
+ * lives in pi's own file because `permissions` is the precedent for a flypi key pi keeps: its
+ * `persistScopedSettings` re-reads the file and rewrites only the field it was asked to set
+ * (`@earendil-works/pi-coding-agent/dist/core/settings-manager.js:449-470`).
+ *
+ * The other two defaults are written **only when their own key is absent**, and that guard has not moved: a
+ * `permissions.askBeforeUse` list somebody edited is theirs — an empty one is "ask me about nothing", and
+ * filling it would put four tools back behind a refusal the file had just cleared. An existing
+ * `subagents.json` is left alone, parseable or not, like every other file here.
  *
  * `packages` is written through pi's `SettingsManager`, because pi owns this file — `applyPackageEdits`
  * (src/agent/packages.ts) installs through it, and its `persistScopedSettings` re-reads the file and rewrites
@@ -329,13 +347,22 @@ export function ensureAgentConfig(paths: FlypiPaths): string[] {
 export async function ensureSubagentDefaults(paths: FlypiPaths): Promise<string[]> {
 	assertFlypiOwned(paths);
 	const file = readForWrite(paths.settingsPath);
-	// An empty list is an answer; a missing key is not. This is the guard described above, so it reads `in`
-	// rather than `length`.
-	const declare = !("packages" in file);
+	// Which of the defaults this root does not already declare, in the order `DEFAULT_PACKAGES` declares them,
+	// minus the ones the settings panel removed. An absent key and an empty list both gain all of them; what
+	// keeps one out is a decline, not an empty list — hence no `in` here.
+	const existing = list(file.packages) as PackageSource[];
+	const declined = readDeclinedPackages(paths);
+	const missing = DEFAULT_PACKAGES.filter(
+		(source) =>
+			!existing.some((entry) => samePackage(sourceOf(entry), source)) &&
+			!declined.some((held) => samePackage(held, source)),
+	);
+	const declare = missing.length > 0;
 	const gate = !("askBeforeUse" in objects(file.permissions));
 	if (declare) {
 		const settings = SettingsManager.create(paths.root, paths.agentDir);
-		settings.setPackages(DEFAULT_PACKAGES);
+		// The operator's own entries first, verbatim, then what flypi adds: appending is the whole edit.
+		settings.setPackages([...existing, ...missing]);
 		await settings.flush();
 	}
 	if (gate) {
@@ -538,6 +565,21 @@ function checkedName(name: string, what: string): string {
 		throw new FlypiConfigError(`${what} name "${name}" may contain letters, digits, "-" and "_" only, and must start with a letter or digit`);
 	}
 	return name;
+}
+
+/** One `packages` entry's source: pi allows a filtered entry (`{ source, … }`) beside a plain string. */
+function sourceOf(entry: unknown): string {
+	return text(isObject(entry) ? entry.source : entry);
+}
+
+/**
+ * Two `packages` entries naming the same package: `npm:x@1.2.3` and `npm:x` are one package (`npmName`, which
+ * is also what tells a source is pinned — docs/pi-upgrades.md), and a git URL or a path names nothing but
+ * itself.
+ */
+function samePackage(a: string, b: string): boolean {
+	const name = npmName(a);
+	return name === undefined ? a === b : name === npmName(b);
 }
 
 /** Set a key, or remove it when the value is empty/undefined — pi reads an absent key as its default. */

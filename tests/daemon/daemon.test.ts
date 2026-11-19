@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DAEMON_FILE, flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
-import { memoryEndpoint, readConfig } from "../../src/agent/config-files.ts";
+import { DEFAULT_PACKAGES, memoryEndpoint, readConfig } from "../../src/agent/config-files.ts";
 import { readPackageCheck, readPackages } from "../../src/agent/packages.ts";
 import { builtUi, readDaemonInfo, startFlypiDaemon, type DaemonHandle } from "../../src/daemon/index.ts";
 import { startMemoryServer } from "../../src/memory/mcp.ts";
@@ -94,8 +94,8 @@ async function startOn(
 
 async function daemon(options: { log?: (line: string) => void } = {}) {
 	// `noPackages`: a declared package is one pi installs on session start and one the daemon's startup pass asks
-	// the registry about, so a test root declares none — what that buys, and why an empty list is the way to say
-	// it, is in tests/helpers/flypi-root.ts.
+	// the registry about, so a test root declares none — and, since T51, declines flypi's default as well, which
+	// is what that takes now. What it buys and why is in tests/helpers/flypi-root.ts.
 	const root = noPackages(createTempFlypiRoot());
 	const store = memory();
 	const started = await startOn(root, store, options);
@@ -193,11 +193,12 @@ describe("the daemon", () => {
 	});
 
 	it("seeds the subagent defaults into a root that predates them, and only on the run that found them missing", async () => {
-		// `noPackages` rather than a root with no `packages` key at all: an empty list is a declared nothing, so
-		// this row does not ask the registry about a package (the daemon's startup pass asks about whatever the
-		// file declares), and the half that adds the declaration is pinned in tests/agent/config-files.test.ts.
-		// What is proved here is the daemon's own half: the run that finds the keys missing writes them and says
-		// so once, and the next run does neither — which is the state the container's `/data` is in from then on.
+		// `noPackages` rather than a root with no `packages` key at all: it declines flypi's default the way the
+		// settings panel's Remove does, so this row does not ask the registry about a package (the daemon's
+		// startup pass asks about whatever the file declares, and T51 made the seed add the default to a list that
+		// already exists). What is proved here is the daemon's own half: the run that finds the keys missing writes
+		// them and says so once, and the next run does neither — which is the state the container's `/data` is in
+		// from then on.
 		const root = noPackages(createTempFlypiRoot());
 		const paths = flypiPaths(root);
 		const ceilingsPath = join(paths.agentDir, "subagents.json");
@@ -208,10 +209,13 @@ describe("the daemon", () => {
 			d = await startOn(root, store, { log: (line) => logged.push(line) });
 			expect(JSON.parse(readFileSync(paths.settingsPath, "utf8"))).toEqual({
 				packages: [],
+				flypi: { packagesDeclined: DEFAULT_PACKAGES },
 				permissions: { askBeforeUse: ["Agent", "SubagentWorkflow", "steer_subagent", "get_subagent_result"] },
 			});
 			expect(JSON.parse(readFileSync(ceilingsPath, "utf8"))).toEqual({ maxConcurrent: 4, maxConcurrentForeground: 5, maxConcurrentNested: 4, worktreeIsolation: false });
 			expect(logged.join("\n")).toMatch(/flypi: wrote .*subagents\.json — the subagent defaults/);
+			// And the same sentence says which source this root declined, rather than implying the defaults all landed.
+			expect(logged.join("\n")).toContain("npm:@tintinweb/pi-subagents stays out, removed in the Settings tab");
 
 			// A process goes away and another one starts on the same root — `close()`, then a second `startOn`,
 			// the way the crash row above takes a process away.
@@ -657,7 +661,10 @@ describe("the daemon", () => {
 		mkdirSync(join(dir, "extensions"), { recursive: true });
 		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "my-pkg", version: "1.0.0", pi: { extensions: ["extensions/tool.ts"] } }));
 		writeFileSync(join(dir, "extensions", "tool.ts"), "export default function () {}\n");
-		writeFileSync(paths.settingsPath, JSON.stringify({ packages: [dir] }, null, 2));
+		// The default is declined here for one reason: a *declared npm* source makes the daemon's own check reach
+		// the registry (T51 puts it on any list), and `publishedVersions` waits on it. A path has nothing newer,
+		// which is the answer this row is about.
+		writeFileSync(paths.settingsPath, JSON.stringify({ packages: [dir], flypi: { packagesDeclined: DEFAULT_PACKAGES } }, null, 2));
 		const store = memory();
 		const d = await startOn(root, store);
 		try {

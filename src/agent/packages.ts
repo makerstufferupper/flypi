@@ -12,7 +12,9 @@
  * edits the default model in. pi's `SettingsManager` writes only the field it changed, so a `defaultProvider`
  * or a `permissions` block survives an install — and it refuses to write at all when that file will not
  * parse, which is why `applyPackageEdits` checks for a load error before touching anything rather than
- * reporting an install that never landed.
+ * reporting an install that never landed. flypi keeps one key of its own in that file,
+ * `flypi.packagesDeclined`: the sources the operator removed through this panel, so the default declaration
+ * (`ensureSubagentDefaults`, src/agent/config-files.ts) never puts one back over their decision.
  *
  * **Updates are checked, not fetched, by the panel.** `checkForAvailableUpdates()` reaches the registry and
  * every git remote, so it runs on the daemon's daily rhythm (src/daemon/index.ts) and its answer is kept in
@@ -21,7 +23,7 @@
  * A source that names a version (`npm:x@1.2.0`) or a git ref is pinned, and pi leaves pinned sources where
  * they are: naming a version is asking for that version.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { isNewer, published } from "../daemon/update.ts";
@@ -240,6 +242,62 @@ function writePackageFailures(root: string, failures: PackageFailures): void {
 	}
 }
 
+/**
+ * The sources the operator took out through the settings panel, so a default is never put back over their
+ * decision (the seed that reads this is `ensureSubagentDefaults`, src/agent/config-files.ts). They live in a
+ * flypi-owned key of pi's own file — `"flypi": { "packagesDeclined": […] }` — because `permissions` is the
+ * precedent for exactly that: pi does not know that key either, and its `persistScopedSettings` re-reads the
+ * file and rewrites only the field it was asked to set
+ * (`@earendil-works/pi-coding-agent/dist/core/settings-manager.js:449-470`), so an install, an `updates` block
+ * and this list all keep each other.
+ *
+ * Nothing here is a precondition for anything: a file that will not parse, a key that is not a list and a
+ * root with no `settings.json` all answer "nothing has been declined", because the packages panel still has
+ * to open over a broken file — the same channel `readPackages` uses for its `errors`.
+ */
+export function readDeclinedPackages(paths: FlypiPaths): string[] {
+	try {
+		const file = JSON.parse(readFileSync(paths.settingsPath, "utf8")) as { flypi?: { packagesDeclined?: unknown } };
+		const declined = file.flypi?.packagesDeclined;
+		return Array.isArray(declined) ? declined.filter((source): source is string => typeof source === "string") : [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Remember (or forget) that the operator removed one source. Written where the uninstall happens, in
+ * `applyPackageEdits` below, because that is the only place the panel's Remove is observable; re-installing
+ * the same source clears it, which is the operator changing their mind.
+ *
+ * Every removed source is recorded, default or not — this module does not know which sources flypi declares,
+ * and deciding that is the reader's job. A file this cannot parse is left exactly as it is, the way the
+ * failure stamp's writer leaves an unwritable one (`writePackageFailures` above): this is advice for the next
+ * daemon start, not a reason to break an install that already succeeded.
+ */
+export function recordPackageDecline(paths: FlypiPaths, source: string, declined: boolean): void {
+	try {
+		const file = JSON.parse(readFileSync(paths.settingsPath, "utf8")) as Record<string, unknown>;
+		const flypi = typeof file.flypi === "object" && file.flypi !== null && !Array.isArray(file.flypi) ? file.flypi as Record<string, unknown> : {};
+		const list = (Array.isArray(flypi.packagesDeclined) ? flypi.packagesDeclined : []).filter((item): item is string => typeof item === "string");
+		// Clearing something never declined writes nothing at all: an install of an ordinary source must not put a
+		// flypi key in the operator's file that says nothing.
+		if (!declined && !list.includes(source)) return;
+		const next = declined ? [...new Set([...list, source])] : list.filter((item) => item !== source);
+		flypi.packagesDeclined = next;
+		file.flypi = flypi;
+		// 0600 and its directory created, like every other file flypi writes in the agent dir (`writeJson`,
+		// src/agent/config-files.ts) — and, like that one, the mode is set as well as asked for, because
+		// `writeFileSync` only applies it when the file is new.
+		mkdirSync(dirname(paths.settingsPath), { recursive: true });
+		writeFileSync(paths.settingsPath, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+		chmodSync(paths.settingsPath, 0o600);
+	} catch {
+		// The uninstall itself already happened; the next start adds the default back over it, which is the
+		// hand-edit limit the seed's own doc block states.
+	}
+}
+
 /** One line a panel can render: pi's own message is the npm/git error, multi-line and with its usage block. */
 function oneLine(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
@@ -323,6 +381,9 @@ export function prunePackageFailures(paths: FlypiPaths): void {
  * pi's own npm/git calls are what fail, and a later edit in the same request still runs against what the
  * earlier ones wrote. A `settings.json` that will not parse is refused up front — pi would install the code
  * and then decline to record it, which is an install that never lands.
+ *
+ * A `remove` also records the source as declined (`recordPackageDecline`), and an `install` clears that:
+ * this is the one place the panel's decision is observable, so it is the one place it gets written down.
  */
 export async function applyPackageEdits(paths: FlypiPaths, edits: PackageEdits): Promise<PackageSnapshot> {
 	// The panel's install writes the agent-dir files too — pi's package manager puts the code under
@@ -332,8 +393,17 @@ export async function applyPackageEdits(paths: FlypiPaths, edits: PackageEdits):
 	const { manager, settings } = packages(paths);
 	const unreadable = settingsErrors(settings);
 	if (unreadable.length > 0) throw new FlypiConfigError(unreadable.join("; "));
-	for (const source of edits.install ?? []) await manager.installAndPersist(source);
-	for (const source of edits.remove ?? []) await manager.removeAndPersist(source);
+	for (const source of edits.install ?? []) {
+		await manager.installAndPersist(source);
+		// Re-installing is the operator changing their mind, and it is the only thing that clears a decline.
+		recordPackageDecline(paths, source, false);
+	}
+	for (const source of edits.remove ?? []) {
+		await manager.removeAndPersist(source);
+		// Every removed source, default or not: this module does not know which sources flypi declares, and it
+		// must not import what it does not need to (src/agent/config-files.ts imports this one, not the other way).
+		recordPackageDecline(paths, source, true);
+	}
 	for (const source of edits.update ?? []) await manager.update(source);
 	// pi queues settings writes; the file has to be on disk before the snapshot re-reads it.
 	await settings.flush();
