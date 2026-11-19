@@ -372,6 +372,24 @@ export function resolveAgentModel(row: AgentFileRow, available: readonly Availab
 export interface AgentTypeRow extends AgentFileRow, AgentModelAnswer {}
 
 /**
+ * What the `subagentAgents` resource answers with. The shape is this module's (the way `PackageSnapshot` owns
+ * packages', src/agent/packages.ts); the typebox that validates it on the wire is `SubagentAgentsSnapshot`
+ * in `src/server/protocol.ts`, and neither half imports the other's runtime.
+ *
+ * `source` is part of the snapshot rather than a thrown refusal: "no agent types yet" and "there is nothing to
+ * import from here" are two sentences the panel renders, and the second is the dev container's permanent state.
+ * The available-model set the answers were computed over is not here at all — 402 entries for a `runsOn` string
+ * the row already carries.
+ */
+export interface AgentTypesSnapshot {
+	rows: AgentTypeRow[];
+	/** The directory an import would read from, and whether it is there. */
+	source: { path: string; exists: boolean };
+	/** One sentence per thing that left the rows only half answered, never a false warning. */
+	errors: string[];
+}
+
+/**
  * The list, the model answer for every row and the root's own default, joined — one function because that join is
  * what a caller gets wrong: the fallback has to come from `settings.json` through `readForWrite`, an `inherited`
  * row's `runsOn` is the conversation's default rather than something the file chose, and the available set is never

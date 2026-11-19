@@ -397,6 +397,72 @@ export const SavePackagesCommand = Type.Object({
 });
 
 /**
+ * One agent file plus what flypi can say about the model a run of it would land on.
+ *
+ * `runsOn` and `resolvable` are optional because a row must be able to claim nothing: a root whose
+ * `settings.json` never configured a default model has no conversation model to name, and a runtime that could
+ * not be built leaves every row with the file's own facts and no model answer (src/agent/subagent-agents.ts,
+ * `readAgentTypes`). What the answer was computed over — the available set, 402 entries on a root with two
+ * credentialed providers — is deliberately **not** on the wire; a row carries only its own answer.
+ */
+export const SubagentAgentsRow = Type.Object({
+	/** The type as the extension names it: the `name:` key, else the filename without `.md`. */
+	type: Type.String(),
+	/** The file itself, inside `<root>/.flypi/agent/agents`. */
+	file: Type.String(),
+	description: Type.Optional(Type.String()),
+	/** The model the file asked for, spelled as the file spells it. */
+	model: Type.Optional(Type.String()),
+	/** The thinking level the file asked for, same. */
+	thinking: Type.Optional(Type.String()),
+	/** Why this file will not become a type. It still gets a row: silence is the failure this list exists for. */
+	invalid: Type.Optional(Type.String()),
+	/** `provider/modelId` the subagent will actually run on — the asked model, or the conversation's own. */
+	runsOn: Type.Optional(Type.String()),
+	/** False when the file named a model flypi cannot serve, which is the warning the panel shows. */
+	resolvable: Type.Optional(Type.Boolean()),
+	/** True when the model the run lands on cannot do the thinking level the file asked for. */
+	thinkingUnsupported: Type.Optional(Type.Boolean()),
+	/** True when the file asked for no model at all, so `runsOn` is the conversation's model, not its choice. */
+	inherited: Type.Optional(Type.Boolean()),
+});
+
+/**
+ * The agent types flypi's subagent extension can spawn (`<root>/.flypi/agent/agents/*.md`) and the directory an
+ * import would read from. `source` is part of the snapshot rather than a refusal: a machine with no
+ * `~/.pi/agent/agents` — the dev container, permanently — is a state the panel renders a reason from, not an error.
+ */
+export const SubagentAgentsSnapshot = Type.Object({
+	rows: Type.Array(SubagentAgentsRow),
+	source: Type.Object({ path: Type.String(), exists: Type.Boolean() }),
+	/** One sentence per thing that left the rows only half answered — a `settings.json` that will not parse, say. */
+	errors: Type.Array(Type.String()),
+});
+
+/**
+ * The agent types the fleet can spawn, and whether there is anywhere to import them from. Asked when the
+ * settings view opens; the model answer reads this root's own catalog and reaches no network
+ * (src/agent/subagent-agents.ts).
+ */
+export const SubagentAgentsCommand = Type.Object({
+	type: Type.Literal("subagentAgents"),
+	requestId: Type.Optional(RequestId),
+});
+
+/**
+ * Copy the host `~/.pi/agent/agents/*.md` into flypi's own agents dir — the operator's one click, and the only
+ * read flypi makes of the host tree (docs/risks.md risk 1). A name that is already there is left byte for byte as
+ * the operator wrote it. The `result` carries the refreshed list; a source that is not there is an `error` frame
+ * naming the path it looked in. Nothing reloads: the extension re-reads the dir on every spawn, but the
+ * `Agent` tool's *description* lists the types from when the conversation started, so the new ones appear in new
+ * conversations.
+ */
+export const ImportSubagentAgentsCommand = Type.Object({
+	type: Type.Literal("importSubagentAgents"),
+	requestId: Type.Optional(RequestId),
+});
+
+/**
  * Which pi answers, what is on disk to move to, and what the daemon's daily registry answer said (Phase 8.4,
  * docs/pi-upgrades.md). `latest`/`next` are absent until the daemon has asked — the request itself reaches no
  * network, the same rule `packages` follows.
@@ -651,6 +717,8 @@ export const ClientCommandSchema = Type.Union([
 	McpRedirectCommand,
 	PackagesCommand,
 	SavePackagesCommand,
+	SubagentAgentsCommand,
+	ImportSubagentAgentsCommand,
 	PiVersionsCommand,
 	PiCheckCommand,
 	UsePiCommand,
@@ -941,6 +1009,7 @@ export const ResultFrame = Type.Object({
 	mcpStatus: Type.Optional(McpStatusSnapshot),
 	config: Type.Optional(ConfigSnapshot),
 	packages: Type.Optional(PackagesSnapshot),
+	subagentAgents: Type.Optional(SubagentAgentsSnapshot),
 	pi: Type.Optional(PiVersions),
 	scheduler: Type.Optional(SchedulerSnapshot),
 	secrets: Type.Optional(SecretsSnapshot),
@@ -1023,6 +1092,8 @@ export type McpExposure = Static<typeof McpExposure>;
 export type McpOAuth = Static<typeof OAuthFields>;
 export type PackageRow = Static<typeof PackageRow>;
 export type PackagesSnapshot = Static<typeof PackagesSnapshot>;
+export type SubagentAgentsRow = Static<typeof SubagentAgentsRow>;
+export type SubagentAgentsSnapshot = Static<typeof SubagentAgentsSnapshot>;
 export type SecretKind = Static<typeof SecretKind>;
 export type SecretRow = Static<typeof SecretRow>;
 export type SecretReferenceRow = Static<typeof SecretReferenceRow>;

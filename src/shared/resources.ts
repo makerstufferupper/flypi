@@ -1,5 +1,5 @@
 /**
- * The settings plane's resources: the seven snapshots the panels read and, except for `mcp` and
+ * The settings plane's resources: the eight snapshots the panels read and, except for `mcp` and
  * `scheduler`, write. One row per resource names the command that reads it, the command that writes
  * it, and the `ResultFrame` field carrying its snapshot — so the server dispatcher
  * (`src/server/index.ts`) and the client demux (`ui/lib/app-state.svelte.ts`) look up one table
@@ -24,9 +24,10 @@ export const RESOURCES = {
 	secrets: { read: "secrets", write: "saveSecrets", field: "secrets" },
 	memory: { read: "memory", write: "saveMemory", field: "memory" },
 	scheduler: { read: "scheduler", write: undefined, field: "scheduler" },
+	subagentAgents: { read: "subagentAgents", write: "importSubagentAgents", field: "subagentAgents" },
 } as const satisfies ResourceTable;
 
-/** The seven resource names — the only list of them (tests/shared/resources.test.ts pins it to the protocol). */
+/** The eight resource names — the only list of them (tests/shared/resources.test.ts pins it to the protocol). */
 export type ResourceName = keyof typeof RESOURCES;
 
 /** Which resource speaks a command, read or write. Derived from the table, so it cannot lag behind it. */

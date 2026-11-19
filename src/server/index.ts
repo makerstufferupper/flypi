@@ -75,7 +75,7 @@ export interface FlypiServerOptions {
 	 */
 	interruptedRun?: (sessionFile: string) => InterruptedRun | undefined;
 	/**
-	 * Resource commands beyond the seven — only a test's fake resource needs them today
+	 * Resource commands beyond the eight — only a test's fake resource needs them today
 	 * (tests/server/resources-server.test.ts): a parse schema that also accepts the fake commands, and
 	 * the fake implementations, merged over the built-ins so a name here replaces that resource's server side.
 	 * The schema must stay a union *over* `ClientCommandSchema` that only adds command names: the parse
@@ -120,7 +120,7 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 	const host = options.host ?? "127.0.0.1";
 	const token = options.token ?? randomUUID();
 	const registry = options.registry;
-	// The resource dispatcher (src/server/resources-server.ts): one command→resource lookup for the seven
+	// The resource dispatcher (src/server/resources-server.ts): one command→resource lookup for the eight
 	// snapshots, so no `case` below guards, calls and replies for a resource by hand.
 	const builtResources = resourceEntries({
 		paths: registry.paths,
@@ -278,7 +278,7 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 			};
 
 			try {
-				// One dispatcher for the seven resources: guard → call → reply the snapshot on its field.
+				// One dispatcher for the eight resources: guard → call → reply the snapshot on its field.
 				// A string answer is a refused action (`usePi` says why rather than showing a snapshot) and a
 				// null one the bare ack the pi switch sends before it restarts.
 				const resource = resourceCommands.get(command.type);

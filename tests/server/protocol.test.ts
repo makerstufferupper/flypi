@@ -67,6 +67,11 @@ const commands: ClientCommand[] = [
 	{ type: "mcpSignIn", name: "sentry", requestId: "r20" },
 	{ type: "mcpRedirect", name: "sentry", url: "http://127.0.0.1:4123/callback?code=x&state=y" },
 	{ type: "mcpRedirect", name: "sentry", url: "", requestId: "r21" },
+	// The agent types the subagent extension can spawn, and the one import that fills flypi's dir from
+	// `~/.pi/agent/agents`. Neither names a field beyond `requestId`: the read takes a root the process already
+	// holds and the write takes no options, which is what keeps the panel's Import a button rather than a form.
+	{ type: "subagentAgents", requestId: "r22" },
+	{ type: "importSubagentAgents", requestId: "r23" },
 ];
 
 describe("protocol: client commands round-trip through the schemas", () => {
@@ -314,6 +319,34 @@ describe("protocol: server frames are checked before they are sent", () => {
 		expect(checkServerFrame({ type: "result", requestId: "r16", mcpStatus: { servers: [{ name: "a", state: "connected", transport: "http", tools: [{ name: "t" }] }], log: "" } }).ok).toBe(false);
 		// An answer with no log is a missing field, not "nothing logged" — the probe always sets it.
 		expect(checkServerFrame({ type: "result", requestId: "r16", mcpStatus: { servers: [] } }).ok).toBe(false);
+	});
+
+	// The agents list (`.flypi/agent/agents/*.md`, src/agent/subagent-agents.ts). A row carries the file's own
+	// facts plus the answer about its model, and `runsOn`/`resolvable` are optional because a root that configured
+	// no default model, or could not build the catalog, has no claim to make — the snapshot's `errors` says why.
+	// What the answer was computed over (the available set, 402 entries on a root with two credentialed providers)
+	// is not in the schema at all, so a row that tried to send it is just a row the panel cannot render.
+	it("accepts the agents snapshot, and refuses a row that does not say which file it is", () => {
+		const scout = { type: "scout", file: "/x/.flypi/agent/agents/scout.md", description: "read the repo", model: "playred-lms/spark-x2.6-4b", thinking: "xhigh", invalid: "the name \"a:b\" contains a ':'", runsOn: "lmstudio/qwen3", resolvable: false, thinkingUnsupported: true, inherited: true };
+		expect(checkServerFrame({ type: "result", requestId: "r24", subagentAgents: { rows: [scout], source: { path: "/h/.pi/agent/agents", exists: true }, errors: ["/x/.flypi/agent/models.json defines no model flypi can serve"] } }).ok).toBe(true);
+		// A file that declares nothing but its own name is still a row, and a machine with nothing to import from is
+		// a `source` rather than an error: the panel renders both, so neither may be missing.
+		expect(checkServerFrame({ type: "result", requestId: "r24", subagentAgents: { rows: [{ type: "scout", file: "/x/.flypi/agent/agents/scout.md" }], source: { path: "/h/.pi/agent/agents", exists: false }, errors: [] } }).ok).toBe(true);
+		// A row with no path is a row the panel cannot open, `exists` is the whole reason a button is disabled, and
+		// an absent `errors` would read as "nothing went wrong" from a server that always answers with the list.
+		const snapshot = { rows: [scout], source: { path: "/h/.pi/agent/agents", exists: true }, errors: [] };
+		for (const subagentAgents of [
+			{ ...snapshot, rows: [{ type: "scout" }] },
+			{ ...snapshot, rows: [{ file: "/x/scout.md" }] },
+			{ ...snapshot, rows: [{ ...scout, resolvable: "no" }] },
+			{ ...snapshot, rows: "scout" },
+			{ rows: snapshot.rows, errors: snapshot.errors },
+			{ ...snapshot, source: { path: "/h/.pi/agent/agents" } },
+			{ ...snapshot, source: { path: 7, exists: true } },
+			{ ...snapshot, errors: "one sentence" },
+		]) {
+			expect(checkServerFrame({ type: "result", requestId: "r24", subagentAgents }).ok, JSON.stringify(subagentAgents)).toBe(false);
+		}
 	});
 
 	it("rejects a malformed frame — a broken frame is our bug, not the client's", () => {

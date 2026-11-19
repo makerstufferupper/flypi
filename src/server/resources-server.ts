@@ -2,15 +2,18 @@
  * The server half of the resource plane (Phase 11.2 T27): one implementation per resource, and one
  * lookup that turns a resource command into guard → call → `reply(requestId, { [field]: snapshot })`.
  * `src/server/index.ts` keeps every command that is not a read/write snapshot exactly as it was; the
- * seven resource arms are what this replaces.
+ * resource arms are what this replaces.
  *
  * The refusal sentences live here and stay verbatim: the panels' tests assert them
  * (`tests/server/server.test.ts`, `tests/server/secrets-server.test.ts`, `tests/server/memory-server.test.ts`).
  * `pi` has two because reading the versions and moving pi refuse with different words, which is why a
  * guard answers per direction rather than per resource.
  */
+import { existsSync } from "node:fs";
 import { readConfig, applyConfigEdits } from "../agent/config-files.ts";
 import { applyPackageEdits, readPackages } from "../agent/packages.ts";
+import { importAgentFiles, hostAgentsDir, listAgentFiles, readAgentTypes, type AgentImportReport, type AgentTypesSnapshot } from "../agent/subagent-agents.ts";
+import { FlypiConfigError } from "../agent/runtime.ts";
 import { mcpStatus } from "../agent/mcp-status.ts";
 import type { FlypiPaths } from "../agent/paths.ts";
 import { COMMAND_TO_RESOURCE, RESOURCES, type ResourceName } from "../shared/resources.ts";
@@ -101,7 +104,29 @@ export function refusal(impl: ResourceImpl, direction: ResourceDirection): strin
 	return direction === "write" ? impl.unavailable.write : impl.unavailable.read;
 }
 
-/** The seven built-in resources, from the shared table's command names and this process's `deps`. */
+/**
+ * The agent files with the import source beside them, and one failure an open panel must not lose.
+ *
+ * `readAgentTypes` reads the root's default model out of `settings.json` through `readForWrite`, which **throws**
+ * on a file that will not parse. Letting that reach the dispatcher would blank the list and tell the operator
+ * they have no agent types, so the rows that are really on disk come back with no model claims and the file's own
+ * sentence in `errors` — the way `readConfig` reports that same file instead of answering an empty config
+ * (src/agent/config-files.ts). Any other throw is a flypi bug, not a state, and stays an error frame.
+ *
+ * `imported` is the report the write just produced: it names the directory the copy actually read, which is the
+ * one thing the refreshed list cannot say for itself.
+ */
+async function agentTypesSnapshot(paths: FlypiPaths, imported?: AgentImportReport): Promise<AgentTypesSnapshot> {
+	const source = imported ? { path: imported.source, exists: imported.exists } : { path: hostAgentsDir(), exists: existsSync(hostAgentsDir()) };
+	try {
+		return { ...(await readAgentTypes(paths)), source };
+	} catch (error) {
+		if (!(error instanceof FlypiConfigError)) throw error;
+		return { rows: listAgentFiles(paths), source, errors: [error.message] };
+	}
+}
+
+/** The eight built-in resources, from the shared table's command names and this process's `deps`. */
 export function resourceEntries(deps: ResourceDeps): Record<ResourceName, BuiltInResourceEntry> {
 	// The commands and fields come from RESOURCES (src/shared/resources.ts), so the dispatcher and the
 	// protocol cannot drift; only the two commands the table cannot name (rollbackPi, piCheck) are added below.
@@ -198,13 +223,36 @@ export function resourceEntries(deps: ResourceDeps): Record<ResourceName, BuiltI
 				read: () => deps.scheduler!(),
 			},
 		},
+		subagentAgents: {
+			field: RESOURCES.subagentAgents.field,
+			impl: {
+				// The agent types the subagent extension can spawn, from the agent dir, with the model each run lands
+				// on. No guard: like config and packages, this process always can serve both directions, and the
+				// catalog read is pi's own runtime over this root (src/agent/subagent-agents.ts). The refusal the
+				// container needs is not a guard either — it is `source.exists` on the snapshot.
+				read: () => agentTypesSnapshot(deps.paths),
+				// The operator's one click that reads the host `~/.pi/agent/agents`, writing only into flypi's own dir
+				// and never over a file that is already there. Nothing reloads, for `applyConfigEdits`' reason and
+				// pi's: the extension re-reads the dir on every spawn, so a conversation already open keeps the type
+				// list its tool description was registered with.
+				apply: async () => {
+					const report = importAgentFiles(deps.paths);
+					// Two refusals, both a sentence rather than an unchanged list: the source *is* flypi's dir (the
+					// module's own words, which say why), and the source is simply not there — the state a socket can
+					// still be asked to import from, because the panel's disabled button is a convenience, not a guard.
+					if (report.error) return report.error;
+					if (!report.exists) return `${report.source} does not exist — there is nothing to import from it`;
+					return agentTypesSnapshot(deps.paths, report);
+				},
+			},
+		},
 	};
 }
 
 /**
  * One lookup for every resource command: the shared table's read/write commands plus whatever a
  * resource declares beyond them. Later entries win, so `startFlypiServer` merges the built-ins under
- * the `resources` option and a test can register an eighth resource without touching `index.ts`.
+ * the `resources` option and a test can register its own resource without touching `index.ts`.
  */
 export function commandTargets(resources: Record<string, ResourceEntry>): Map<string, ResourceTarget> {
 	const target = (entry: ResourceEntry, direction: ResourceDirection): ResourceTarget => ({
