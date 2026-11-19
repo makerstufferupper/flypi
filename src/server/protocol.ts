@@ -437,6 +437,16 @@ export const SubagentAgentsSnapshot = Type.Object({
 	source: Type.Object({ path: Type.String(), exists: Type.Boolean() }),
 	/** One sentence per thing that left the rows only half answered — a `settings.json` that will not parse, say. */
 	errors: Type.Array(Type.String()),
+	// The three lists of the import that produced this snapshot, so `importSubagentAgents` answers with what it did
+	// instead of with the list a plain read already gives. They are optional because only the write carries them: a
+	// read has no import to report, and an empty `skipped` there would claim "nothing was already here" — the one
+	// thing the operator most needs this answer to be honest about. Absent on a read, never empty.
+	/** Destinations the import wrote, in the order it wrote them. */
+	copied: Type.Optional(Type.Array(Type.String())),
+	/** Types it left byte for byte as the operator had them — the list that proves nothing was overwritten. */
+	skipped: Type.Optional(Type.Array(Type.String())),
+	/** Entries that were no regular `.md`, so never became types. */
+	ignored: Type.Optional(Type.Array(Type.String())),
 });
 
 /**
@@ -452,8 +462,10 @@ export const SubagentAgentsCommand = Type.Object({
 /**
  * Copy the host `~/.pi/agent/agents/*.md` into flypi's own agents dir — the operator's one click, and the only
  * read flypi makes of the host tree (docs/risks.md risk 1). A name that is already there is left byte for byte as
- * the operator wrote it. The `result` carries the refreshed list; a source that is not there is an `error` frame
- * naming the path it looked in. Nothing reloads: the extension re-reads the dir on every spawn, but the
+ * the operator wrote it. The `result` carries the refreshed list *and* the report of the run — `copied`, `skipped`
+ * (the names that were already there, kept) and `ignored` — because the refreshed list alone cannot tell the
+ * operator what the click did. A source that is not there is an `error` frame naming the path it looked in.
+ * Nothing reloads: the extension re-reads the dir on every spawn, but the
  * `Agent` tool's *description* lists the types from when the conversation started, so the new ones appear in new
  * conversations.
  */

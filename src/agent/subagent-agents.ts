@@ -387,6 +387,15 @@ export interface AgentTypesSnapshot {
 	source: { path: string; exists: boolean };
 	/** One sentence per thing that left the rows only half answered, never a false warning. */
 	errors: string[];
+	/** Destinations the import wrote, in the order it wrote them. Absent on a plain read, which has no import to
+	 *  describe — so a reader never mistakes an absent list for an empty one. */
+	copied?: string[];
+	/** Types it left alone because they were already there. **This is the list that proves nothing was
+	 *  overwritten** (the module's first rule), which is why the write has to carry it rather than answer the
+	 *  import with the same list a read gives. Absent on a plain read. */
+	skipped?: string[];
+	/** Entries that were no regular `.md`: a link, a subdir, a `.txt`. Absent on a plain read. */
+	ignored?: string[];
 }
 
 /**

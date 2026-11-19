@@ -9,7 +9,7 @@
  * opening it is a protocol version bump, deliberately out of scope here. This test therefore asserts
  * on the parsed JSON of the frames, not on checked frames.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -209,6 +209,10 @@ describe("the subagent agent types are a resource the browser reads and writes",
 		rows: Record<string, unknown>[];
 		source: { path: string; exists: boolean };
 		errors: string[];
+		/** The import's report; on a plain read these keys are absent, not empty. */
+		copied?: string[];
+		skipped?: string[];
+		ignored?: string[];
 	}
 
 	/** The `subagentAgents` half of a reply. */
@@ -287,8 +291,48 @@ describe("the subagent agent types are a resource the browser reads and writes",
 					rows: [{ type: "scout", file: join(agents, "scout.md"), description: "read the repo", model: "lmstudio/qwen3", runsOn: "lmstudio/qwen3", resolvable: true }],
 					source: { path: host.agentsDir, exists: true },
 					errors: [],
+					// The write's own report, in the frame that used to be indistinguishable from a read's
+					// (T46.3.3 review). `notes.txt` is `ignored`, not a row and not an error.
+					copied: [join(agents, "scout.md")],
+					skipped: [],
+					ignored: ["notes.txt"],
 				},
 			});
+		} finally {
+			host.restore();
+			await c.close();
+		}
+	});
+
+	// The answer to the click. `importAgentFiles` reports what it copied and what it refused to overwrite
+	// (src/agent/subagent-agents.ts, `AgentImportReport`), and a snapshot that dropped that report replies to Import
+	// with the very list a plain read gives — so the panel could not say "kept your `scout.md`, which you had
+	// edited", which is the promise the import is built under ("A file already in flypi's dir is never
+	// overwritten"). The read that follows carries **none** of the three keys: an empty `skipped` would read back as
+	// "there was nothing to keep", which is the opposite of what just happened.
+	it("says what the import copied and what it refused to overwrite, and the read after it says neither", async () => {
+		const h = await harness(toolTurn());
+		withProviderConfig(h.root, { defaultProvider: "lmstudio", defaultModel: "qwen3" }, { lmstudio: { type: "api_key", key: "local" } });
+		const agents = agentsDirOf(h.root, { "scout.md": "---\ndescription: MY OWN scout, edited by hand\n---\nmine\n" });
+		const host = plantedHome({
+			"scout.md": "---\ndescription: the host copy\n---\nbody\n",
+			"pilot.md": "---\ndescription: fly it\nmodel: lmstudio/qwen3\n---\nbody\n",
+		});
+		const c = await connected(h);
+		try {
+			c.client.send({ type: "importSubagentAgents", requestId: "r7" });
+			const written = snapshot(await c.client.for("r7"));
+			// `skipped` names the *type*, which is what the panel lists; `copied` the destination it wrote.
+			expect(written.skipped).toEqual(["scout"]);
+			expect(written.copied).toEqual([join(agents, "pilot.md")]);
+			expect(written.ignored).toEqual([]);
+			// The list's whole point, checked on the file itself: the hand-edited copy is byte for byte what the
+			// operator wrote, while the name that was free arrived.
+			expect(readFileSync(join(agents, "scout.md"), "utf8")).toBe("---\ndescription: MY OWN scout, edited by hand\n---\nmine\n");
+			expect(written.rows.map((row) => row.description)).toEqual(["fly it", "MY OWN scout, edited by hand"]);
+
+			c.client.send({ type: "subagentAgents", requestId: "r8" });
+			expect(Object.keys(snapshot(await c.client.for("r8"))).sort()).toEqual(["errors", "rows", "source"]);
 		} finally {
 			host.restore();
 			await c.close();

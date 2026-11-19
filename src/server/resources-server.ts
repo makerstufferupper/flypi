@@ -114,15 +114,18 @@ export function refusal(impl: ResourceImpl, direction: ResourceDirection): strin
  * (src/agent/config-files.ts). Any other throw is a flypi bug, not a state, and stays an error frame.
  *
  * `imported` is the report the write just produced: it names the directory the copy actually read, which is the
- * one thing the refreshed list cannot say for itself.
+ * one thing the refreshed list cannot say for itself, and its three lists are the answer to the click — `skipped`
+ * above all, since that is the list saying the operator's own files were left alone. A read passes no report and
+ * gets none of the three keys, so an absent list is never the same answer as an empty one.
  */
 async function agentTypesSnapshot(paths: FlypiPaths, imported?: AgentImportReport): Promise<AgentTypesSnapshot> {
 	const source = imported ? { path: imported.source, exists: imported.exists } : { path: hostAgentsDir(), exists: existsSync(hostAgentsDir()) };
+	const report = imported ? { copied: imported.copied, skipped: imported.skipped, ignored: imported.ignored } : {};
 	try {
-		return { ...(await readAgentTypes(paths)), source };
+		return { ...(await readAgentTypes(paths)), source, ...report };
 	} catch (error) {
 		if (!(error instanceof FlypiConfigError)) throw error;
-		return { rows: listAgentFiles(paths), source, errors: [error.message] };
+		return { rows: listAgentFiles(paths), source, errors: [error.message], ...report };
 	}
 }
 
