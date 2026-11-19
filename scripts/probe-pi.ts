@@ -5,14 +5,21 @@
  * Run: `npm run probe:pi -- --candidate DIR` — DIR is a tree built by `npm install --prefix` (Phase 8.3), or
  * this repo's own root to check the pi that is already installed. Exit 0 clean, 1 with one line per problem.
  *
+ * The declared extensions are read from the flypi root the script runs from — `--candidate` names a pi
+ * tree, not a root, and the npm script starts in the repo. A root with no installed package says nothing
+ * about it (src/agent/pi-compat.ts).
+ *
  * A clean run means "nothing renamed, moved or raised a floor", not "flypi works on it". The behavioural
  * half of pi's API is only covered by `npm test` and `npm run smoke` (docs/risks.md risk 14).
  */
 import { checkPiCompat } from "../src/agent/pi-compat.ts";
+import { flypiPaths } from "../src/agent/paths.ts";
+import { readPackages } from "../src/agent/packages.ts";
 
 const argv = process.argv.slice(2);
 const candidate = argv[argv.indexOf("--candidate") + 1] ?? process.cwd();
-const failures = await checkPiCompat(candidate);
+const extensions = readPackages(flypiPaths(process.cwd())).packages.filter((row) => row.installed).map((row) => row.path);
+const failures = await checkPiCompat(candidate, extensions);
 for (const failure of failures) console.error(`pi compat: ${failure}`);
 console.log(failures.length ? `pi compat: ${failures.length} problem(s) in ${candidate}` : `pi compat: ok — ${candidate}`);
 process.exit(failures.length ? 1 : 0);

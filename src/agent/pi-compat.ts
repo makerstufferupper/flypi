@@ -17,8 +17,8 @@
  * `pi-ai/providers/faux` is the stub every model-touching test runs on. A probe that checked only
  * `pi-coding-agent` would report a clean pass while the whole suite was broken.
  */
-import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** One specifier flypi imports from, and what it takes from it. */
@@ -140,11 +140,61 @@ async function resolverFor(root: string): Promise<(specifier: string) => string 
 	};
 }
 
+/** Every `.js` under a package's build directory, nested included. Throws when there is no build to walk. */
+function builtFiles(dir: string, out: string[] = []): string[] {
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		const path = join(dir, entry.name);
+		if (entry.isDirectory()) builtFiles(path, out);
+		else if (entry.name.endsWith(".js")) out.push(path);
+	}
+	return out;
+}
+
+/**
+ * What one installed extension imports from each `@earendil-works/*` specifier, read off its own built
+ * output — every `.js` under its `dist/`, which is the form its build ships (the package's pi manifest
+ * names the source entry; this is what that compiles to). The **built** files, not the TypeScript source,
+ * because only the runtime module's imports can fail at runtime: `import type` clauses and inline `type`
+ * names are erased by the extension's own build, and reporting one would blame a pi for a name it was
+ * never asked for. Namespace and default imports name a module, not a symbol — the specifier is recorded
+ * with no names, which is as far as a name-check can honestly go.
+ * Empty when the package or its build is not there: an uninstalled package skips this check, it never fails one.
+ */
+export function extensionPiImports(pkgDir: string): Map<string, string[]> {
+	const found = new Map<string, Set<string>>();
+	try {
+		for (const file of builtFiles(join(pkgDir, "dist"))) {
+			// The clause excludes quotes and semicolons, so it cannot run past the specifier of the import
+			// before it — named clauses in the shape `importedFromSource` pins for flypi's own source.
+			for (const [, clause, specifier] of readFileSync(file, "utf8").matchAll(/import\s+([^;'"]*?)\s*from\s*"(@earendil-works\/[^"]+)"/g)) {
+				if (/^type\s/.test(clause!)) continue; // a whole clause that is type-only
+				const names = found.get(specifier!) ?? new Set<string>();
+				found.set(specifier!, names);
+				if (clause!.startsWith("{")) {
+					for (const raw of clause!.slice(1, -1).split(",").map((name) => name.trim()).filter(Boolean)) {
+						if (raw.startsWith("type ")) continue;
+						names.add(raw.split(/\s+as\s+/)[0]!);
+					}
+				}
+				// else: `import * as x from` / `import x from` — the specifier is recorded, its usage is not nameable.
+			}
+		}
+	} catch {
+		// No build, or a file that would not read: the honest answer is "nothing to ask of the candidate".
+		return new Map();
+	}
+	return new Map([...found].map(([specifier, names]) => [specifier, [...names].sort()]));
+}
+
 /**
  * What a candidate tree is missing — one sentence per problem, empty when it looks usable. A complete tree
  * resolves its own third-party dependencies, so the probe asks the candidate rather than flypi.
+ *
+ * `extensions` are installed package directories whose own pi imports are checked against the candidate too
+ * (T46.2.4). The parameter is optional because the daemon's `deps.probe` seam and every existing caller use
+ * the one-argument call.
  */
-export async function checkPiCompat(candidateRoot: string): Promise<string[]> {
+export async function checkPiCompat(candidateRoot: string, extensions: string[] = []): Promise<string[]> {
 	const failures: string[] = [];
 	let root: string;
 	try {
@@ -192,6 +242,39 @@ export async function checkPiCompat(candidateRoot: string): Promise<string[]> {
 		const owner = url ? packageRoot(fileURLToPath(url), deep.specifier) : null;
 		const file = owner ? join(owner, deep.path) : "";
 		if (!url || !owner || !existsSync(file)) failures.push(`${deep.specifier}: ${deep.path} is not there, and flypi imports it by path`);
+	}
+
+	// What the installed extensions import from pi, against the candidate. A bundled extension is TypeScript
+	// loaded through jiti with no type check (extensions/loader.js), so this is the only thing standing
+	// between a pi bump and a silently missing tool. Its imports never join PI_COMPAT — that list is pinned
+	// against flypi's own source (tests/scripts/pi-compat.test.ts, decision 9 / D8).
+	for (const pkgDir of extensions) {
+		let pkgName: string;
+		try {
+			pkgName = (JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")) as { name?: string }).name ?? basename(pkgDir);
+		} catch {
+			pkgName = basename(pkgDir);
+		}
+		for (const [specifier, names] of extensionPiImports(pkgDir)) {
+			const url = resolveFrom(specifier);
+			if (!url) {
+				// An extension that cannot resolve what it imports from pi is exactly the drift this probe exists for.
+				failures.push(`${pkgName}: imports ${specifier}, which does not resolve from inside ${candidateRoot}`);
+				continue;
+			}
+			let mod: Record<string, unknown>;
+			try {
+				mod = (await import(`${url}?pi-probe=1`)) as Record<string, unknown>;
+			} catch (error) {
+				failures.push(`${pkgName}: importing ${specifier} threw — ${(error as Error).message}`);
+				continue;
+			}
+			for (const name of names) {
+				// `undefined` rather than `typeof !== "function"`: an extension imports objects and classes too,
+				// and "does not export" must only be said about a name that is genuinely not there.
+				if (mod[name] === undefined) failures.push(`${pkgName}: imports ${name} from ${specifier}, which this pi does not export`);
+			}
+		}
 	}
 
 	// The Node floor: a candidate that needs a newer Node than the daemon runs on fails at import, which is

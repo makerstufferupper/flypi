@@ -7,9 +7,9 @@
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { PI_COMPAT, checkPiCompat } from "../../src/agent/pi-compat.ts";
+import { PI_COMPAT, checkPiCompat, extensionPiImports } from "../../src/agent/pi-compat.ts";
 
 const root = process.cwd();
 
@@ -76,6 +76,21 @@ function doctoredCandidate(prefix: string): string {
 	// would make the entry itself throw, which is a different (and correct) answer, tested separately below.
 	rmSync(join(packageDir, "dist", "extensions", "mcp", "runtime.js"));
 	return candidate;
+}
+
+/** The specifier as a module built against pi spells it. The split is load-bearing: the source-scan row
+ *  above reads every line of this file for `from "@earendil-works/…"` fixtures and would count a whole one
+ *  written here as flypi's own import (D8, met from the other side). The file on disk gets the real text. */
+const piSpec = (pkg: string) => `@earendil${"-works"}/${pkg}`;
+
+/** The built output of an extension package: a `package.json` (pass null for the one that has none) and
+ *  one `dist/index.js` holding `body` — the imports as the extension's own build
+ *  would leave them, which is what the probe reads (`src/agent/pi-compat.ts`). */
+function fixtureExtension(dir: string, body: string, manifest: string | null = JSON.stringify({ name: "flypi-fixture-ext", version: "0.0.1" })): string {
+	mkdirSync(join(dir, "dist"), { recursive: true });
+	if (manifest !== null) writeFileSync(join(dir, "package.json"), manifest);
+	writeFileSync(join(dir, "dist", "index.js"), body);
+	return dir;
 }
 
 const listed = new Map(PI_COMPAT.imports.map((entry) => [entry.specifier, { values: new Set(entry.values), types: new Set(entry.types) }]));
@@ -166,6 +181,105 @@ describe("the probe", () => {
 			expect(nothing.out).toContain("has no @earendil-works in its node_modules");
 		} finally {
 			rmSync(empty, { recursive: true, force: true });
+		}
+	}, SLOW);
+
+	// T46.2.4: the declared extension is loaded through jiti with no type check, so its own imports need a
+	// probe too. They never join PI_COMPAT (that list is pinned against flypi's source above); they are read
+	// off the installed package, and the candidate is asked whether it still offers them.
+	it("names a symbol a declared extension imports that the candidate does not export", async () => {
+		const ext = fixtureExtension(mkdtempSync(join(tmpdir(), "flypi-ext-")), `import { createAgentSession, noSuchPiExport } from "${piSpec("pi-coding-agent")}";\n`);
+		try {
+			expect(await checkPiCompat(root, [ext])).toEqual([
+				"flypi-fixture-ext: imports noSuchPiExport from @earendil-works/pi-coding-agent, which this pi does not export",
+			]);
+			// The one-argument call is the daemon's `deps.probe` seam and every existing row above: no
+			// extensions named, no extension talk.
+			expect(await checkPiCompat(root)).toEqual([]);
+		} finally {
+			rmSync(ext, { recursive: true, force: true });
+		}
+	}, SLOW);
+
+	it("says nothing about a declared package that is not on disk", async () => {
+		const base = mkdtempSync(join(tmpdir(), "flypi-ext-absent-"));
+		try {
+			expect(await checkPiCompat(root, [join(base, "not-installed")])).toEqual([]);
+			expect([...extensionPiImports(join(base, "not-installed"))]).toEqual([]);
+		} finally {
+			rmSync(base, { recursive: true, force: true });
+		}
+	}, SLOW);
+
+	it("reads the import forms off the built output, naming only what the runtime module asks for", () => {
+		const dir = mkdtempSync(join(tmpdir(), "flypi-ext-forms-"));
+		mkdirSync(join(dir, "dist", "nested"), { recursive: true });
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "flypi-forms-ext", version: "0.0.1" }));
+		writeFileSync(
+			join(dir, "dist", "index.js"),
+			[
+				`import { createAgentSession, type ErasedAtBuild,`,
+				"\tgetAgentDir } from \"" + piSpec("pi-coding-agent") + "\";",
+				`import type { NeverRuntime } from "${piSpec("pi-ai")}";`,
+				`import * as tui from "${piSpec("pi-tui")}";`,
+				`import legacy from "${piSpec("pi-legacy")}";`,
+				'export const x = 1;',
+			].join("\n"),
+		);
+		writeFileSync(join(dir, "dist", "index.d.ts"), `import type { AlsoErased } from "${piSpec("pi-coding-agent")}";\n`);
+		writeFileSync(join(dir, "dist", "nested", "deep.js"), `import { DefaultResourceLoader } from "${piSpec("pi-coding-agent")}";\n`);
+		try {
+			const found = extensionPiImports(dir);
+			// The type-only clause never reaches the map at all: pi is not asked about names that were
+			// erased before the module existed. The namespace and default forms record the specifier and
+			// claim no names, because there is no name to claim.
+			expect([...found.keys()].sort()).toEqual(["@earendil-works/pi-coding-agent", "@earendil-works/pi-legacy", "@earendil-works/pi-tui"]);
+			expect(found.get("@earendil-works/pi-coding-agent")).toEqual(["DefaultResourceLoader", "createAgentSession", "getAgentDir"]);
+			expect(found.get("@earendil-works/pi-tui")).toEqual([]);
+			expect(found.get("@earendil-works/pi-legacy")).toEqual([]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("says so when an extension imports a specifier the candidate cannot resolve", async () => {
+		const ext = fixtureExtension(mkdtempSync(join(tmpdir(), "flypi-ext-unresolved-")), `import { someTool } from "${piSpec("pi-not-here")}";\n`);
+		try {
+			expect(await checkPiCompat(root, [ext])).toEqual([`flypi-fixture-ext: imports @earendil-works/pi-not-here, which does not resolve from inside ${root}`]);
+		} finally {
+			rmSync(ext, { recursive: true, force: true });
+		}
+	}, SLOW);
+
+	it("says so when the specifier an extension imports throws on its way in", async () => {
+		// Its own dependency resolves from the candidate and is broken — the shape a half-installed or
+		// circular pi tree takes, where the import itself is the failure.
+		const candidate = mkdtempSync(join(tmpdir(), "flypi-candidate-throw-"));
+		const broken = join(candidate, "node_modules", "@earendil-works", "pi-throwing");
+		mkdirSync(broken, { recursive: true });
+		writeFileSync(join(broken, "package.json"), JSON.stringify({ name: "pi-throwing", main: "index.js" }));
+		writeFileSync(join(broken, "index.js"), "this is ( not javascript");
+		const ext = fixtureExtension(mkdtempSync(join(tmpdir(), "flypi-ext-throw-")), `import { whatever } from "${piSpec("pi-throwing")}";\n`);
+		try {
+			const failures = await checkPiCompat(candidate, [ext]);
+			expect(failures.some((line) => line.startsWith("flypi-fixture-ext: importing @earendil-works/pi-throwing threw"))).toBe(true);
+		} finally {
+			rmSync(candidate, { recursive: true, force: true });
+			rmSync(ext, { recursive: true, force: true });
+		}
+	}, SLOW);
+
+	it("names an extension by its package name, and by the directory when the manifest gives it none", async () => {
+		const unnamed = fixtureExtension(mkdtempSync(join(tmpdir(), "flypi-ext-nameless-")), `import { goneEitherWay } from "${piSpec("pi-coding-agent")}";\n`, JSON.stringify({ version: "0.0.1" }));
+		const manifestless = fixtureExtension(mkdtempSync(join(tmpdir(), "flypi-ext-nomanifest-")), `import { goneEitherWay } from "${piSpec("pi-coding-agent")}";\n`, null);
+		try {
+			expect(await checkPiCompat(root, [unnamed, manifestless])).toEqual([
+				`${basename(unnamed)}: imports goneEitherWay from @earendil-works/pi-coding-agent, which this pi does not export`,
+				`${basename(manifestless)}: imports goneEitherWay from @earendil-works/pi-coding-agent, which this pi does not export`,
+			]);
+		} finally {
+			rmSync(unnamed, { recursive: true, force: true });
+			rmSync(manifestless, { recursive: true, force: true });
 		}
 	}, SLOW);
 

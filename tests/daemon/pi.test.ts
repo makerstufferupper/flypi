@@ -228,6 +228,22 @@ describe("moving pi", () => {
 		}
 	});
 
+	// T46.2.4: without an injected probe the real one runs, and it now also asks for the installed
+	// extensions. A fake root declares none and a stub tree exports nothing, so the honest answer is: it
+	// all fails to resolve, and nothing moves.
+	it("refuses a tree the real probe cannot resolve anything from", async () => {
+		const { root, scope } = fakeFlypi("1.3.0", []);
+		try {
+			const result = await switches(root, scope, { probe: undefined });
+			expect(result.ok).toBe(false);
+			expect(result.message).toContain("does not offer what flypi imports");
+			expect(result.message).toContain("@earendil-works/pi-coding-agent: does not resolve from inside");
+			expect(readPiPin(root)).toBeNull();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps the switch when the restarted daemon answers with the candidate, and drops the trees nothing can go back to", async () => {
 		const { root, scope } = fakeFlypi("1.3.0", ["9.9.0", "1.2.0"]);
 		try {
