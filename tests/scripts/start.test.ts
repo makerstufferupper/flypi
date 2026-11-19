@@ -86,7 +86,11 @@ describe("the first run on a fresh machine", () => {
 			writeFileSync(join(fresh, ".flypi", "agent", "settings.json"), JSON.stringify({ packages: ["npm:@tintinweb/pi-subagents"], permissions: { askBeforeUse: ["Agent"] } }));
 			writeFileSync(join(fresh, ".flypi", "agent", "models.json"), "{}");
 
-			expect(ensureConfig(fresh, {}).created).toEqual(["settings.json", "models.json", "mcp.json (flypi-memory entry, token generated)"]);
+			const created = ensureConfig(fresh, {}).created;
+			expect(created).toEqual(["settings.json (merged)", "models.json", "mcp.json (flypi-memory entry, token generated)"]);
+			// `created` is what the script prints as "flypi: wrote <path>", so the file whose own keys survived the
+			// template must not be reported by its bare name.
+			expect(created).not.toContain("settings.json");
 			const settings = JSON.parse(readFileSync(join(fresh, ".flypi", "agent", "settings.json"), "utf8"));
 			expect(settings.defaultProvider).toBeTruthy();
 			expect(settings.defaultModel).toBeTruthy();

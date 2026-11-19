@@ -311,9 +311,11 @@ export function ensureAgentConfig(paths: FlypiPaths): string[] {
  * makes the file current again: pi queues its writes.
  *
  * `permissions` has no `SettingsManager` setter, because pi does not know that key — `permission-gate.ts` is
- * its only reader — so it goes through this module's own read-modify-write, and it goes *after* the flush, so
- * the two writers cannot each overwrite what the other wrote. A file that will not parse is never overwritten:
- * `readForWrite` says so, as it does for every other writer here.
+ * its only reader — so it goes through this module's own read-modify-write, *after* the flush. That order is
+ * safe because `SettingsManager` rewrites the file from what is on disk and keeps the keys it does not know —
+ * the same reason the half after the flush re-reads the file instead of reusing the snapshot taken above.
+ * A file that will not parse is never overwritten: `readForWrite` says so, naming it, as it does for every
+ * other writer here.
  *
  * `subagents.json` is the extension's file at the path the extension reads it:
  * `join(getAgentDir(), "subagents.json")` (`@tintinweb/pi-subagents/src/settings.ts:593`), and flypi's
@@ -561,13 +563,24 @@ function readJsonObject(path: string, errors: string[]): Record<string, unknown>
 	try {
 		return parseJsonObject(readFileSync(path, "utf8"), path);
 	} catch (error) {
-		errors.push(`${path}: ${(error as Error).message}`);
+		// `parseJsonObject` puts the path in its own sentence, so prefixing it again here would print it twice
+		// in the panel's error list.
+		errors.push((error as Error).message);
 		return {};
 	}
 }
 
 function parseJsonObject(raw: string, path: string): Record<string, unknown> {
-	const value = JSON.parse(raw) as unknown;
+	let value: unknown;
+	// A bare `SyntaxError` names no file, and a daemon start prints one line of `error.message` into
+	// `.flypi/daemon.log` (`scripts/serve-daemon.ts`): the operator would get a tsx stack trace for a file they
+	// can open and fix. So the path goes in the sentence here, which is also why `readJsonObject` no longer
+	// prefixes one of its own.
+	try {
+		value = JSON.parse(raw) as unknown;
+	} catch (error) {
+		throw new FlypiConfigError(`${path}: ${(error as Error).message}`);
+	}
 	if (!isObject(value)) throw new FlypiConfigError(`${path} must contain a JSON object`);
 	return value;
 }

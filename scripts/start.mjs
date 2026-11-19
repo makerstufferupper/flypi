@@ -109,15 +109,18 @@ export function ensureConfig(root, env = process.env) {
 		["models.json", MODELS_TEMPLATE],
 	]) {
 		const file = join(dir, name);
+		const existed = existsSync(file);
 		const existing = readJson(file, {});
 		// Absent, or a file with no choice in it yet — which is not a file with no key in it. The daemon's own
 		// first write declares the default packages and the gated tools (`DEFAULT_PACKAGES`,
 		// src/agent/config-files.ts), and a template written over that file would take the declaration back out,
 		// so the template goes *into* what is there and those keys stay. A checkout that started the daemon
 		// before it ever ran this script still gets its model template.
-		if (!existsSync(file) || Object.keys(existing).every((key) => key === "packages" || key === "permissions")) {
+		if (!existed || Object.keys(existing).every((key) => key === "packages" || key === "permissions")) {
 			writeJson(file, { ...existing, ...template });
-			created.push(name);
+			// `created` is what gets printed as "flypi: wrote …", so a file that kept keys of its own says so:
+			// it was merged into, not written.
+			created.push(Object.keys(existing).length > 0 ? `${name} (merged)` : name);
 		}
 	}
 
@@ -215,7 +218,7 @@ async function main() {
 
 	const config = ensureConfig(root);
 	for (const name of config.created) console.log(`flypi: wrote ${join(root, ".flypi", "agent", name)}`);
-	if (config.created.includes("models.json")) {
+	if (config.created.some((name) => name.startsWith("models.json"))) {
 		console.log("flypi: models.json is a template — set the provider, baseUrl and model id your server actually serves (the settings gear in the UI edits the same file)");
 	}
 

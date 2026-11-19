@@ -17,7 +17,7 @@ import {
 	readConfig,
 } from "../../src/agent/config-files.ts";
 import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
-import { createFlypiSession } from "../../src/agent/runtime.ts";
+import { createFlypiSession, FlypiConfigError } from "../../src/agent/runtime.ts";
 import { createTempFlypiRoot, hostPiRoot } from "../helpers/flypi-root.ts";
 import { createStubModel, fauxAssistantMessage, fauxText, fauxToolCall } from "../helpers/stub-model.ts";
 
@@ -494,6 +494,23 @@ describe("config files: the subagent defaults a root gets once", () => {
 		} finally {
 			host.restore();
 		}
+	});
+
+	it("refuses a settings.json that will not parse, naming the file it refused", async () => {
+		// Daemon start prints one line of `error.message` into `.flypi/daemon.log` (`scripts/serve-daemon.ts`), and
+		// skipping the seed in silence would leave "is `Agent` gated or not" unreproducible — so the refusal stays
+		// fatal. A bare `SyntaxError` names no file (`Unexpected token 'n', "{ nope" is not valid JSON`), which is
+		// what the operator would have read.
+		const h = agentRoot();
+		writeFileSync(h.paths.settingsPath, "{ nope");
+
+		const error = await ensureSubagentDefaults(h.paths).then(() => undefined, (reason: unknown) => reason);
+
+		expect(error).toBeInstanceOf(FlypiConfigError);
+		expect((error as Error).message).toContain(`${h.paths.settingsPath}:`);
+		expect((error as Error).message.split("\n")).toHaveLength(1);
+		// Refused, not rewritten: the file is the operator's to fix, like every other one here.
+		expect(readFileSync(h.paths.settingsPath, "utf8")).toBe("{ nope");
 	});
 
 	it("seeds the key the permission gate actually reads", async () => {
