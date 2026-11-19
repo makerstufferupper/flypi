@@ -16,7 +16,8 @@ import { describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { Type } from "typebox";
 import { startFlypiServer, type FlypiServerHandle } from "../../src/server/index.ts";
-import { ClientCommandSchema } from "../../src/server/protocol.ts";
+import { ClientCommandSchema, SubagentAgentsRow, SubagentAgentsSnapshot } from "../../src/server/protocol.ts";
+import type { AgentTypeRow, AgentTypesSnapshot } from "../../src/agent/subagent-agents.ts";
 import type { ResourceEntry } from "../../src/server/resources-server.ts";
 import { harness, toolTurn } from "../helpers/flypi-harness.ts";
 import { homeEnv, withProviderConfig } from "../helpers/flypi-root.ts";
@@ -427,5 +428,81 @@ describe("the subagent agent types are a resource the browser reads and writes",
 			host.restore();
 			await c.close();
 		}
+	});
+});
+
+/**
+ * The module's snapshot pinned to the frame it travels in (T46.3.3 review). Nothing else does this check:
+ * `ResourceHandler` answers `unknown` (`src/server/resources-server.ts:35`), the dispatcher sends whatever came back
+ * under a cast (`{ [resource.field]: snapshot } as Omit<ResultFrame, "type" | "requestId">`,
+ * `src/server/index.ts:290`) and outgoing frames are never validated — `send` only encodes
+ * (`src/server/index.ts:201`) and `src/server/index.ts` holds no `Value.*` call at all. So `AgentTypesSnapshot`
+ * (src/agent/subagent-agents.ts) and `SubagentAgentsSnapshot` (src/server/protocol.ts) are two hand-maintained
+ * definitions of one shape with nothing between them, and one-sided drift is a panel column that reads
+ * `undefined` while `tsc` and every test that does not name that key stay green.
+ *
+ * `packages` has the same exposure, and so has every resource added after it: the cheap fix is this pair of rows,
+ * the real fix is a dispatcher that validates what it sends, which is a protocol decision and not this file's.
+ */
+const MODULE = join(process.cwd(), "src/agent/subagent-agents.ts");
+
+describe("the agent-types snapshot is the shape of the frame it travels in", () => {
+	/** Both directions of a key drift, each labelled with the side that moved. */
+	function agree(moduleKeys: readonly string[], schema: readonly string[], what: string): void {
+		expect(moduleKeys.filter((key) => !schema.includes(key)), `${what}: the module has it, the schema does not`).toEqual([]);
+		expect(schema.filter((key) => !moduleKeys.includes(key)), `${what}: the schema has it, the module does not`).toEqual([]);
+	}
+
+	/** A snapshot that carries every field, including the three only a write fills. Its type is the module's, so
+	 *  `tsc` refuses a fixture that names a field the interface dropped or stops naming one it kept; the row is
+	 *  what refuses it at runtime. A `source` that is absent and one that is empty stay pinned by the socket rows
+	 *  above, which assert the frames themselves. */
+	const row: AgentTypeRow = {
+		type: "scout",
+		file: "/x/.flypi/agent/agents/scout.md",
+		description: "read the repo",
+		model: "lmstudio/qwen3",
+		thinking: "xhigh",
+		invalid: "the name holds a ':', which the extension reserves",
+		runsOn: "lmstudio/qwen3",
+		resolvable: false,
+		thinkingUnsupported: true,
+		inherited: true,
+	};
+	const snapshot: AgentTypesSnapshot = {
+		rows: [row],
+		source: { path: "/h/.pi/agent/agents", exists: true },
+		errors: ["/x/.flypi/agent/models.json defines no model flypi can serve"],
+		copied: ["/x/.flypi/agent/agents/pilot.md"],
+		skipped: ["scout"],
+		ignored: ["notes.txt"],
+	};
+
+	it("sends exactly the fields the frame declares, at both levels", () => {
+		agree(Object.keys(snapshot), Object.keys(SubagentAgentsSnapshot.properties), "the snapshot");
+		agree(Object.keys(row), Object.keys(SubagentAgentsRow.properties), "a row");
+	});
+
+	// A fixture's keys are whatever the fixture spelled, and an `interface` is erased — so renaming a field on the
+	// module's side alone turns `tsc` red and leaves every `Object.keys` exactly as it was (measured: with
+	// `AgentTypesSnapshot.skipped` renamed, the row above stayed green and only this one went red). The declaration
+	// is the only runtime-visible record of those names, which is why this row reads them out of the file.
+	// Line-based on purpose: both interfaces are one field per line, and a doc-comment line never starts `name:`.
+	it("declares those names in the module too, where a rename is otherwise invisible", () => {
+		const declared = (interfaceName: string): string[] => {
+			const lines = readFileSync(MODULE, "utf8").split("\n");
+			const start = lines.findIndex((line) => line.startsWith(`export interface ${interfaceName}`));
+			expect(start, `${interfaceName} is no longer declared where the pin reads it`).toBeGreaterThan(-1);
+			const fields: string[] = [];
+			for (const line of lines.slice(start + 1)) {
+				if (line.trim() === "}") break;
+				fields.push(.../^\t([A-Za-z]\w*)\??:/.exec(line)?.slice(1) ?? []);
+			}
+			return fields;
+		};
+		agree(declared("AgentTypesSnapshot"), Object.keys(SubagentAgentsSnapshot.properties), "AgentTypesSnapshot");
+		// `AgentTypeRow` is an empty alias (`extends AgentFileRow, AgentModelAnswer`), so its fields are those two.
+		const rowFields = [...new Set([...declared("AgentFileRow"), ...declared("AgentModelAnswer")])];
+		agree(rowFields, Object.keys(SubagentAgentsRow.properties), "AgentTypeRow");
 	});
 });

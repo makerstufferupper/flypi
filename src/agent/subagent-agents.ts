@@ -374,7 +374,9 @@ export interface AgentTypeRow extends AgentFileRow, AgentModelAnswer {}
 /**
  * What the `subagentAgents` resource answers with. The shape is this module's (the way `PackageSnapshot` owns
  * packages', src/agent/packages.ts); the typebox that validates it on the wire is `SubagentAgentsSnapshot`
- * in `src/server/protocol.ts`, and neither half imports the other's runtime.
+ * in `src/server/protocol.ts`, and neither half imports the other's runtime — so nothing checks the two against
+ * each other, and `tests/server/resources-server.test.ts` ("the agent-types snapshot is the shape of the frame it
+ * travels in") is what keeps them the same shape: edit one side and that row names the other.
  *
  * `source` is part of the snapshot rather than a thrown refusal: "no agent types yet" and "there is nothing to
  * import from here" are two sentences the panel renders, and the second is the dev container's permanent state.
