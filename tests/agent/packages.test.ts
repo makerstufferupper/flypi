@@ -225,6 +225,37 @@ describe("the stamp a failed install leaves", () => {
 		readPackages(paths);
 		expect(readFileSync(file)).toEqual(before);
 	});
+
+	// The stamp is flypi's own state, so a file that is not the map this writes is a bug report about nothing —
+	// and `readPackages` is a hot read (src/server/resources-server.ts calls it on every panel open), where one
+	// bad byte would take the panel down with it.
+	it("says nothing at all for a stamp file that is not the shape this writes", () => {
+		const { paths } = rootWithFailure();
+		const file = join(paths.root, ".flypi", "package-failures.json");
+		// `null` parses and is not a map: reading an entry out of it is a TypeError on the panel's read path.
+		writeFileSync(file, "null\n");
+		expect(readPackages(paths).errors).toEqual([]);
+		// An entry that is not an object would render "did not install: undefined", advice about nothing.
+		writeFileSync(file, JSON.stringify({ [SOURCE]: null }));
+		expect(readPackages(paths).errors).toEqual([]);
+		writeFileSync(file, JSON.stringify({ [SOURCE]: npmFailure.message }));
+		expect(readPackages(paths).errors).toEqual([]);
+	});
+
+	// A corrupt stamp is repaired, not kept: the reload that worked rewrites the file from what is declared,
+	// so one bad byte does not survive the start that noticed it.
+	it("repairs a stamp file it cannot read at all on the next reload that worked", () => {
+		const { paths } = rootWithFailure();
+		const file = join(paths.root, ".flypi", "package-failures.json");
+		writeFileSync(file, "{ packages ]\n");
+		expect(readPackages(paths).errors).toEqual([]);
+		// The source is on disk now, so there is nothing left to say — and the unreadable file goes with it.
+		const dir = join(paths.agentDir, "npm", "node_modules", "@tintinweb", "pi-subagents");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@tintinweb/pi-subagents", version: "0.26.0" }));
+		prunePackageFailures(paths);
+		expect(existsSync(file)).toBe(false);
+	});
 });
 
 /**

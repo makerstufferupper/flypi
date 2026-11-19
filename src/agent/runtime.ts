@@ -225,6 +225,7 @@ export async function createFlypiSession(options: {
 	// (`npm_config_allow_scripts`, which `npx`/`npm run` export) no conversation could start at all.
 	// Degrade instead: name what failed where the settings panel already reads problems
 	// (`recordPackageFailure`, src/agent/packages.ts), then reload once more over what is on disk.
+	// shortcut: every start re-pays the failed install (pi's own network timeout bounds it at 10s); upgrade = honour the stamp on the first attempt within PACKAGE_CHECK_INTERVAL_MS.
 	let resourceLoader = buildLoader();
 	try {
 		await resourceLoader.reload();
@@ -254,7 +255,10 @@ export async function createFlypiSession(options: {
 		}
 	}
 	// The reload that worked settles the stamps: a source installed again, or taken out of settings.json, is
-	// no longer something to tell anybody. A source still missing keeps its stamp, for the panel to report.
+	// no longer something to tell anybody. A source still missing keeps its stamp, for the panel to report — and
+	// one that is missing with nothing stamped about it is one pi skipped without throwing — `PI_OFFLINE` set by
+	// the operator makes `core/package-manager.js:1015` return before the install — and
+	// `prunePackageFailures` says that instead of leaving the tool quietly gone.
 	prunePackageFailures(paths);
 
 	mkdirSync(paths.sessionsDir, { recursive: true });

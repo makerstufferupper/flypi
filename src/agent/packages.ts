@@ -85,11 +85,14 @@ export interface PackageEdits {
 export interface PackageFailure {
 	/** When the reload that failed ran. */
 	failedAt: string;
-	/** The install's own error, collapsed to one line — npm prints a usage block and git prints a hint. */
+	/**
+	 * Why the code is not there, on one line the panel can print: the install's own error (npm prints a usage
+	 * block and git prints a hint, so it arrives collapsed) or, for a source pi never reached, that it did not run.
+	 */
 	reason: string;
 }
 
-/** What the daemon stamped: which declared sources have no code on disk because their install failed. */
+/** What the session factory stamped: which declared sources have no code on disk, and what to tell the operator about each. */
 export interface PackageFailures {
 	[source: string]: PackageFailure;
 }
@@ -181,32 +184,51 @@ export function readPackages(paths: FlypiPaths): PackageSnapshot {
 		// is what makes the sentence disappear by itself once the install works; reading writes nothing.
 		errors: [
 			...settingsErrors(settings),
+			// A stamp whose reason is not a sentence is flypi's own state gone bad, and this read runs on every
+			// panel open (src/server/resources-server.ts): say nothing rather than crash or print `undefined`.
+			// The next reload that worked rewrites it (`prunePackageFailures`).
 			...rows.flatMap((row) => {
-				const failure = row.installed ? undefined : failures[row.source];
-				return failure ? [`${row.source} did not install: ${failure.reason}`] : [];
+				const reason = row.installed ? undefined : failures[row.source]?.reason;
+				return typeof reason === "string" ? [`${row.source} did not install: ${reason}`] : [];
 			}),
 		],
 	};
 }
 
-/** The stamps, or none: an unreadable stamp file is flypi's own state missing, not a configuration error. */
+/**
+ * The stamps, or none: an unreadable stamp file is flypi's own state missing, not a configuration error — and
+ * so is one that parses to something that is not the map this writes, which is what a half-written or edited
+ * file looks like from here.
+ */
 function readPackageFailures(root: string): PackageFailures {
 	try {
-		return JSON.parse(readFileSync(join(root, PACKAGE_FAILURES_FILE), "utf8")) as PackageFailures;
+		const value: unknown = JSON.parse(readFileSync(join(root, PACKAGE_FAILURES_FILE), "utf8"));
+		return value !== null && typeof value === "object" ? (value as PackageFailures) : {};
 	} catch {
 		return {};
 	}
 }
 
-/** Write the stamps, and remove the file when there are none left — a root with nothing wrong has no file. */
+/**
+ * Write the stamps, and remove the file when there are none left — a root with nothing wrong has no file.
+ *
+ * The failure to write it is swallowed, the way the read swallows its own: this file is advice for the panel,
+ * not a precondition for starting a conversation, and it sits inside the `catch` that is about to report an
+ * install error. An `EISDIR` from here would replace that error and the degrade would never happen.
+ */
 function writePackageFailures(root: string, failures: PackageFailures): void {
-	const file = join(root, PACKAGE_FAILURES_FILE);
-	if (Object.keys(failures).length === 0) {
-		rmSync(file, { force: true });
-		return;
+	try {
+		const file = join(root, PACKAGE_FAILURES_FILE);
+		if (Object.keys(failures).length === 0) {
+			rmSync(file, { force: true });
+			return;
+		}
+		mkdirSync(dirname(file), { recursive: true });
+		writeFileSync(file, `${JSON.stringify(failures, null, 2)}\n`);
+	} catch {
+		// The row itself still says the source has no code on disk, which is the fact; only the reason for it is
+		// lost, and the next start tries to write it again.
 	}
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, `${JSON.stringify(failures, null, 2)}\n`);
 }
 
 /** One line a panel can render: pi's own message is the npm/git error, multi-line and with its usage block. */
@@ -217,9 +239,14 @@ function oneLine(error: unknown): string {
 
 /**
  * Stamp the sources a failed reload can be blamed on, and hand them back: every declared source with no code
- * on disk, which is exactly the set whose install pi attempted and lost (`installMissing`,
- * `core/package-manager.js:1014`). A source that is on disk loaded, so it is not to be blamed for someone
- * else's npm error — and an empty answer is how the caller learns the failure was not a package's fault.
+ * on disk. A source that is on disk loaded, so it is not to be blamed for someone else's npm error — and an
+ * empty answer is how the caller learns the failure was not a package's fault.
+ *
+ * Only the first of them carries the caught error: pi's `resolvePackageSources` is a sequential loop that
+ * throws at the first source it cannot install (`core/package-manager.js:1001`), so the sources behind it were
+ * never attempted and naming the git remote in the message would send the operator to fix something that has
+ * nothing to do with their blocker. "First" is the order `settings.json` declares them in
+ * (`listConfiguredPackages` keeps it), because that is the order the operator reads.
  *
  * shortcut: keyed by source and written whole, so two conversations failing at once are last-writer-wins on
  * the same content. Upgrade to a per-write lock if a stamp is ever more than one line of advice.
@@ -232,28 +259,52 @@ export function recordPackageFailure(paths: FlypiPaths, error: unknown): string[
 	if (sources.length === 0) return sources;
 	const failures = readPackageFailures(paths.root);
 	const failedAt = new Date().toISOString();
-	const reason = oneLine(error);
-	for (const source of sources) failures[source] = { failedAt, reason };
+	sources.forEach((source, index) => {
+		failures[source] = { failedAt, reason: index === 0 ? oneLine(error) : "not attempted (an earlier declared source failed to install)" };
+	});
 	writePackageFailures(paths.root, failures);
 	return sources;
 }
 
 /**
- * Drop the stamps that no longer describe a problem, after a reload that worked: a source installed again, and
- * one the operator took out of `settings.json` — a failure that is no longer declared has nobody left to tell,
- * and `readPackages` stopped reporting it the moment the row went away. A source still missing keeps its stamp,
- * which is the session that came up without it saying so.
+ * Settle the stamps after a reload that worked: a source installed again, and one the operator took out of
+ * `settings.json`, stop being something to tell anybody — a failure that is no longer declared has nobody left
+ * to tell, and `readPackages` stopped reporting it the moment the row went away. A source still missing keeps
+ * its stamp, which is the session that came up without it saying so.
+ *
+ * A source that is missing with nothing stamped about it got there by another road: pi never throws in offline
+ * mode (`isOfflineModeEnabled`, `core/package-manager.js:38`; the resolve path returns before the install at
+ * `:1015`), so an operator who exported `PI_OFFLINE=1` has a reload that succeeds over a source nobody ever
+ * attempted. That is said, or the conversation loses a tool in total silence — but only when the process is
+ * actually offline. A missing local-path source in a process that is not offline is pi's own "does not exist"
+ * diagnostic to report, and blaming offline mode for a directory the operator deleted would be a wrong sentence
+ * about the one thing this file is here to say correctly.
+ *
+ * This is also where a stamp file that is not the map this writes gets repaired: it reads as empty and is
+ * rewritten from what is declared, so one bad byte does not survive the start it was noticed at.
  */
+/** Whether pi would skip an install right now — its own rule, mirrored rather than loosened. */
+function piOffline(): boolean {
+	const value = process.env.PI_OFFLINE;
+	return value !== undefined && ["1", "true", "yes"].includes(value.toLowerCase());
+}
+
 export function prunePackageFailures(paths: FlypiPaths): void {
 	const failures = readPackageFailures(paths.root);
-	if (Object.keys(failures).length === 0) return;
-	const stillMissing = new Map(
+	const missing = new Set(
 		packages(paths)
 			.manager.listConfiguredPackages()
-			.map((entry) => [entry.source, entry.installedPath === undefined] as [string, boolean]),
+			.filter((entry) => entry.installedPath === undefined)
+			.map((entry) => entry.source),
 	);
 	for (const source of Object.keys(failures)) {
-		if (stillMissing.get(source) !== true) delete failures[source];
+		if (!missing.has(source)) delete failures[source];
+	}
+	const failedAt = new Date().toISOString();
+	if (piOffline()) {
+		for (const source of missing) {
+			if (typeof failures[source]?.reason !== "string") failures[source] = { failedAt, reason: "install not attempted (pi offline mode)" };
+		}
 	}
 	writePackageFailures(paths.root, failures);
 }
