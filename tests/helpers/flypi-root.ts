@@ -98,6 +98,18 @@ export function sessionFiles(root: string): string[] {
 }
 
 /**
+ * Say "this checkout declares no extension packages", which is not the same as saying nothing: an empty list is
+ * the answer `ensureSubagentDefaults` respects (src/agent/config-files.ts), and it is what a test root wants,
+ * because a *declared* package is one pi installs on session start and one the daemon's startup package check
+ * asks the registry about. A test that starts a session, or records what was fetched, must not depend on npm
+ * or a registry answering.
+ */
+export function noPackages(root: string): string {
+	writeFileSync(join(root, ".flypi", "agent", "settings.json"), JSON.stringify({ packages: [] }));
+	return root;
+}
+
+/**
  * Configure a checkout against an unreachable local provider: enough to resolve a model
  * and create a session without a network call or a real credential.
  */

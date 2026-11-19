@@ -41,7 +41,7 @@ import type { ClientCommand, ServerFrame } from "../../src/server/protocol.ts";
 import { openRunStore } from "../../src/server/run-store.ts";
 import { openTempFileDb, wordEmbedder } from "../helpers/memory-db.ts";
 import { stubCreateSession, toolTurn } from "../helpers/flypi-harness.ts";
-import { createTempFlypiRoot } from "../helpers/flypi-root.ts";
+import { createTempFlypiRoot, noPackages } from "../helpers/flypi-root.ts";
 
 /** The package the daemon runs from — the same value `index.ts` hands the factory. */
 const pkg = resolve(import.meta.dirname, "..", "..");
@@ -94,6 +94,10 @@ async function connect(url: string, token: string) {
  *  it. It does not close what it was handed, so this file closes the stores and the root it opened. */
 async function daemonWith(over: { spawn?: DaemonSpawn; version?: string } = {}) {
 	const root = createTempFlypiRoot();
+	// The daemon seeds a declared default into a root that has no `packages` key (T46.2.2), and this file's rows
+	// record what the startup package check fetched — so the root says it declares none, and what reaches the
+	// stubbed registry is flypi's own ladder and nothing else.
+	noPackages(root);
 	const db = openTempFileDb();
 	const runs = openRunStore(flypiPaths(root));
 	const log: string[] = [];

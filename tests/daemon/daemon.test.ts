@@ -19,7 +19,7 @@ import type { ClientCommand, ServerFrame } from "../../src/server/protocol.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import { openTempFileDb, refusingEmbedder, wordEmbedder } from "../helpers/memory-db.ts";
 import { stubCreateSession, toolTurn } from "../helpers/flypi-harness.ts";
-import { createTempFlypiRoot, hostPiRoot } from "../helpers/flypi-root.ts";
+import { createTempFlypiRoot, hostPiRoot, noPackages } from "../helpers/flypi-root.ts";
 
 /** A WS client small enough to read: connect, send a command, wait for the frame that answers it. */
 async function connect(url: string, token: string) {
@@ -93,7 +93,10 @@ async function startOn(
 }
 
 async function daemon(options: { log?: (line: string) => void } = {}) {
-	const root = createTempFlypiRoot();
+	// `noPackages`: a declared package is one pi installs on session start and one the daemon's startup pass asks
+	// the registry about, so a test root declares none — what that buys, and why an empty list is the way to say
+	// it, is in tests/helpers/flypi-root.ts.
+	const root = noPackages(createTempFlypiRoot());
 	const store = memory();
 	const started = await startOn(root, store, options);
 	return {
@@ -189,8 +192,48 @@ describe("the daemon", () => {
 		}
 	});
 
+	it("seeds the subagent defaults into a root that predates them, and only on the run that found them missing", async () => {
+		// `noPackages` rather than a root with no `packages` key at all: an empty list is a declared nothing, so
+		// this row does not ask the registry about a package (the daemon's startup pass asks about whatever the
+		// file declares), and the half that adds the declaration is pinned in tests/agent/config-files.test.ts.
+		// What is proved here is the daemon's own half: the run that finds the keys missing writes them and says
+		// so once, and the next run does neither — which is the state the container's `/data` is in from then on.
+		const root = noPackages(createTempFlypiRoot());
+		const paths = flypiPaths(root);
+		const ceilingsPath = join(paths.agentDir, "subagents.json");
+		const store = memory();
+		let d: Awaited<ReturnType<typeof startOn>> | undefined;
+		try {
+			const logged: string[] = [];
+			d = await startOn(root, store, { log: (line) => logged.push(line) });
+			expect(JSON.parse(readFileSync(paths.settingsPath, "utf8"))).toEqual({
+				packages: [],
+				permissions: { askBeforeUse: ["Agent", "SubagentWorkflow", "steer_subagent", "get_subagent_result"] },
+			});
+			expect(JSON.parse(readFileSync(ceilingsPath, "utf8"))).toEqual({ maxConcurrent: 4, maxConcurrentForeground: 5, maxConcurrentNested: 4, worktreeIsolation: false });
+			expect(logged.join("\n")).toMatch(/flypi: wrote .*subagents\.json — the subagent defaults/);
+
+			// A process goes away and another one starts on the same root — `close()`, then a second `startOn`,
+			// the way the crash row above takes a process away.
+			await d.close();
+			const settings = readFileSync(paths.settingsPath, "utf8");
+			const ceilings = readFileSync(ceilingsPath, "utf8");
+			const again: string[] = [];
+			d = await startOn(root, store, { log: (line) => again.push(line) });
+
+			// Nothing was missing, so nothing was rewritten and nothing was said at startup.
+			expect(again.join("\n")).not.toMatch(/subagents\.json|the subagent defaults/);
+			expect(readFileSync(paths.settingsPath, "utf8")).toBe(settings);
+			expect(readFileSync(ceilingsPath, "utf8")).toBe(ceilings);
+		} finally {
+			await d?.close();
+			store.db.dispose();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("moves the memory server off a port the file named that someone else took", async () => {
-		const root = createTempFlypiRoot();
+		const root = noPackages(createTempFlypiRoot());
 		const store = memory();
 		// The state a recorded port falls into: the number is taken by the time the next start reads the file.
 		const squatter = await startMemoryServer({ store: store.store });
@@ -289,7 +332,9 @@ describe("the daemon", () => {
 	});
 
 	it("says which turn the last process left half-done, and the chat is told when it opens it", async () => {
-		const root = createTempFlypiRoot();
+		// `noPackages`: this row opens a real conversation, and a *declared* package is one pi tries to install on
+		// session start — which is npm and the registry, and not what a crash-recovery row is about.
+		const root = noPackages(createTempFlypiRoot());
 		const store = memory();
 		// A turn slow enough to still be going when the process goes away.
 		const slow = { script: toolTurn("a considered answer that goes on for a while, one token at a time"), tokensPerSecond: 8 };
@@ -432,7 +477,7 @@ describe("the daemon", () => {
 	});
 
 	it("queues a stale index at startup, from the one call site that owns the queue", async () => {
-		const root = createTempFlypiRoot();
+		const root = noPackages(createTempFlypiRoot());
 		const db = openTempFileDb();
 		const old = new MemoryStore(db.db, wordEmbedder({ model: "embeddinggemma-1", quantized: true }));
 		await old.addMemory({ kind: "convention", body: "the deploy host is 10.0.0.5", tags: [], origin_class: "owner", session_kind: "interactive", actor: "user" });
@@ -457,7 +502,7 @@ describe("the daemon", () => {
 	});
 
 	it("repairs an index another model built, with nobody connected", async () => {
-		const root = createTempFlypiRoot();
+		const root = noPackages(createTempFlypiRoot());
 		const db = openTempFileDb();
 		// Vectors written by a model this daemon does not use — what an upgrade leaves behind, and the reason
 		// the daemon's own startup queues the repair rather than refusing to compare them forever.
@@ -485,7 +530,7 @@ describe("the daemon", () => {
 	});
 
 	it("says in the record what a sweep could not do", async () => {
-		const root = createTempFlypiRoot();
+		const root = noPackages(createTempFlypiRoot());
 		const db = openTempFileDb();
 		const written = new MemoryStore(db.db, wordEmbedder());
 		const id = (await written.addMemory({ kind: "convention", body: "the deploy host is 10.0.0.5", tags: [], origin_class: "owner", session_kind: "interactive", actor: "user" })).id;
@@ -508,7 +553,7 @@ describe("the daemon", () => {
 	});
 
 	it("releases the claim a dead process left, and says when a job has no handler yet", async () => {
-		const root = createTempFlypiRoot();
+		const root = noPackages(createTempFlypiRoot());
 		const store = memory();
 		// A claim held by a process that is gone. It would stay locked forever: the row is open, so
 		// `queueJob` will not queue a second copy of the kind, and nothing will ever run it. The kind is one
@@ -537,7 +582,7 @@ describe("the daemon", () => {
 	});
 
 	it("records the token it was handed, which is what `flypi status` prints", async () => {
-		const root = createTempFlypiRoot();
+		const root = noPackages(createTempFlypiRoot());
 		const store = memory();
 		// `FLYPI_TOKEN` / `--token`: the token may come from outside, and the pid file is how the CLI can
 		// tell you the URL and token of a process it did not start.
@@ -556,7 +601,7 @@ describe("the daemon", () => {
 	});
 
 	it("comes up from what the launcher actually passes: no port, no token, no paths to override", async () => {
-		const root = createTempFlypiRoot();
+		const root = noPackages(createTempFlypiRoot());
 		const store = memory();
 		// The default log is the console; this test is not here to print. `scripts/serve-daemon.ts` passes
 		// exactly these options when nothing on the command line was overridden — the daemon picks its own

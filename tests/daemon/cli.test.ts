@@ -22,7 +22,9 @@ const bin = join(repo, "bin", "flypi.mjs");
 function tempRoot(): string {
 	const root = mkdtempSync(join(tmpdir(), "flypi-cli-"));
 	mkdirSync(join(root, ".flypi", "agent"), { recursive: true });
-	writeFileSync(join(root, ".flypi", "agent", "settings.json"), JSON.stringify({ memory: { embeddings: { provider: "none" }, judge: { provider: "none" } } }));
+	// `packages: []` for the same reason `noPackages` exists in this suite's helpers: a declared package is one the
+	// daemon's startup pass asks the registry about, and a CLI row must not depend on the network.
+	writeFileSync(join(root, ".flypi", "agent", "settings.json"), JSON.stringify({ packages: [], memory: { embeddings: { provider: "none" }, judge: { provider: "none" } } }));
 	return root;
 }
 

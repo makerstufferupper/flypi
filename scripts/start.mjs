@@ -109,10 +109,14 @@ export function ensureConfig(root, env = process.env) {
 		["models.json", MODELS_TEMPLATE],
 	]) {
 		const file = join(dir, name);
-		// Absent, or the empty pair the daemon writes for a root that has no config of its own: an empty
-		// object holds nothing to lose, and a checkout that ran `flypi start` once still gets the template.
-		if (!existsSync(file) || Object.keys(readJson(file, {})).length === 0) {
-			writeJson(file, template);
+		const existing = readJson(file, {});
+		// Absent, or a file with no choice in it yet — which is not a file with no key in it. The daemon's own
+		// first write declares the default packages and the gated tools (`DEFAULT_PACKAGES`,
+		// src/agent/config-files.ts), and a template written over that file would take the declaration back out,
+		// so the template goes *into* what is there and those keys stay. A checkout that started the daemon
+		// before it ever ran this script still gets its model template.
+		if (!existsSync(file) || Object.keys(existing).every((key) => key === "packages" || key === "permissions")) {
+			writeJson(file, { ...existing, ...template });
 			created.push(name);
 		}
 	}

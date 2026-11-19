@@ -16,12 +16,37 @@
  * (docs/secrets.md), so the panel never turns a reference into a plaintext secret.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { FlypiConfigError } from "./runtime.ts";
 import { assertFlypiOwned, memoryMcpUrl, type FlypiPaths } from "./paths.ts";
 
 /** pi's own rule for MCP server names (docs/mcp.md "Configuration rules"), which tools are named after. */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/** The extension packages a fresh flypi gets. One name, so the docs and the settings panel quote one thing. */
+export const DEFAULT_PACKAGES = ["npm:@tintinweb/pi-subagents"];
+
+/**
+ * The tools the declared package registers — its own `SUBAGENT_TOOL_NAMES`
+ * (`@tintinweb/pi-subagents/src/agent-runner.ts:45-50`), copied rather than imported because it is a third
+ * party's module and flypi has to start with that package absent.
+ *
+ * Being on this list means a call is **refused**, with a reason naming the file and the key: the gate blocks
+ * the tool call and tells the model what to ask for (`src/agent/permission-gate.ts:22,26-30`). There is no
+ * dialog for anybody to answer.
+ */
+const SUBAGENT_ASK_BEFORE_USE = ["Agent", "SubagentWorkflow", "steer_subagent", "get_subagent_result"];
+
+/**
+ * `.flypi/agent/subagents.json`, the extension's own file. `maxConcurrentForeground` is written because its
+ * built-in default is `0` = unlimited (`@tintinweb/pi-subagents/src/settings.ts:456-458`): leaving the key out
+ * is not "use the sensible default", it is writing no ceiling at all. `worktreeIsolation` is off against the
+ * extension's `true` default (`settings.ts:474`), where off means a requested worktree is dropped and the
+ * agent runs in the main checkout (`settings.ts:204-208`) — so a subagent cannot leave a `pi-agent-*` branch in
+ * the operator's repo from a conversation that never asked for isolation.
+ */
+const SUBAGENT_CEILINGS = { maxConcurrent: 4, maxConcurrentForeground: 5, maxConcurrentNested: 4, worktreeIsolation: false };
 
 /** What the settings panel shows for one provider. Only the fields pi itself documents. */
 export interface EndpointRow {
@@ -244,22 +269,91 @@ export function ensureMemoryEntry(paths: FlypiPaths, port: number, token: string
 }
 
 /**
- * Write an empty `settings.json` and `models.json` when they are not there. A fresh install has no agent dir
- * at all, and a missing file is reported as `could not read …: ENOENT` — which reads like a broken install,
- * where the truth is that no model is configured yet. With the files present the settings panel lists an
- * empty config you can add to, and a new conversation says which half is missing (`resolveConfiguredModel`,
- * src/agent/runtime.ts). A file that exists is never touched, parseable or not: a working `models.json`
- * carries `compat`, `cost` and `contextWindow` nothing here can rebuild, and a file that will not parse
- * belongs to the operator to fix. Returns what it wrote, so the daemon can say which.
+ * Write `settings.json` — declaring flypi's default packages — and an empty `models.json`, when they are not
+ * there. A fresh install has no agent dir at all, and a missing file is reported as `could not read …: ENOENT`
+ * — which reads like a broken install, where the truth is that no model is configured yet. With the files
+ * present the settings panel lists an empty config you can add to, and a new conversation says which half is
+ * missing (`resolveConfiguredModel`, src/agent/runtime.ts). `settings.json` is not empty because a fresh root is
+ * where a default can be written without touching anybody's file: subagents ship on, and a default that only
+ * reaches a brand-new root is still a default that reaches somebody (`ensureSubagentDefaults` is the half that
+ * reaches the roots that already exist). A file that exists is never touched, parseable or not: a working
+ * `models.json` carries `compat`, `cost` and `contextWindow` nothing here can rebuild, and a file that will not
+ * parse belongs to the operator to fix. Returns what it wrote, so the daemon can say which.
  */
 export function ensureAgentConfig(paths: FlypiPaths): string[] {
 	const created: string[] = [];
-	for (const path of [paths.settingsPath, paths.modelsPath]) {
+	const blanks: [string, Record<string, unknown>][] = [
+		[paths.settingsPath, { packages: DEFAULT_PACKAGES }],
+		// The settings file declares the packages; `models.json` has nothing to declare.
+		[paths.modelsPath, {}],
+	];
+	for (const [path, blank] of blanks) {
 		if (existsSync(path)) continue;
-		writeJson(path, {}); // 0600 and its directory created, like every other agent-dir file
+		writeJson(path, blank); // 0600 and its directory created, like every other agent-dir file
 		created.push(path);
 	}
 	return created;
+}
+
+/**
+ * The subagent defaults, into a root that predates them: the declared package, the four gated names and the
+ * extension's ceilings. Every one of the three is written **only when its own key is absent**, and that guard
+ * is the whole function: an operator who took `@tintinweb/pi-subagents` out of the settings panel is left with
+ * `packages: []` — present, and empty — and a default that filled the empty list would reverse that uninstall
+ * in silence, on every daemon start, with nothing in the file to show for the decision. The same rule one level
+ * down, on `permissions.askBeforeUse`: a list somebody edited is theirs and nothing is appended to it. An
+ * existing `subagents.json` is left alone, parseable or not, like every other file here.
+ *
+ * `packages` is written through pi's `SettingsManager`, because pi owns this file — `applyPackageEdits`
+ * (src/agent/packages.ts) installs through it, and its `persistScopedSettings` re-reads the file and rewrites
+ * only the field it was asked to set (`@earendil-works/pi-coding-agent/dist/core/settings-manager.js:449-470`),
+ * so a `defaultProvider`, an `updates` block and a `permissions` object all survive the write. `flush()` is what
+ * makes the file current again: pi queues its writes.
+ *
+ * `permissions` has no `SettingsManager` setter, because pi does not know that key — `permission-gate.ts` is
+ * its only reader — so it goes through this module's own read-modify-write, and it goes *after* the flush, so
+ * the two writers cannot each overwrite what the other wrote. A file that will not parse is never overwritten:
+ * `readForWrite` says so, as it does for every other writer here.
+ *
+ * `subagents.json` is the extension's file at the path the extension reads it:
+ * `join(getAgentDir(), "subagents.json")` (`@tintinweb/pi-subagents/src/settings.ts:593`), and flypi's
+ * `PI_CODING_AGENT_DIR` pin (`forceFlypiAgentDir`, src/agent/paths.ts) forces `getAgentDir()` to this root — so
+ * the ceilings belong in `.flypi/agent` and cannot land in the host `~/.pi` (docs/risks.md risk 1). It is
+ * flypi's write, so it is `writeJson`: 0600 like every other agent-dir file.
+ *
+ * This is the fourth writer of the agent-dir files, so it asserts risk 1 on its own `FlypiPaths` like the other
+ * three named in `applyConfigEdits`' comment. Returns the files it touched, so the daemon can say which.
+ */
+export async function ensureSubagentDefaults(paths: FlypiPaths): Promise<string[]> {
+	assertFlypiOwned(paths);
+	const file = readForWrite(paths.settingsPath);
+	// An empty list is an answer; a missing key is not. This is the guard described above, so it reads `in`
+	// rather than `length`.
+	const declare = !("packages" in file);
+	const gate = !("askBeforeUse" in objects(file.permissions));
+	if (declare) {
+		const settings = SettingsManager.create(paths.root, paths.agentDir);
+		settings.setPackages(DEFAULT_PACKAGES);
+		await settings.flush();
+	}
+	if (gate) {
+		// Re-read: the flush above may have just rewritten the file, and `permissions` is written field by field
+		// so a sibling the operator put in that block stays.
+		const current = readForWrite(paths.settingsPath);
+		const permissions = objects(current.permissions);
+		// Field by field, the way the `Authorization` header is written in `applyConfigEdits`: a `permissions`
+		// block that holds something else keeps it.
+		assign(permissions, "askBeforeUse", SUBAGENT_ASK_BEFORE_USE);
+		current.permissions = permissions;
+		writeJson(paths.settingsPath, current);
+	}
+	const subagents = join(paths.agentDir, "subagents.json");
+	const ceilings = !existsSync(subagents);
+	if (ceilings) writeJson(subagents, SUBAGENT_CEILINGS);
+	return [
+		...(declare || gate ? [paths.settingsPath] : []),
+		...(ceilings ? [subagents] : []),
+	];
 }
 
 /**

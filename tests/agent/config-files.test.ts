@@ -4,12 +4,22 @@
  * `compat`, cost, extra headers, the other provider, the other server. The one thing the panel may never
  * do is rewrite these files from its own fields.
  */
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { applyConfigEdits, ensureAgentConfig, ensureMemoryEntry, memoryEndpoint, readConfig } from "../../src/agent/config-files.ts";
-import { flypiPaths } from "../../src/agent/paths.ts";
+import {
+	applyConfigEdits,
+	DEFAULT_PACKAGES,
+	ensureAgentConfig,
+	ensureMemoryEntry,
+	ensureSubagentDefaults,
+	memoryEndpoint,
+	readConfig,
+} from "../../src/agent/config-files.ts";
+import { flypiPaths, type FlypiPaths } from "../../src/agent/paths.ts";
+import { createFlypiSession } from "../../src/agent/runtime.ts";
 import { createTempFlypiRoot, hostPiRoot } from "../helpers/flypi-root.ts";
+import { createStubModel, fauxAssistantMessage, fauxText, fauxToolCall } from "../helpers/stub-model.ts";
 
 interface Fixture {
 	endpoints?: Record<string, unknown>;
@@ -46,6 +56,34 @@ const server = (name: string, fields: Record<string, unknown> = {}) => ({
 	authorization: "Bearer ${FLYPI_MEMORY_TOKEN}",
 	...fields,
 });
+
+/** The four names the default seeds: the extension's own `SUBAGENT_TOOL_NAMES`. */
+const GATED = ["Agent", "SubagentWorkflow", "steer_subagent", "get_subagent_result"];
+
+/** Where the extension reads its own settings: `join(getAgentDir(), "subagents.json")`. */
+const subagentsOf = (paths: FlypiPaths) => join(paths.agentDir, "subagents.json");
+
+/**
+ * An `Agent` tool a session can actually call, dropped into `<agentDir>/extensions/` the way an operator drops
+ * an extension in. The gate only ever sees a call for a tool pi knows, so the behaviour row needs one; it
+ * answers by writing `marker`, and the marker that is not there is the proof the call never ran.
+ */
+const agentTool = (marker: string) => `
+import { writeFileSync } from "node:fs";
+
+export default function (pi) {
+	pi.registerTool({
+		name: "Agent",
+		label: "Agent",
+		description: "Spawn a subagent",
+		parameters: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] },
+		execute: async () => {
+			writeFileSync(${JSON.stringify(marker)}, "ran");
+			return { content: [{ type: "text", text: "spawned" }], details: {} };
+		},
+	});
+}
+`;
 
 describe("config files: reading", () => {
 	it("reads the endpoints and servers as the panel shows them, with pi's defaults filled in", () => {
@@ -332,7 +370,9 @@ describe("config files: the empty pair a fresh install has neither of", () => {
 		expect(existsSync(h.paths.settingsPath)).toBe(false);
 
 		expect(ensureAgentConfig(h.paths)).toEqual([h.paths.settingsPath, h.paths.modelsPath]);
-		expect(h.read("settingsPath")).toEqual({});
+		// A fresh root declares flypi's default packages (`DEFAULT_PACKAGES`) rather than starting empty; a
+		// default nobody has to switch on is not a default. `models.json` still has nothing to declare.
+		expect(h.read("settingsPath")).toEqual({ packages: ["npm:@tintinweb/pi-subagents"] });
 		expect(h.read("modelsPath")).toEqual({});
 		// They hold a key as soon as the panel adds an endpoint, so they are never group-readable.
 		for (const file of [h.paths.settingsPath, h.paths.modelsPath]) expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -346,6 +386,153 @@ describe("config files: the empty pair a fresh install has neither of", () => {
 		expect(ensureAgentConfig(h.paths)).toEqual([]);
 		expect(readFileSync(h.paths.modelsPath, "utf8")).toBe("{ not json");
 		expect(readConfig(h.paths).errors.join("\n")).toMatch(/models\.json/);
+	});
+});
+
+describe("config files: the subagent defaults a root gets once", () => {
+	it("declares the package in a file that never had the key, and keeps every key that was already there", async () => {
+		const h = agentRoot({
+			settings: { defaultProvider: "ollama", defaultModel: "llama3", permissions: { deny: ["write"] }, updates: { autoExtensions: false } },
+		});
+
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([h.paths.settingsPath, subagentsOf(h.paths)]);
+
+		// `packages` added; the default pair untouched; a `permissions` block the operator wrote keeps the key it
+		// has; `updates` is pi's key, not one flypi reads anywhere. Both are kept because the write goes through
+		// pi's own `SettingsManager`, which rewrites the file from what is on disk and replaces the one field it
+		// was asked to set (src/agent/packages.ts writes the same way for the same reason).
+		expect(h.read("settingsPath")).toEqual({
+			defaultProvider: "ollama",
+			defaultModel: "llama3",
+			packages: DEFAULT_PACKAGES,
+			permissions: { deny: ["write"], askBeforeUse: GATED },
+			updates: { autoExtensions: false },
+		});
+		expect(readConfig(h.paths).defaults).toEqual({ provider: "ollama", model: "llama3" });
+		expect(readConfig(h.paths).errors).toEqual([]);
+		// Owner-only, like every other agent-dir file.
+		expect(statSync(h.paths.settingsPath).mode & 0o777).toBe(0o600);
+	});
+
+	it("does not re-add a package an operator uninstalled, and does not move the default pair", async () => {
+		const h = agentRoot({ settings: { packages: [], defaultProvider: "x", defaultModel: "y" } });
+
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([h.paths.settingsPath, subagentsOf(h.paths)]);
+
+		// `packages: []` is present, and it is an answer: it is what the settings panel leaves behind when the
+		// last package is uninstalled. The only thing this file gained is the gate's own key.
+		expect(h.read("settingsPath")).toEqual({
+			packages: [],
+			defaultProvider: "x",
+			defaultModel: "y",
+			permissions: { askBeforeUse: GATED },
+		});
+	});
+
+	it("leaves an askBeforeUse list the operator wrote alone: not extended, not replaced", async () => {
+		const h = agentRoot({ settings: { defaultProvider: "x", permissions: { askBeforeUse: ["bash"] } } });
+
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([h.paths.settingsPath, subagentsOf(h.paths)]);
+
+		// The key that is absent is seeded; the one the operator wrote is not.
+		expect(h.read("settingsPath")).toEqual({
+			defaultProvider: "x",
+			packages: DEFAULT_PACKAGES,
+			permissions: { askBeforeUse: ["bash"] },
+		});
+	});
+
+	it("leaves an empty askBeforeUse list alone as well: it is how the file says ask me about nothing", async () => {
+		const h = agentRoot({ settings: { permissions: { askBeforeUse: [] } } });
+
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([h.paths.settingsPath, subagentsOf(h.paths)]);
+
+		// Filling an empty list would put four tools back behind a refusal the file had just cleared — the same
+		// reversal `packages: []` protects, one key down.
+		expect(h.read("settingsPath")).toEqual({ permissions: { askBeforeUse: [] }, packages: DEFAULT_PACKAGES });
+	});
+
+	it("creates the extension's ceilings where the extension reads them, and never rewrites one that exists", async () => {
+		const h = agentRoot();
+		const subagents = subagentsOf(h.paths);
+		expect(existsSync(subagents)).toBe(false);
+
+		await ensureSubagentDefaults(h.paths);
+
+		// `maxConcurrentForeground` is the one that has to be written: the extension's own default for it is 0,
+		// which means unlimited, so leaving it out is the same as leaving the foreground unbounded.
+		expect(JSON.parse(readFileSync(subagents, "utf8"))).toEqual({ maxConcurrent: 4, maxConcurrentForeground: 5, maxConcurrentNested: 4, worktreeIsolation: false });
+		expect(statSync(subagents).mode & 0o777).toBe(0o600);
+
+		// Exists is left alone — even one that will not parse, which is the operator's to fix.
+		writeFileSync(subagents, "{ not json");
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([]);
+		expect(readFileSync(subagents, "utf8")).toBe("{ not json");
+	});
+
+	it("writes nothing the second time, and says nothing either", async () => {
+		const h = agentRoot({ settings: { defaultProvider: "x", defaultModel: "y" } });
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([h.paths.settingsPath, subagentsOf(h.paths)]);
+		const settings = readFileSync(h.paths.settingsPath, "utf8");
+		const subagents = readFileSync(subagentsOf(h.paths), "utf8");
+
+		expect(await ensureSubagentDefaults(h.paths)).toEqual([]);
+
+		// Byte for byte. A daemon that restarts every day must not keep editing a root it already seeded, nor
+		// report at startup that it did.
+		expect(readFileSync(h.paths.settingsPath, "utf8")).toBe(settings);
+		expect(readFileSync(subagentsOf(h.paths), "utf8")).toBe(subagents);
+	});
+
+	it("refuses a root inside the host pi directory, before it writes anything (risk 1)", async () => {
+		// The fourth writer of the agent-dir files, so it asserts for itself like the other three
+		// (src/agent/config-files.ts's `applyConfigEdits` keeps the list).
+		const host = hostPiRoot();
+		try {
+			await expect(ensureSubagentDefaults(flypiPaths(host.root))).rejects.toThrow(/host pi directory/);
+			expect(existsSync(join(host.root, ".flypi"))).toBe(false);
+		} finally {
+			host.restore();
+		}
+	});
+
+	it("seeds the key the permission gate actually reads", async () => {
+		// The rows above say what was written; this says it lands where a live session looks. The gate is an
+		// extension handler, so only a session can prove that, and it needs an `Agent` tool that exists — which
+		// rules out the package this root now declares, because npm on this machine refuses to install it (the
+		// half that survives that is T46.2.3). So the declaration is taken back out of the file and the fixture
+		// registers the tool: what is under test is the key, not the install.
+		const root = createTempFlypiRoot();
+		const paths = flypiPaths(root);
+		rmSync(paths.settingsPath, { force: true });
+		ensureAgentConfig(paths);
+		expect(await ensureSubagentDefaults(paths)).toEqual([paths.settingsPath, subagentsOf(paths)]);
+		const seeded = JSON.parse(readFileSync(paths.settingsPath, "utf8")) as Record<string, unknown>;
+		delete seeded.packages;
+		writeFileSync(paths.settingsPath, JSON.stringify(seeded));
+
+		const marker = join(root, "spawned-by-agent.txt");
+		mkdirSync(join(paths.agentDir, "extensions"), { recursive: true });
+		writeFileSync(join(paths.agentDir, "extensions", "agent-tool.ts"), agentTool(marker));
+
+		const stub = await createStubModel({
+			responses: [
+				fauxAssistantMessage([fauxToolCall("Agent", { prompt: "tidy this up" }, { id: "call-1" })], { stopReason: "toolUse", timestamp: 0 }),
+				fauxAssistantMessage([fauxText("held off")], { timestamp: 0 }),
+			],
+		});
+		const { session } = await createFlypiSession({ root, modelRuntime: stub.modelRuntime, model: stub.model });
+		try {
+			await session.prompt("spawn something");
+			// No subagent started, and the model was told the file and the key that would let it.
+			expect(existsSync(marker)).toBe(false);
+			const shown = JSON.stringify(stub.requests.at(-1)!.messages);
+			expect(shown).toContain("needs your approval first");
+			expect(shown).toContain("permissions.askBeforeUse");
+			expect(shown).toContain('"Agent"');
+		} finally {
+			session.dispose();
+		}
 	});
 });
 

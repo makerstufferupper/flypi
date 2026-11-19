@@ -76,6 +76,27 @@ describe("the first run on a fresh machine", () => {
 		}
 	});
 
+	it("fills the template into a settings.json the daemon seeded, and keeps what the daemon declared", () => {
+		// The daemon's first write is no longer `{}`: it declares the default packages and the gated tools
+		// (T46.2.2). "A file with no choice in it" is the question this script asks, not "a file with no key",
+		// and the answer must not lose the declaration on its way to adding a model.
+		const fresh = mkdtempSync(join(tmpdir(), "flypi-start-seeded-"));
+		try {
+			mkdirSync(join(fresh, ".flypi", "agent"), { recursive: true });
+			writeFileSync(join(fresh, ".flypi", "agent", "settings.json"), JSON.stringify({ packages: ["npm:@tintinweb/pi-subagents"], permissions: { askBeforeUse: ["Agent"] } }));
+			writeFileSync(join(fresh, ".flypi", "agent", "models.json"), "{}");
+
+			expect(ensureConfig(fresh, {}).created).toEqual(["settings.json", "models.json", "mcp.json (flypi-memory entry, token generated)"]);
+			const settings = JSON.parse(readFileSync(join(fresh, ".flypi", "agent", "settings.json"), "utf8"));
+			expect(settings.defaultProvider).toBeTruthy();
+			expect(settings.defaultModel).toBeTruthy();
+			expect(settings.packages).toEqual(["npm:@tintinweb/pi-subagents"]);
+			expect(settings.permissions).toEqual({ askBeforeUse: ["Agent"] });
+		} finally {
+			rmSync(fresh, { recursive: true, force: true });
+		}
+	});
+
 	it("leaves a config it did not write alone, including other MCP servers", () => {
 		rmSync(join(root, ".flypi", "agent", "mcp.json"));
 		writeFileSync(

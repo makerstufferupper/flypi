@@ -15,7 +15,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { DAEMON_FILE, forceFlypiAgentDir, memoryMcpUrl, type FlypiPaths } from "../agent/paths.ts";
-import { applyConfigEdits, ensureAgentConfig, ensureMemoryEntry, memoryEndpoint } from "../agent/config-files.ts";
+import { applyConfigEdits, ensureAgentConfig, ensureMemoryEntry, ensureSubagentDefaults, memoryEndpoint } from "../agent/config-files.ts";
 import { applyPackageEdits, autoExtensions, checkPackageUpdates, readPackageCheck, writePackageCheck } from "../agent/packages.ts";
 import { CONSOLIDATE_JOB, consolidate, sweepDue } from "../memory/consolidate.ts";
 import { startMemoryServer, type MemoryServerHandle } from "../memory/mcp.ts";
@@ -130,11 +130,17 @@ export async function startFlypiDaemon(options: DaemonOptions): Promise<DaemonHa
 	}
 
 	// A fresh install has no agent dir at all, and a missing config file reads as a broken install
-	// (`could not read …: ENOENT`) rather than as what it is: no model configured yet. Writing the empty pair
+	// (`could not read …: ENOENT`) rather than as what it is: no model configured yet. Writing the pair
 	// turns that into the answer the settings panel can act on — an empty list with an add button — and a new
 	// conversation then names the half that is still missing.
 	const blank = ensureAgentConfig(paths);
 	if (blank.length > 0) log(`flypi: wrote ${blank.join(" and ")} — no model is configured yet (the Settings tab adds one)`);
+	// The same defaults for a root that already existed, which is the only way they ever reach a running
+	// install. Every key is written once and then left alone forever, so a seeded root says this line at
+	// startup and an already-seeded one says nothing (src/agent/config-files.ts says why an empty
+	// `packages` list is left empty).
+	const seeded = await ensureSubagentDefaults(paths);
+	if (seeded.length > 0) log(`flypi: wrote ${seeded.join(" and ")} — the subagent defaults: the declared packages, the ask-before-use list and the ceilings, seeded once and editable in those files`);
 
 	const endpoint = memoryEndpoint(paths);
 	// The vault is in the memory database, so the daemon — the process that already owns that file — is the
