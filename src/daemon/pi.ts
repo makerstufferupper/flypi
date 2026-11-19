@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { checkPiCompat } from "../agent/pi-compat.ts";
 import { flypiPaths } from "../agent/paths.ts";
-import { readPackages } from "../agent/packages.ts";
+import { installedExtensionPaths } from "../agent/packages.ts";
 import { CHECK_INTERVAL_MS, isGlobalInstall, packageDir } from "./update.ts";
 
 /** The chosen pi, next to the trees it points at (`.flypi/pi/<version>/`). Written by `flypi pi use`. */
@@ -305,11 +305,6 @@ export interface PiSwitchDeps {
 	scope: string;
 }
 
-/** The installed package dirs of the declared sources — what `checkPiCompat` scans for pi imports (T46.2.4). */
-function installedExtensionDirs(root: string): string[] {
-	return readPackages(flypiPaths(root)).packages.filter((row) => row.installed).map((row) => row.path);
-}
-
 /**
  * Move to a published pi version, or back to an older one. Stage 1 (the compat probe) runs before anything
  * moves; the flip is provisional and stage 2 (the restarted daemon answering with the candidate version)
@@ -341,7 +336,7 @@ export async function switchPiVersion(version: string, deps: PiSwitchDeps): Prom
 
 	// The declared extensions ride along: they load through jiti with no type check, and a pi that dropped
 	// one of their imports would leave the conversation without that tool and no type error to blame (T46.2.4).
-	const failures = await (deps.probe ?? checkPiCompat)(tree, installedExtensionDirs(deps.root));
+	const failures = await (deps.probe ?? checkPiCompat)(tree, installedExtensionPaths(flypiPaths(deps.root)));
 	if (failures.length > 0) return { ok: false, message: `pi ${version} does not offer what flypi imports:\n  ${failures.join("\n  ")}` };
 
 	// Where to go back to: the pinned version if one is pinned, otherwise what the package's own scope holds

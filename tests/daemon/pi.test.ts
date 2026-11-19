@@ -6,6 +6,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSyn
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { flypiPaths } from "../../src/agent/paths.ts";
 import {
 	PI_PIN_FILE,
 	bundledPiVersion,
@@ -238,6 +239,27 @@ describe("moving pi", () => {
 			expect(result.ok).toBe(false);
 			expect(result.message).toContain("does not offer what flypi imports");
 			expect(result.message).toContain("@earendil-works/pi-coding-agent: does not resolve from inside");
+			expect(readPiPin(root)).toBeNull();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	// The argument the row above cannot pin: `probe: undefined` over a root with no installed extension reads the
+	// same whether the caller passes the installed dirs or nothing, so here one is declared and on disk, in pi's
+	// own npm layout, and has to reach the probe (T46.2.4 review).
+	it("hands the probe the extension packages that are installed under the root", async () => {
+		const { root, scope } = fakeFlypi("1.3.0", []);
+		const paths = flypiPaths(root);
+		mkdirSync(paths.agentDir, { recursive: true });
+		writeFileSync(paths.settingsPath, JSON.stringify({ packages: ["npm:@tintinweb/pi-subagents"] }, null, 2));
+		const dir = join(paths.agentDir, "npm", "node_modules", "@tintinweb", "pi-subagents");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@tintinweb/pi-subagents", version: "0.26.0" }));
+		try {
+			const result = await switches(root, scope, { probe: async (_tree, extensions) => [`got:${(extensions ?? []).join(",")}`] });
+			expect(result.ok).toBe(false);
+			expect(result.message).toContain(`got:${dir}`);
 			expect(readPiPin(root)).toBeNull();
 		} finally {
 			rmSync(root, { recursive: true, force: true });

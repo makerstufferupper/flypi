@@ -18,7 +18,7 @@
  * `pi-coding-agent` would report a clean pass while the whole suite was broken.
  */
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** One specifier flypi imports from, and what it takes from it. */
@@ -140,50 +140,84 @@ async function resolverFor(root: string): Promise<(specifier: string) => string 
 	};
 }
 
-/** Every `.js` under a package's build directory, nested included. Throws when there is no build to walk. */
+/** Every importable file under a directory, nested included. Throws when the directory is not there to walk. */
 function builtFiles(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
 		const path = join(dir, entry.name);
 		if (entry.isDirectory()) builtFiles(path, out);
-		else if (entry.name.endsWith(".js")) out.push(path);
+		// `.d.ts` stays out: its imports are type positions, so reading it would blame a pi for a name the
+		// runtime module never asked for.
+		else if (/\.(js|ts)$/.test(entry.name) && !entry.name.endsWith(".d.ts")) out.push(path);
 	}
 	return out;
 }
 
 /**
- * What one installed extension imports from each `@earendil-works/*` specifier, read off its own built
- * output — every `.js` under its `dist/`, which is the form its build ships (the package's pi manifest
- * names the source entry; this is what that compiles to). The **built** files, not the TypeScript source,
- * because only the runtime module's imports can fail at runtime: `import type` clauses and inline `type`
- * names are erased by the extension's own build, and reporting one would blame a pi for a name it was
- * never asked for. Namespace and default imports name a module, not a symbol — the specifier is recorded
- * with no names, which is as far as a name-check can honestly go.
- * Empty when the package or its build is not there: an uninstalled package skips this check, it never fails one.
+ * The directories the package's own `pi.extensions` entries point into. pi loads those, and a package that
+ * stops publishing a `dist/` would otherwise leave the scan with nothing to read and nothing to say.
+ * Empty when the manifest names none or will not parse.
  */
-export function extensionPiImports(pkgDir: string): Map<string, string[]> {
-	const found = new Map<string, Set<string>>();
+function declaredDirs(pkgDir: string): string[] {
 	try {
-		for (const file of builtFiles(join(pkgDir, "dist"))) {
-			// The clause excludes quotes and semicolons, so it cannot run past the specifier of the import
-			// before it — named clauses in the shape `importedFromSource` pins for flypi's own source.
-			for (const [, clause, specifier] of readFileSync(file, "utf8").matchAll(/import\s+([^;'"]*?)\s*from\s*"(@earendil-works\/[^"]+)"/g)) {
-				if (/^type\s/.test(clause!)) continue; // a whole clause that is type-only
-				const names = found.get(specifier!) ?? new Set<string>();
-				found.set(specifier!, names);
-				if (clause!.startsWith("{")) {
-					for (const raw of clause!.slice(1, -1).split(",").map((name) => name.trim()).filter(Boolean)) {
-						if (raw.startsWith("type ")) continue;
-						names.add(raw.split(/\s+as\s+/)[0]!);
-					}
-				}
-				// else: `import * as x from` / `import x from` — the specifier is recorded, its usage is not nameable.
-			}
-		}
+		const manifest = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")) as { pi?: { extensions?: unknown } };
+		const entries = Array.isArray(manifest.pi?.extensions) ? manifest.pi.extensions : [];
+		return [...new Set(entries.filter((entry): entry is string => typeof entry === "string").map((entry) => dirname(resolve(pkgDir, entry))))];
 	} catch {
-		// No build, or a file that would not read: the honest answer is "nothing to ask of the candidate".
-		return new Map();
+		return [];
 	}
-	return new Map([...found].map(([specifier, names]) => [specifier, [...names].sort()]));
+}
+
+/**
+ * What one installed extension imports from each `@earendil-works/*` specifier, read off the code that runs:
+ * its `dist/` plus the directories its own `pi.extensions` entries name, de-duplicated. Type-only imports
+ * are invisible either way — erased by the build in `dist/`, stripped by the parser in a `.ts` source — and
+ * reporting one would blame a pi for a name it was never asked for. Namespace and default imports name a
+ * module, not a symbol — the specifier is recorded with no names, which is as far as a name-check can
+ * honestly go.
+ *
+ * `imports` is empty, and `unreadable` false, when the package ships none of those directories: that is the
+ * uninstalled package skipping the check. `unreadable` is for the other case — the code is there and some of
+ * it would not read — which is said rather than passed off as "nothing to ask of the candidate". Names
+ * collected before the failure are kept.
+ */
+export function extensionPiImports(pkgDir: string): { imports: Map<string, string[]>; unreadable: boolean } {
+	const found = new Map<string, Set<string>>();
+	let unreadable = false;
+	for (const dir of new Set([join(pkgDir, "dist"), ...declaredDirs(pkgDir)])) {
+		if (!existsSync(dir)) continue; // a layout this package does not ship, as an uninstalled one ships none
+		try {
+			for (const file of builtFiles(dir)) {
+				let text: string;
+				try {
+					text = readFileSync(file, "utf8");
+				} catch {
+					unreadable = true; // one file that would not read is that file's affair, not the whole build's
+					continue;
+				}
+				// The clause excludes quotes and semicolons, so it cannot run past the specifier of the import
+				// before it — named clauses in the shape `importedFromSource` pins for flypi's own source.
+				for (const [, clause, specifier] of text.matchAll(/import\s+([^;'"]*?)\s*from\s*"(@earendil-works\/[^"]+)"/g)) {
+					if (/^type\s/.test(clause!)) continue; // a whole clause that is type-only
+					// The list is keyed by the bare specifier the source writes, while pi's own `loader.js getAliases`
+					// rewrites an extension's `@earendil-works/pi-ai` import to `pi-ai-extension-view.js`, "a strict
+					// superset of the core entrypoint": the first extension naming a pi-ai value exported only there
+					// would be refused over a pi that loads it fine. No installed extension names a pi-ai value today.
+					const names = found.get(specifier!) ?? new Set<string>();
+					found.set(specifier!, names);
+					if (clause!.startsWith("{")) {
+						for (const raw of clause!.slice(1, -1).split(",").map((name) => name.trim()).filter(Boolean)) {
+							if (raw.startsWith("type ")) continue;
+							names.add(raw.split(/\s+as\s+/)[0]!);
+						}
+					}
+					// else: `import * as x from` / `import x from` — the specifier is recorded, its usage is not nameable.
+				}
+			}
+		} catch {
+			unreadable = true; // a directory that would not list: the same sentence as a file that would not read
+		}
+	}
+	return { imports: new Map([...found].map(([specifier, names]) => [specifier, [...names].sort()])), unreadable };
 }
 
 /**
@@ -255,7 +289,11 @@ export async function checkPiCompat(candidateRoot: string, extensions: string[] 
 		} catch {
 			pkgName = basename(pkgDir);
 		}
-		for (const [specifier, names] of extensionPiImports(pkgDir)) {
+		const { imports, unreadable } = extensionPiImports(pkgDir);
+		// The check cannot say "fine" about code it never read, and it says which one happened: no build at all
+		// is an uninstalled package skipping, build present but unreadable is a check that did not run.
+		if (unreadable) failures.push(`${pkgName}: its own build could not be read, so its pi imports were not checked`);
+		for (const [specifier, names] of imports) {
 			const url = resolveFrom(specifier);
 			if (!url) {
 				// An extension that cannot resolve what it imports from pi is exactly the drift this probe exists for.

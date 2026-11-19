@@ -14,12 +14,11 @@
  */
 import { checkPiCompat } from "../src/agent/pi-compat.ts";
 import { flypiPaths } from "../src/agent/paths.ts";
-import { readPackages } from "../src/agent/packages.ts";
+import { installedExtensionPaths } from "../src/agent/packages.ts";
 
 const argv = process.argv.slice(2);
 const candidate = argv[argv.indexOf("--candidate") + 1] ?? process.cwd();
-const extensions = readPackages(flypiPaths(process.cwd())).packages.filter((row) => row.installed).map((row) => row.path);
-const failures = await checkPiCompat(candidate, extensions);
+const failures = await checkPiCompat(candidate, installedExtensionPaths(flypiPaths(process.cwd())));
 for (const failure of failures) console.error(`pi compat: ${failure}`);
 console.log(failures.length ? `pi compat: ${failures.length} problem(s) in ${candidate}` : `pi compat: ok — ${candidate}`);
 process.exit(failures.length ? 1 : 0);

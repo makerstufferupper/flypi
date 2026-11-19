@@ -154,6 +154,15 @@ function settingsErrors(settings: SettingsManager): string[] {
 	return settings.drainErrors().map((failure) => `${failure.path ?? failure.scope}: ${failure.error.message}`);
 }
 
+/**
+ * The directories of the declared sources whose code is on disk — what `checkPiCompat` scans for pi imports
+ * (src/agent/pi-compat.ts, T46.2.4). One copy because the probe's two callers, the pi switch and
+ * `scripts/probe-pi.ts`, have to ask about exactly the same packages.
+ */
+export function installedExtensionPaths(paths: FlypiPaths): string[] {
+	return readPackages(paths).packages.filter((row) => row.installed).map((row) => row.path);
+}
+
 /** The list, merged with the daemon's answer. Reaches no network, so the panel can ask on every open. */
 export function readPackages(paths: FlypiPaths): PackageSnapshot {
 	const { manager, settings } = packages(paths);

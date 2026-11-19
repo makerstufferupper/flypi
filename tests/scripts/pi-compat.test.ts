@@ -5,7 +5,7 @@
  *   the list makes this fail, because a hand-kept list that drifts reports a clean pass (risk 14);
  * - the probe says ok for the installed pi and names the damage in a doctored copy.
  */
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -80,7 +80,8 @@ function doctoredCandidate(prefix: string): string {
 
 /** The specifier as a module built against pi spells it. The split is load-bearing: the source-scan row
  *  above reads every line of this file for `from "@earendil-works/…"` fixtures and would count a whole one
- *  written here as flypi's own import (D8, met from the other side). The file on disk gets the real text. */
+ *  written here as flypi's own import (D8, met from the other side). The file on disk gets the real text.
+ *  Test-only: written into `src/`, `scripts/` or `ui/` it would hide a real pi import from that same pin. */
 const piSpec = (pkg: string) => `@earendil${"-works"}/${pkg}`;
 
 /** The built output of an extension package: a `package.json` (pass null for the one that has none) and
@@ -205,11 +206,67 @@ describe("the probe", () => {
 		const base = mkdtempSync(join(tmpdir(), "flypi-ext-absent-"));
 		try {
 			expect(await checkPiCompat(root, [join(base, "not-installed")])).toEqual([]);
-			expect([...extensionPiImports(join(base, "not-installed"))]).toEqual([]);
+			expect([...extensionPiImports(join(base, "not-installed")).imports]).toEqual([]);
 		} finally {
 			rmSync(base, { recursive: true, force: true });
 		}
 	}, SLOW);
+
+	// The other uninstalled arm: a package directory that exists, with a manifest and no build of its own.
+	// Skipping it silently is the plan's "an uninstalled package skips, it never fails one"; saying so would be
+	// a sentence about a package that was never asked to load.
+	it("says nothing about a package that is on disk but ships no build", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "flypi-ext-nodist-"));
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "flypi-nodist-ext", version: "0.0.1" }));
+		try {
+			expect(await checkPiCompat(root, [dir])).toEqual([]);
+			expect(extensionPiImports(dir)).toEqual({ imports: new Map(), unreadable: false });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}, SLOW);
+
+	// And the arm that is not "nothing to read": the build is there and part of it would not open. Passing that
+	// off as an empty import set is a clean pass over a check that never ran.
+	it("says so when part of an installed build cannot be read, and still checks what it did read", async () => {
+		const ext = fixtureExtension(mkdtempSync(join(tmpdir(), "flypi-ext-unreadable-")), `import { noSuchPiExport } from "${piSpec("pi-coding-agent")}";\n`);
+		symlinkSync(join(ext, "gone.js"), join(ext, "dist", "gone.js")); // a directory entry that will not read, whatever the uid
+		try {
+			expect(await checkPiCompat(root, [ext])).toEqual([
+				"flypi-fixture-ext: its own build could not be read, so its pi imports were not checked",
+				"flypi-fixture-ext: imports noSuchPiExport from @earendil-works/pi-coding-agent, which this pi does not export",
+			]);
+		} finally {
+			rmSync(ext, { recursive: true, force: true });
+		}
+	}, SLOW);
+
+	// pi loads the entry the manifest's `pi.extensions` names, which need not be a `dist/`: a package that
+	// stopped publishing one must not be able to erase this check. A `.ts` source reads through the same parser
+	// — the type clauses are stripped rather than build-erased — and its declaration file stays unread.
+	it("reads a package whose pi.extensions name TypeScript sources, with no build to read", () => {
+		const dir = mkdtempSync(join(tmpdir(), "flypi-ext-src-"));
+		mkdirSync(join(dir, "src"), { recursive: true });
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "flypi-src-ext", version: "0.0.1", pi: { extensions: ["./src/index.ts", "./src/panels.ts"] } }));
+		writeFileSync(
+			join(dir, "src", "index.ts"),
+			[
+				`import { createAgentSession, type ErasedAtBuild } from "${piSpec("pi-coding-agent")}";`,
+				`import type { NeverRuntime } from "${piSpec("pi-ai")}";`,
+				`import { Container } from "${piSpec("pi-tui")}";`,
+			].join("\n"),
+		);
+		writeFileSync(join(dir, "src", "index.d.ts"), `import { AlsoErased } from "${piSpec("pi-coding-agent")}";\n`);
+		try {
+			const found = extensionPiImports(dir);
+			expect(found.unreadable).toBe(false);
+			expect([...found.imports.keys()].sort()).toEqual(["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]);
+			expect(found.imports.get("@earendil-works/pi-coding-agent")).toEqual(["createAgentSession"]);
+			expect(found.imports.get("@earendil-works/pi-tui")).toEqual(["Container"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 
 	it("reads the import forms off the built output, naming only what the runtime module asks for", () => {
 		const dir = mkdtempSync(join(tmpdir(), "flypi-ext-forms-"));
@@ -229,7 +286,7 @@ describe("the probe", () => {
 		writeFileSync(join(dir, "dist", "index.d.ts"), `import type { AlsoErased } from "${piSpec("pi-coding-agent")}";\n`);
 		writeFileSync(join(dir, "dist", "nested", "deep.js"), `import { DefaultResourceLoader } from "${piSpec("pi-coding-agent")}";\n`);
 		try {
-			const found = extensionPiImports(dir);
+			const found = extensionPiImports(dir).imports;
 			// The type-only clause never reaches the map at all: pi is not asked about names that were
 			// erased before the module existed. The namespace and default forms record the specifier and
 			// claim no names, because there is no name to claim.
