@@ -17,11 +17,12 @@ import { WebSocket } from "ws";
 import { Type } from "typebox";
 import { startFlypiServer, type FlypiServerHandle } from "../../src/server/index.ts";
 import { ClientCommandSchema, SubagentAgentsRow, SubagentAgentsSnapshot } from "../../src/server/protocol.ts";
-import type { AgentTypeRow, AgentTypesSnapshot } from "../../src/agent/subagent-agents.ts";
+import { readAgentTypes, type AgentTypeRow, type AgentTypesSnapshot } from "../../src/agent/subagent-agents.ts";
 import { commandTargets, resourceEntries, type ResourceEntry } from "../../src/server/resources-server.ts";
+import type { ResourceName } from "../../src/shared/resources.ts";
 import { flypiPaths } from "../../src/agent/paths.ts";
 import { harness, toolTurn } from "../helpers/flypi-harness.ts";
-import { homeEnv, withProviderConfig } from "../helpers/flypi-root.ts";
+import { createTempFlypiRoot, homeEnv, withProviderConfig } from "../helpers/flypi-root.ts";
 
 const GizmoGet = Type.Object({ type: Type.Literal("gizmoGet"), requestId: Type.Optional(Type.String({ minLength: 1 })) });
 const GizmoPut = Type.Object({
@@ -484,6 +485,76 @@ describe("the agent-types snapshot is the shape of the frame it travels in", () 
 		agree(Object.keys(row), Object.keys(SubagentAgentsRow.properties), "a row");
 	});
 
+	// The fixture above is an **annotation**, and `tsc`'s excess-property check only refuses keys the fixture sets
+	// that the type lacks — it never asks the fixture to set a key the type has. So a field `AgentTypeRow` declares
+	// and `readAgentTypes` populates, with nothing in `SubagentAgentsRow`, leaves every key of that fixture exactly as
+	// it was and the two rows above compare a shape nobody produces. Measured: `driftFlag?: string` on `AgentTypeRow`
+	// (src/agent/subagent-agents.ts:372) populated by `readAgentTypes`, `protocol.ts` untouched — the fixture rows
+	// stayed green and only this one went red.
+	//
+	// Which half is whose, since both stay: **this one** reads the producer, so it can only ever name a field the
+	// reader and the resource really emit. The hand-built fixture holds every field **at once**, which no real answer
+	// does — a row cannot be `inherited` and `resolvable: false` together (`resolveAgentModel`,
+	// src/agent/subagent-agents.ts:343-344) and a plain read carries no `copied`/`skipped`/`ignored` at all
+	// (`agentTypesSnapshot`, src/server/resources-server.ts:121-130) — and it is the half `tsc` checks, because no
+	// amount of `Object.keys` over a production object notices a field the interface dropped. Each covers the other's
+	// blind spot, which is the whole reason there are two.
+	it("matches the fields the reader and the resource actually emit", async () => {
+		/** A snapshot's own keys, refusing to read them off a refusal's sentence. */
+		const keysOf = (answer: unknown): string[] => {
+			// A refused action comes back as a **string** (`ResourceHandler`, src/server/resources-server.ts:35), and
+			// `Object.keys` of a string is a list of digit keys — that would blame the schema for a root that simply had
+			// nothing to import.
+			expect(typeof answer, "the resource answered something other than a snapshot — a refusal is a sentence").toBe("object");
+			return Object.keys(answer as object);
+		};
+
+		// Every field the reader can emit, spread over the files that produce it: the ask this root's own catalog
+		// serves, the ask nobody serves, the ask for nothing, the level the resolved model cannot do, and the file that
+		// is no type at all. Seeded the way `typedRoot` seeds it in tests/agent/subagent-agents.test.ts:627-635, down to
+		// the lmstudio credential that makes `scout`'s ask resolvable.
+		const paths = flypiPaths(withProviderConfig(createTempFlypiRoot(), { defaultProvider: "lmstudio", defaultModel: "qwen3" }, { lmstudio: { type: "api_key", key: "local" } }));
+		mkdirSync(paths.agentsDir, { recursive: true });
+		const agentFiles: Record<string, string> = {
+			"scout.md": "---\ndescription: read the repo\nmodel: lmstudio/qwen3\n---\nbody\n",
+			"pilot.md": "---\ndescription: fly it\nmodel: playred-lms/spark-x2.6-4b\n---\nbody\n",
+			"coder.md": "---\ndescription: write the code\n---\nbody\n",
+			"researcher.md": "---\ndescription: read it once\nthinking: xhigh\n---\nbody\n",
+			"broken.md": '---\nname: "team:scout"\ndescription: not a type\n---\nbody\n',
+		};
+		for (const [name, text] of Object.entries(agentFiles)) writeFileSync(join(paths.agentsDir, name), text);
+		// A planted host home, because the write's three lists are the snapshot's last three keys and a write with
+		// nowhere to import from answers a sentence instead: one new file (`copied`), one whose name is already here
+		// (`skipped`), one no `.md` (`ignored`). `os.homedir()` takes `$HOME` at call time, so this is how
+		// `hostAgentsDir()` is aimed away from the operator's own `~/.pi/agent/agents`; restore as the import rows above do.
+		const home = mkdtempSync(join(tmpdir(), "flypi-pinhome-"));
+		const hostAgents = join(home, ".pi", "agent", "agents");
+		mkdirSync(hostAgents, { recursive: true });
+		writeFileSync(join(hostAgents, "arrival.md"), "---\ndescription: new here\n---\nbody\n");
+		writeFileSync(join(hostAgents, "pilot.md"), "---\ndescription: the host's copy\n---\nbody\n");
+		writeFileSync(join(hostAgents, "notes.txt"), "not a type at all\n");
+		const env = homeEnv(home);
+		try {
+			const entries = resourceEntries({ paths, reloadExtensions: async () => {} });
+			const produced = await readAgentTypes(paths);
+			// The frame itself comes from the resource's own handlers: `source`, `copied`, `skipped` and `ignored` are
+			// added by `agentTypesSnapshot` (src/server/resources-server.ts:121-130), so the snapshot half of the union
+			// has to read the write as well as the reader, or those four keys are only ever asserted from a fixture.
+			const read = await entries.subagentAgents.impl.read!({ type: "subagentAgents" });
+			const written = await entries.subagentAgents.impl.apply!({ type: "importSubagentAgents" });
+			agree([...new Set(produced.rows.flatMap(Object.keys))], Object.keys(SubagentAgentsRow.properties), "a row `readAgentTypes` produced");
+			agree(
+				[...new Set([...Object.keys(produced), ...keysOf(read), ...keysOf(written)])],
+				Object.keys(SubagentAgentsSnapshot.properties),
+				"the snapshot the resource sends",
+			);
+		} finally {
+			env.restore();
+			rmSync(paths.root, { recursive: true, force: true });
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
 	// A fixture's keys are whatever the fixture spelled, and an `interface` is erased — so renaming a field on the
 	// module's side alone turns `tsc` red and leaves every `Object.keys` exactly as it was (measured: with
 	// `AgentTypesSnapshot.skipped` renamed, the row above stayed green and only this one went red). The declaration
@@ -502,7 +573,12 @@ describe("the agent-types snapshot is the shape of the frame it travels in", () 
 			return fields;
 		};
 		agree(declared("AgentTypesSnapshot"), Object.keys(SubagentAgentsSnapshot.properties), "AgentTypesSnapshot");
-		// `AgentTypeRow` is an empty alias (`extends AgentFileRow, AgentModelAnswer`), so its fields are those two.
+		// `AgentTypeRow` is an empty alias (`extends AgentFileRow, AgentModelAnswer`), so its fields are those two, and
+		// there is deliberately no `declared("AgentTypeRow")` beside the two above: with the `{}` closing on the
+		// declaration line (src/agent/subagent-agents.ts:372) the scan runs on to the next `}` and answers with
+		// `AgentTypesSnapshot`'s own six names — measured, and red against `SubagentAgentsRow` today, so the call could
+		// never fail for the drift it claims to watch. A field the alias adds **and the reader emits** is what the row
+		// above catches now; one it never emits reaches no panel, so there is nothing there for a call to fail on.
 		const rowFields = [...new Set([...declared("AgentFileRow"), ...declared("AgentModelAnswer")])];
 		agree(rowFields, Object.keys(SubagentAgentsRow.properties), "AgentTypeRow");
 	});
@@ -558,4 +634,37 @@ describe("every command in the protocol has something that answers it", () => {
 			expect(admitted.includes(type), `${type} is on the switch list but no longer in the protocol`).toBe(true);
 		}
 	});
+});
+
+/**
+ * The guard's own sentence, asserted (`2c49f61`, closed at T46.3.3 review).
+ *
+ * `commandTargets` is exported, so this reaches it with no server, no port and no process — and until now nothing
+ * had: the run the reviewer took over that file (`--coverage.include=src/server/resources-server.ts`) reported
+ * `98.14 | 97.05 | 100 | 100 | 274`, i.e. the `throw` at `src/server/resources-server.ts:274` was taken by no test,
+ * and `grep -rn "has no entry in resourceEntries" tests` returned 0 hits. A guard nobody has ever watched fire is a
+ * sentence nobody has ever read, and the sentence is the entire difference between this and the
+ * `TypeError: Cannot read properties of undefined (reading 'field')` it replaced.
+ *
+ * So the assertion is about the **name**, not about the throw: replace the throw with a `continue` — a guard that
+ * quietly skips the hole, which would leave the panel hanging on a command nothing answers — and these two rows are
+ * the only thing in the suite that says no.
+ */
+describe("a resource with no table entry says which resource is missing", () => {
+	/** The built-in table exactly as `startFlypiServer` builds it, with one resource's row removed. The temp root is
+	 *  never opened: `resourceEntries` only keeps the paths in its closures, as in the protocol row above. */
+	function tableWithout(name: ResourceName): Record<string, ResourceEntry> {
+		const entries: Record<string, ResourceEntry> = {
+			...resourceEntries({ paths: flypiPaths(mkdtempSync(join(tmpdir(), "flypi-gap-"))), reloadExtensions: async () => {} }),
+		};
+		delete entries[name];
+		return entries;
+	}
+
+	// Two built-ins, because a sentence that named one hard-coded resource would pass a test that asks about one.
+	for (const name of ["subagentAgents", "memory"] satisfies ResourceName[]) {
+		it(`names '${name}' when its entry is gone`, () => {
+			expect(() => commandTargets(tableWithout(name))).toThrow(new RegExp(`resource '${name}' has no entry in resourceEntries`));
+		});
+	}
 });

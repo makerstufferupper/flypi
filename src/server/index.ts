@@ -203,7 +203,16 @@ export async function startFlypiServer(options: FlypiServerOptions): Promise<Fly
 		};
 		const fail = (message: string, extra: { code?: string; requestId?: string; conversationId?: string } = {}) =>
 			send({ type: "error", message, ...extra });
-		/** Reply to a command that asked for one. `prompt` is deliberately not in that set: its events are the answer. */
+		/**
+		 * Reply to a command that asked for one. **Three** commands get no ack, not one, and a caller that handed one of
+		 * them a `requestId` waits forever: `request` (ui/lib/app-state.svelte.ts:318) settles only on a `result` frame
+		 * and has no timeout. They are `prompt` (src/server/index.ts:321, whose events are the answer), `resume`
+		 * (src/server/index.ts:308, subscribe plus replay, and a replay gap comes back as an `error` frame carrying a
+		 * conversationId, never as a result) and `mcpRedirect`'s success path (src/server/index.ts:382, the
+		 * `mcpSignIn` still open is what answers the paste, so `fail` is all this arm ever has to say). This comment
+		 * named `prompt` alone, which is the one of the three a settings panel would not send; the other two are the
+		 * arms a panel author trusting it hangs on. Line numbers are the `case` arms below, in this function.
+		 */
 		const reply = (requestId: string | undefined, extra: Omit<ResultFrame, "type" | "requestId"> = {}) => {
 			if (requestId) send({ type: "result", requestId, ...extra });
 		};
