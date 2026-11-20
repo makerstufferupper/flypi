@@ -1063,9 +1063,10 @@ describe("the raw file editor", () => {
 /**
  * The agent types the fleet can spawn: `.flypi/agent/agents/*.md` and the one import that fills that dir
  * (docs/protocol.md `subagentAgents` / `importSubagentAgents`). What is asserted here is the page's half — one
- * row per file, the model each run lands on, the warning for a model flypi could not match, and an import that
- * is disabled **with its reason in text**. What the files and the model answer really are is covered in
- * tests/agent/subagent-agents.test.ts; what the copy writes in tests/server/resources-server.test.ts.
+ * row per file, the model flypi matched or the root's default it falls back to, the warning for a model it could
+ * not match, and an import that is disabled **with its reason in text**. What the files and the model answer
+ * really are is covered in tests/agent/subagent-agents.test.ts; what the copy writes in
+ * tests/server/resources-server.test.ts.
  */
 describe("the agent types", () => {
 	/** The dir an import reads, spelled as the container has it: a real path, not `~`. */
@@ -1088,7 +1089,22 @@ describe("the agent types", () => {
 		await tick();
 	}
 
+	/** One of every shape a row comes in: a file that asked for nothing, a file whose ask flypi could not match,
+	 *  and a file whose ask it matched — the three sentences the section has to word without promising a run. */
+	const RICH: SubagentAgentsSnapshot = {
+		rows: [
+			{ type: "coder", file: "/data/.flypi/agent/agents/coder.md", runsOn: "lmstudio/qwen3", resolvable: true, inherited: true },
+			{ type: "scout", file: "/data/.flypi/agent/agents/scout.md", model: "playred-lms/spark-x2.6-4b", runsOn: "lmstudio/qwen3", resolvable: false },
+			{ type: "tester", file: "/data/.flypi/agent/agents/tester.md", model: "lmstudio/qwen3", runsOn: "lmstudio/qwen3", resolvable: true },
+		],
+		source: SOURCE,
+		errors: [],
+	};
+
 	const agentRow = (nth: number) => document.querySelectorAll('[data-role="agent-row"]')[nth] as HTMLElement;
+	/** Everything the agent section renders — chips, notes, reason and report — which is what its copy has to hold to. */
+	const agentSection = () => document.querySelector('[data-role="agents"]')?.closest("section") as HTMLElement | undefined;
+	const agentSectionText = () => agentSection()?.textContent ?? "";
 
 	/** Click the import and hand back the request id the write went out under. */
 	async function importClicked(transport: FakeTransport): Promise<string> {
@@ -1099,16 +1115,16 @@ describe("the agent types", () => {
 		return asked[0]!.requestId;
 	}
 
-	it("lists one row per agent file, with the model each run lands on and the model flypi could not match", async () => {
+	it("lists one row per agent file, with the model flypi matched and the model it could not match", async () => {
 		const transport = await mount();
 		await openSettings(transport);
 		await answered(transport);
 
 		expect(document.querySelectorAll('[data-role="agent-row"]')).toHaveLength(2);
-		expect(agentRow(0).querySelector('[data-role="agent-runs"]')?.textContent).toContain("runs lmstudio/qwen3");
+		expect(agentRow(0).querySelector('[data-role="agent-runs"]')?.textContent).toContain("matched lmstudio/qwen3");
 		expect(agentRow(0).querySelector('[data-role="agent-warning"]')).toBeNull();
 		expect(agentRow(1).querySelector('[data-role="agent-unmatched"]')).toBeTruthy();
-		// The sentence the operator acts on: what flypi could not match, and the model the run lands on instead.
+		// The sentence the operator acts on: what flypi could not match, and the model it has to name instead.
 		expect(agentRow(1).querySelector('[data-role="agent-warning"]')?.textContent).toContain("playred-lms/spark-x2.6-4b");
 		expect(agentRow(1).querySelector('[data-role="agent-warning"]')?.textContent).toContain("lmstudio/qwen3");
 	});
@@ -1126,14 +1142,15 @@ describe("the agent types", () => {
 		expect(document.querySelector('[data-role="agents-import-reason"]')).toBeNull();
 	});
 
-	it("says a row inherits the conversation's model, and that it cannot think at the level it asked for", async () => {
+	it("says a row's file asks for no model, and that it cannot think at the level it asked for", async () => {
 		const transport = await mount();
 		await openSettings(transport);
 		await answered(transport, {
 			...AGENTS,
 			rows: [
-				// No `model:` at all — the shape four of the five real agent files are in (plan D3), so `runsOn` is
-				// the conversation's model and not something this file chose.
+				// No `model:` at all — the shape four of the five real agent files are in (plan D3), so the only thing
+				// the row may say about the file is that it asked for nothing. The model beside it is the root's
+				// configured default, which is a fact about `settings.json` and not about this conversation.
 				{ type: "coder", file: "/data/.flypi/agent/agents/coder.md", description: "writes the code", runsOn: "lmstudio/qwen3", resolvable: true, inherited: true, thinking: "high" },
 				// pi's own rule: a reasoning model whose map is `{low, high}` cannot do `xhigh`
 				// (pi-ai/dist/models.js:692-706) — which is what `researcher.md` asks for.
@@ -1141,7 +1158,7 @@ describe("the agent types", () => {
 			],
 		});
 
-		expect(agentRow(0).querySelector('[data-role="agent-inherited"]')?.textContent).toContain("inherits the conversation's model");
+		expect(agentRow(0).querySelector('[data-role="agent-inherited"]')?.textContent).toContain("asks no model");
 		expect(agentRow(0).querySelector('[data-role="agent-name"]')?.textContent).toContain("coder — writes the code");
 		expect(agentRow(1).querySelector('[data-role="agent-inherited"]')).toBeNull();
 		// The level named, because "cannot think" without the ask is not something the operator can fix.
@@ -1152,7 +1169,7 @@ describe("the agent types", () => {
 	it("names no model at all for a row flypi has no model to name", async () => {
 		const transport = await mount();
 		await openSettings(transport);
-		// A root whose `settings.json` configures no default has no conversation model, so `runsOn` and
+		// A root whose `settings.json` configures no default has no model for flypi to name, so `runsOn` and
 		// `resolvable` come back with the file's facts only (src/agent/subagent-agents.ts, `readAgentTypes`).
 		// An invented one would be the worst thing on this page: a model the run will not use.
 		await answered(transport, {
@@ -1286,5 +1303,141 @@ describe("the agent types", () => {
 		const button = document.querySelector('[data-role="agents-import"]') as HTMLButtonElement;
 		expect(button.disabled).toBe(false);
 		expect(button.textContent).toContain("Import from");
+	});
+
+	/**
+	 * Frames the in-repo server never sends, and a client on another build can. `copied`, `skipped` and `ignored`
+	 * are `Type.Optional` on the wire (src/server/protocol.ts:445-449) and `errors`/`source.path` are only required
+	 * by the typebox the in-repo server satisfies, so each of these is version skew or a hand-written client — and
+	 * the section has to render something from each rather than abort mid-read.
+	 */
+	it("prints the lists a frame did send and says nothing for the ones it did not", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport);
+		await importClicked(transport);
+		// `copied` alone: the write answered with the one list it had.
+		await answered(transport, { ...AGENTS, copied: ["/data/.flypi/agent/agents/coder.md"] });
+
+		const report = document.querySelector('[data-role="agents-import-report"]')?.textContent ?? "";
+		expect(report).toContain("copied: /data/.flypi/agent/agents/coder.md");
+		// Absent gets the same word as empty — and it is a report of what this frame named, never a claim that
+		// nothing was already there (`skipped` is the list that proves that, and it is not in this frame).
+		expect(report).toContain("left exactly as yours: nothing");
+		expect(report).toContain("ignored: nothing");
+		expect(report).not.toContain("undefined");
+		// The section behind the report is rendered, not left on its previous content.
+		expect(document.querySelectorAll('[data-role="agent-row"]')).toHaveLength(2);
+	});
+
+	it("lists the rows when a snapshot carries no `errors` array at all", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		// Rows and source, no `errors`: the render must not read `.length` off a field this frame does not have.
+		transport.emit({ type: "result", requestId: "r-agents", subagentAgents: { rows: AGENTS.rows, source: SOURCE } as SubagentAgentsSnapshot });
+		await tick();
+
+		expect(document.querySelectorAll('[data-role="agent-row"]')).toHaveLength(2);
+		expect(document.querySelector('[data-role="agents-errors"]')).toBeNull();
+		// Not the empty-dir sentence left over from before the answer — the section says what this snapshot says.
+		expect(agentSectionText()).not.toContain("nothing here yet");
+		expect(agentSectionText()).toContain("coder — writes the code");
+	});
+
+	it("says no reason it cannot name, when a frame gives a source with no path", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport, { ...AGENTS, source: { exists: false } as SubagentAgentsSnapshot["source"] });
+
+		// A reason needs a path to name; without one the sentence is absent rather than `undefined does not exist`.
+		expect(document.querySelector('[data-role="agents-import-reason"]')).toBeNull();
+		expect(document.querySelectorAll('[data-role="agent-row"]')).toHaveLength(2);
+		expect(agentSectionText()).not.toContain("undefined");
+		// Still unpressable — `exists: false` is the button's own reason, path or no path.
+		expect((document.querySelector('[data-role="agents-import"]') as HTMLButtonElement).disabled).toBe(true);
+	});
+
+	it("names the path it refuses in the element that wraps on a phone", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport, { ...AGENTS, source: { path: "/home/flypi/.pi/agent/agents", exists: false } });
+
+		// The phone rule is `.settings-view .cfg-note code { overflow-wrap: anywhere }` (ui/app.css:469); bare text
+		// in this paragraph is never selected by it, so a container path scrolls the pane sideways.
+		const code = document.querySelector('[data-role="agents-import-reason"] code');
+		expect(code?.textContent).toBe("/home/flypi/.pi/agent/agents");
+	});
+
+	it("keeps every file name the report prints inside the element that wraps on a phone", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport);
+		await importClicked(transport);
+		await answered(transport, {
+			...AGENTS,
+			copied: ["/data/.flypi/agent/agents/coder.md", "/data/.flypi/agent/agents/tester.md"],
+			skipped: ["scout"],
+			ignored: ["draft.txt"],
+		});
+
+		// Same rule, and the report is the longer text of the two: a destination is a full container path.
+		const names = [...document.querySelectorAll('[data-role="agents-import-report"] code')].map((el) => el.textContent);
+		expect(names).toEqual(["/data/.flypi/agent/agents/coder.md", "/data/.flypi/agent/agents/tester.md", "scout", "draft.txt"]);
+		expect(document.querySelector('[data-role="agents-import-report"]')?.textContent).toContain("new conversations");
+	});
+
+	it("says a repo file of the same name outranks the one the import wrote", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport);
+
+		// The tier caveat (plan D5): project `.pi/agents/` and workspace `.agents/agents/` both win over the
+		// global tier flypi's dir is, so an import can be outranked without anything on this page saying so.
+		const note = agentSection()?.querySelector(".cfg-note");
+		expect(note?.textContent).toContain(".pi/agents/");
+		expect(note?.textContent).toContain(".agents/agents/");
+		expect(note?.textContent).toMatch(/outrank/);
+	});
+
+	it("never says a run lands on a model, and never names the conversation's model", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport, RICH);
+
+		// `runsOn` is the **root's configured default** from `settings.json` whenever the file asked for nothing or
+		// asked for what flypi could not match (src/agent/subagent-agents.ts `resolveAgentModel`, `fallback`), and
+		// the module keeps one rule: it may warn conservatively but must never claim a model the run will not use.
+		// A conversation that picked its own model makes either sentence a claim about a model flypi never read.
+		expect(agentSectionText()).not.toMatch(/lands on/);
+		expect(agentSectionText()).not.toMatch(/the conversation.s model/);
+		expect(agentSectionText()).not.toMatch(/\bruns\b/);
+	});
+
+	it("names where every model it prints came from, on every row that prints one", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport, RICH);
+
+		// The inherited row says what the *file* asked for, which is nothing — not what the conversation is.
+		expect(agentRow(0).querySelector('[data-role="agent-inherited"]')?.textContent).toContain("asks no model");
+		// And the model beside it is named for its source: the root's configured default.
+		expect(agentRow(0).querySelector('[data-role="agent-runs"]')?.textContent).toContain("root default lmstudio/qwen3");
+		expect(agentRow(1).querySelector('[data-role="agent-runs"]')?.textContent).toContain("root default lmstudio/qwen3");
+		expect(agentRow(1).querySelector('[data-role="agent-warning"]')?.textContent).toContain("this root's configured default is lmstudio/qwen3");
+		// A row whose ask *was* matched is not the fallback, and the chip says which of the two it is.
+		expect(agentRow(2).querySelector('[data-role="agent-runs"]')?.textContent).toContain("matched lmstudio/qwen3");
+		expect(agentRow(2).querySelector('[data-role="agent-inherited"]')).toBeNull();
+	});
+
+	it("says flypi could not match the ask, and never that the model is missing", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport, RICH);
+
+		// flypi repeats only the extension's first resolution tier (plan D10), so the extension may still
+		// fuzzy-match the ask. "could not match" is the whole of what flypi knows.
+		const warning = agentRow(1).querySelector('[data-role="agent-warning"]')?.textContent ?? "";
+		expect(warning).toContain("could not match playred-lms/spark-x2.6-4b");
+		expect(warning).not.toMatch(/does not exist|doesn.t exist|no such model|is not installed/);
 	});
 });

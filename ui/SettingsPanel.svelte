@@ -24,31 +24,50 @@
 	/** The directory an import would read from, or nothing until the read answers. */
 	const agentsSource = $derived(app.subagentAgents?.source);
 	/**
-	 * Why the import is disabled, as text. Decision 9 is literal about this: `disabled` alone tells a keyboard
-	 * and a screen-reader user nothing, and a `title=` tooltip is not the reason either. The path is printed as
-	 * the machine really has it — `/home/flypi/.pi/agent/agents` in the container — because `~` is not a path
-	 * anybody can `ls` there, and "the directory is not there" is only actionable with its name.
-	 */
-	const importReason = $derived(agentsSource && !agentsSource.exists ? `${agentsSource.path} does not exist — there is nothing to import from it.` : "");
-	/**
-	 * What the import that produced this snapshot did. The three lists come **only** on the write's reply
-	 * (`SubagentAgentsSnapshot`, src/server/protocol.ts), so their presence is what says a click just ran — and
-	 * `skipped` is named out full because it is the list that proves an existing file was left byte for byte
-	 * (src/agent/subagent-agents.ts's first rule). Saying only "copied 2" would leave the operator unable to
-	 * tell "kept yours" from "overwrote yours".
+	 * The directory an import would have read from, when it is not there — the reason the markup says beside the
+	 * disabled button. Decision 9 is literal about this: `disabled` alone tells a keyboard and a screen-reader
+	 * user nothing, and a `title=` tooltip is not the reason either. The path is printed as the machine really has
+	 * it — `/home/flypi/.pi/agent/agents` in the container — because `~` is not a path anybody can `ls` there, and
+	 * "the directory is not there" is only actionable with its name.
 	 *
-	 * The second half is what the panel cannot fix by reloading: the extension re-reads the dir on every spawn
-	 * (`@tintinweb/pi-subagents/src/index.ts:1887`) but the `Agent` tool's *description* — the type list the
-	 * model is offered — is built once, at registration (`:1501-1502`, `:1691`). So the new types reach **new**
-	 * conversations, and the one already open keeps the list it started with.
+	 * It hands back the **path**, not the sentence, because the path renders inside a `<code>`: that is the element
+	 * the phone rule selects (`ui/app.css:469`, `.settings-view .cfg-note code { overflow-wrap: anywhere }`) and a
+	 * container path in bare text scrolls the pane sideways. The `?.path` is not decoration either — `source.path`
+	 * is required by the typebox (src/server/protocol.ts:437) and a frame from an older build need not carry it, so
+	 * the reason is absent rather than the sentence `undefined does not exist`.
+	 */
+	const missingAgentsSource = $derived(agentsSource?.path && !agentsSource.exists ? agentsSource.path : "");
+	/**
+	 * The `errors` of the last answer, empty when the frame did not carry any. Required by the typebox
+	 * (src/server/protocol.ts:439) and optional in fact, like every other field a build older than this one may
+	 * send: reading `.length` off a field that is not there aborts the render and leaves the section on whatever it
+	 * showed before. Same shape as the `agents` / `packages` deriveds above.
+	 */
+	const agentsErrors = $derived(app.subagentAgents?.errors ?? []);
+	/**
+	 * What the import that produced this snapshot did, as the named lists it reported — empty for a plain read.
+	 * The three lists come **only** on the write's reply (`SubagentAgentsSnapshot`, src/server/protocol.ts), so
+	 * their presence is what says a click just ran — and `skipped` is named out full because it is the list that
+	 * proves an existing file was left byte for byte (src/agent/subagent-agents.ts's first rule). Saying only
+	 * "copied 2" would leave the operator unable to tell "kept yours" from "overwrote yours".
+	 *
+	 * All three are `Type.Optional` (src/server/protocol.ts:445-449), so `line()` takes `string[] | undefined` and
+	 * an absent list gets the same word as an empty one: the in-repo write does answer with all three
+	 * (`importAgentFiles` initialises them), a frame from version skew or a hand-written client need not. A name
+	 * stays a list item rather than a joined sentence so each one renders in a `<code>`, the element the phone wrap
+	 * rule selects (ui/app.css:469) — these are full container paths.
+	 *
+	 * The sentence the markup appends is what the panel cannot fix by reloading: the extension re-reads the dir on
+	 * every spawn (`@tintinweb/pi-subagents/src/index.ts:1887`) but the `Agent` tool's *description* — the type
+	 * list the model is offered — is built once, at registration (`:1501-1502`, `:1691`). So the new types reach
+	 * **new** conversations, and the one already open keeps the list it started with.
 	 */
 	const importReport = $derived.by(() => {
 		const snapshot = app.subagentAgents;
-		if (!snapshot?.copied) return "";
-		// A write answers with all three lists together (`importAgentFiles`, src/agent/subagent-agents.ts), so
-		// the `!`s are the module's own promise rather than a guess about a half-filled frame.
-		const line = (label: string, names: string[]): string => `${label}: ${names.length ? names.join(", ") : "nothing"}`;
-		return `${line("copied", snapshot.copied)}; ${line("left exactly as yours", snapshot.skipped!)}; ${line("ignored", snapshot.ignored!)} — new conversations list these types; a conversation already open keeps the type list its Agent tool was registered with.`;
+		// `copied` present is what says a write answered at all; a read carries none of the three and prints nothing.
+		if (!snapshot?.copied) return [];
+		const line = (label: string, names: string[] | undefined) => ({ label, names: names ?? [] });
+		return [line("copied", snapshot.copied), line("left exactly as yours", snapshot.skipped), line("ignored", snapshot.ignored)];
 	});
 	/**
 	 * The sentence beside a file whose model flypi could not match.
@@ -59,12 +78,20 @@
 	 * sentence makes — and it has to be made, because the degrade it describes is silent in the extension
 	 * (`@tintinweb/pi-subagents/src/index.ts:1965-1972`).
 	 *
-	 * With no `runsOn` there is no model to name: a root whose `settings.json` configures no default has nothing
-	 * flypi may promise a run lands on, so the second arm names no model at all.
+	 * The second half names `runsOn` for where it came from — `settings.json`'s configured default — and says
+	 * nothing about a run. That is the module's own rule, not caution: `runsOn` here is the `fallback` argument,
+	 * which `resolveAgentModel` describes as "`defaultProvider`/`defaultModel` from `settings.json`… this module
+	 * does not decide what 'the conversation's model' means, and a row that guessed would be wrong for every
+	 * conversation that picked one" (src/agent/subagent-agents.ts:311-314), and even a matched `runsOn` "says
+	 * which model flypi matched, not a promise about which one ran" (`:333`). A warning may be conservative; a
+	 * model named as the one a run used may not be.
+	 *
+	 * With no `runsOn` there is no model to name at all: a root whose `settings.json` configures no default has
+	 * nothing flypi may point a run at, so that arm names none.
 	 */
 	const unmatched = (row: SubagentAgentsRow): string =>
 		row.runsOn
-			? `flypi could not match ${row.model} among the models this root can serve; a run of ${row.type} lands on ${row.runsOn} instead`
+			? `flypi could not match ${row.model} among the models this root can serve; this root's configured default is ${row.runsOn}`
 			: "flypi could not match the model this file asks for, and this root configures no default model for a run to fall back on";
 	/**
 	 * One stamp for both checks. The daemon writes `pi-check.json` and `package-check.json` in the same daily
@@ -661,10 +688,14 @@
 		<section>
 			<div class="cfg-section">
 				<h3>Agent types</h3>
-				<!-- The disabled state and its reason are two separate things on purpose (decision 9): the control
-				     stays in the tab order as `disabled`, and the sentence below is what a keyboard and a
-				     screen-reader user actually hear. `agentsSource` is undefined until the read answers, which is
-				     the same "nothing known yet" state as "no directory to read" for the button's purposes. -->
+				<!-- The disabled state and its reason are two separate things on purpose (decision 9), and the reason
+				     has to be text because the control cannot carry it: a `disabled` <button> is not focusable, so Tab
+				     skips past it and nothing about it gets announced. What reaches a keyboard or a screen-reader user
+				     is the sentence below — plain text in reading order, visible without hovering, which is why that
+				     sentence says the path out full. `aria-describedby` appears nowhere in this repo
+				     (`grep -rn "aria-describedby" ui src` → 0 hits), so plain adjacency is the house pattern here rather
+				     than a shortcut taken from it. `agentsSource` is undefined until the read answers, which is the same
+				     "nothing known yet" state as "no directory to read" for the button's purposes. -->
 				<button
 					type="button"
 					data-role="agents-import"
@@ -677,21 +708,24 @@
 			<p class="cfg-note">
 				<code>.flypi/agent/agents/*.md</code> — the agent types flypi's subagent extension can spawn. The
 				import copies <code>*.md</code> from the host's own <code>~/.pi/agent/agents</code> and leaves a
-				name that is already there byte for byte.
+				name that is already there byte for byte. A file of the same name in the repo's <code>.pi/agents/</code>
+				or <code>.agents/agents/</code> outranks the imported one, so an import can be outranked in silence.
 			</p>
-			{#if importReason}
-				<p class="cfg-note" data-role="agents-import-reason">{importReason}</p>
+			{#if missingAgentsSource}
+				<!-- The path is the whole reason, so it is the thing a phone has to be able to wrap: the rule at
+				     ui/app.css:469 selects `.cfg-note code`, not the paragraph's bare text. -->
+				<p class="cfg-note" data-role="agents-import-reason"><code>{missingAgentsSource}</code> does not exist — there is nothing to import from it.</p>
 			{/if}
-			{#if app.subagentAgents?.errors.length}
+			{#if agentsErrors.length}
 				<!-- Half-answered rows get a reason, not a shrug: a `models.json` pi would not parse leaves every
 				     row with no model claim (src/agent/subagent-agents.ts, `readAgentTypes`), and that sentence
 				     names the operator's own file rather than blaming an agent file. -->
 				<ul class="cfg-errors" role="alert" data-role="agents-errors">
-					{#each app.subagentAgents.errors as error}<li class="error">{error}</li>{/each}
+					{#each agentsErrors as error}<li class="error">{error}</li>{/each}
 				</ul>
 			{/if}
-			{#if importReport}
-				<p class="cfg-note" data-role="agents-import-report">{importReport}</p>
+			{#if importReport.length}
+				<p class="cfg-note" data-role="agents-import-report">{#each importReport as part, n (part.label)}{n ? "; " : ""}{part.label}: {#if !part.names.length}nothing{:else}{#each part.names as name, i (name)}{i ? ", " : ""}<code>{name}</code>{/each}{/if}{/each} — new conversations list these types; a conversation already open keeps the type list its Agent tool was registered with.</p>
 			{/if}
 			<ul class="cfg-list" data-role="agents">
 				{#each agents as row (row.file)}
@@ -704,16 +738,20 @@
 							     that can never happen (src/agent/subagent-agents.ts, `agentRow`). -->
 							<code class="cfg-state-error" data-role="agent-invalid">not a type: {row.invalid}</code>
 						{:else}
-							<!-- Always the model the run lands on, when flypi can name one. `runsOn` is absent when the
-							     root has no configured default, and then the row says nothing about a model at all —
-							     a guessed one is a claim, not an answer. -->
-							{#if row.runsOn}<span class="cfg-state" data-role="agent-runs">runs {row.runsOn}</span>{/if}
+							<!-- `runsOn` is one of two things and the chip has to say which, because the two are not
+							     interchangeable: the model the file asked for, when flypi matched it, or the **root's
+							     configured default** from `settings.json` when the file asked for nothing or for what
+							     flypi could not match (`served ?? fallback`, src/agent/subagent-agents.ts:336). "runs X"
+							     promised a run, and the module keeps the opposite rule — `runsOn` "says which model flypi
+							     matched, not a promise about which one ran" (`:333`). Absent `runsOn` says nothing at all:
+							     a guessed model is a claim, not an answer. -->
+							{#if row.runsOn}<span class="cfg-state" data-role="agent-runs">{row.model && row.resolvable !== false ? "matched" : "root default"} {row.runsOn}</span>{/if}
 							{#if row.resolvable === false}
 								<span class="cfg-state failed" data-role="agent-unmatched">model not matched</span>
 								<code class="cfg-state-error" data-role="agent-warning">{unmatched(row)}</code>
 							{/if}
 							{#if row.thinkingUnsupported}<span class="cfg-state failed" data-role="agent-thinking">cannot think at {row.thinking}</span>{/if}
-							{#if row.inherited}<span class="cfg-state" data-role="agent-inherited">inherits the conversation's model</span>{/if}
+							{#if row.inherited}<span class="cfg-state" data-role="agent-inherited">asks no model</span>{/if}
 						{/if}
 					</li>
 				{:else}
