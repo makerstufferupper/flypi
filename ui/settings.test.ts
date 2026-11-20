@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
 import { tick } from "svelte";
 import App from "./App.svelte";
-import type { ClientCommand, ConfigSnapshot, McpStatusSnapshot, PackagesSnapshot, PiVersions, ServerFrame } from "../src/server/protocol.ts";
+import type { ClientCommand, ConfigSnapshot, McpStatusSnapshot, PackagesSnapshot, PiVersions, ServerFrame, SubagentAgentsSnapshot } from "../src/server/protocol.ts";
 import type { Transport } from "./lib/client.ts";
 
 class FakeTransport implements Transport {
@@ -1057,5 +1057,234 @@ describe("the raw file editor", () => {
 		await tick();
 		expect(document.querySelector('[data-role="save-error"]')?.textContent).toContain("in JSON at position 2");
 		expect(box("settings").value).toBe("{ not json");
+	});
+});
+
+/**
+ * The agent types the fleet can spawn: `.flypi/agent/agents/*.md` and the one import that fills that dir
+ * (docs/protocol.md `subagentAgents` / `importSubagentAgents`). What is asserted here is the page's half — one
+ * row per file, the model each run lands on, the warning for a model flypi could not match, and an import that
+ * is disabled **with its reason in text**. What the files and the model answer really are is covered in
+ * tests/agent/subagent-agents.test.ts; what the copy writes in tests/server/resources-server.test.ts.
+ */
+describe("the agent types", () => {
+	/** The dir an import reads, spelled as the container has it: a real path, not `~`. */
+	const SOURCE = { path: "/home/flypi/.pi/agent/agents", exists: true };
+	const AGENTS: SubagentAgentsSnapshot = {
+		rows: [
+			{ type: "coder", file: "/data/.flypi/agent/agents/coder.md", description: "writes the code", model: "lmstudio/qwen3", runsOn: "lmstudio/qwen3", resolvable: true, thinking: "high" },
+			{ type: "scout", file: "/data/.flypi/agent/agents/scout.md", model: "playred-lms/spark-x2.6-4b", runsOn: "lmstudio/qwen3", resolvable: false },
+		],
+		source: SOURCE,
+		errors: [],
+	};
+
+	/**
+	 * Answer the read. The id is the one the ask carried, but the frame lands on its own field (the `result`
+	 * branch reads `frame.subagentAgents`, not the id), so this stays a real snapshot even before the ask exists.
+	 */
+	async function answered(transport: FakeTransport, agents: SubagentAgentsSnapshot = AGENTS): Promise<void> {
+		transport.emit({ type: "result", requestId: "r-agents", subagentAgents: agents });
+		await tick();
+	}
+
+	const agentRow = (nth: number) => document.querySelectorAll('[data-role="agent-row"]')[nth] as HTMLElement;
+
+	/** Click the import and hand back the request id the write went out under. */
+	async function importClicked(transport: FakeTransport): Promise<string> {
+		fireEvent.click(document.querySelector('[data-role="agents-import"]') as HTMLButtonElement);
+		await tick();
+		const asked = transport.sent.filter((command) => command.type === "importSubagentAgents") as { requestId: string }[];
+		expect(asked).toHaveLength(1);
+		return asked[0]!.requestId;
+	}
+
+	it("lists one row per agent file, with the model each run lands on and the model flypi could not match", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport);
+
+		expect(document.querySelectorAll('[data-role="agent-row"]')).toHaveLength(2);
+		expect(agentRow(0).querySelector('[data-role="agent-runs"]')?.textContent).toContain("runs lmstudio/qwen3");
+		expect(agentRow(0).querySelector('[data-role="agent-warning"]')).toBeNull();
+		expect(agentRow(1).querySelector('[data-role="agent-unmatched"]')).toBeTruthy();
+		// The sentence the operator acts on: what flypi could not match, and the model the run lands on instead.
+		expect(agentRow(1).querySelector('[data-role="agent-warning"]')?.textContent).toContain("playred-lms/spark-x2.6-4b");
+		expect(agentRow(1).querySelector('[data-role="agent-warning"]')?.textContent).toContain("lmstudio/qwen3");
+	});
+
+	it("asks for the list when the view opens, and never again on its own", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		// One of the five things the view asks for when it opens (`onMount`, ui/SettingsPanel.svelte) — and one
+		// of the five it never polls: the answer re-reads a directory and pi's catalog, so asking twice in one
+		// visit is work, not freshness.
+		expect(sent(transport, "subagentAgents")).toHaveLength(1);
+		// The dir is unknown until the answer lands, so the button is already unpressable — and it says nothing
+		// about a path nobody has named yet.
+		expect((document.querySelector('[data-role="agents-import"]') as HTMLButtonElement).disabled).toBe(true);
+		expect(document.querySelector('[data-role="agents-import-reason"]')).toBeNull();
+	});
+
+	it("says a row inherits the conversation's model, and that it cannot think at the level it asked for", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport, {
+			...AGENTS,
+			rows: [
+				// No `model:` at all — the shape four of the five real agent files are in (plan D3), so `runsOn` is
+				// the conversation's model and not something this file chose.
+				{ type: "coder", file: "/data/.flypi/agent/agents/coder.md", description: "writes the code", runsOn: "lmstudio/qwen3", resolvable: true, inherited: true, thinking: "high" },
+				// pi's own rule: a reasoning model whose map is `{low, high}` cannot do `xhigh`
+				// (pi-ai/dist/models.js:692-706) — which is what `researcher.md` asks for.
+				{ type: "researcher", file: "/data/.flypi/agent/agents/researcher.md", model: "lmstudio/qwen3", thinking: "xhigh", runsOn: "lmstudio/qwen3", resolvable: true, thinkingUnsupported: true },
+			],
+		});
+
+		expect(agentRow(0).querySelector('[data-role="agent-inherited"]')?.textContent).toContain("inherits the conversation's model");
+		expect(agentRow(0).querySelector('[data-role="agent-name"]')?.textContent).toContain("coder — writes the code");
+		expect(agentRow(1).querySelector('[data-role="agent-inherited"]')).toBeNull();
+		// The level named, because "cannot think" without the ask is not something the operator can fix.
+		expect(agentRow(1).querySelector('[data-role="agent-thinking"]')?.textContent).toContain("cannot think at xhigh");
+		expect(agentRow(0).querySelector('[data-role="agent-thinking"]')).toBeNull();
+	});
+
+	it("names no model at all for a row flypi has no model to name", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		// A root whose `settings.json` configures no default has no conversation model, so `runsOn` and
+		// `resolvable` come back with the file's facts only (src/agent/subagent-agents.ts, `readAgentTypes`).
+		// An invented one would be the worst thing on this page: a model the run will not use.
+		await answered(transport, {
+			...AGENTS,
+			rows: [{ type: "scout", file: "/data/.flypi/agent/agents/scout.md", model: "playred-lms/spark-x2.6-4b", resolvable: false }],
+		});
+
+		const text = agentRow(0).textContent ?? "";
+		expect(agentRow(0).querySelector('[data-role="agent-runs"]')).toBeNull();
+		expect(agentRow(0).querySelector('[data-role="agent-inherited"]')).toBeNull();
+		expect(agentRow(0).querySelector('[data-role="agent-unmatched"]')).toBeTruthy();
+		// No `provider/id` anywhere in the row, and not the asked name either — the row may say flypi failed to
+		// match, and nothing more.
+		expect(text).not.toMatch(/[\w.-]+\/[\w.-]+/);
+		expect(text).toContain("could not match");
+	});
+
+	it("gives a file that will not become a type a row saying so, and no run claims", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport, {
+			...AGENTS,
+			rows: [{ type: "notes", file: "/data/.flypi/agent/agents/notes.md", invalid: "the name \"a:b\" contains a ':', which the extension reserves for plugin-scoped names" }],
+		});
+
+		// It is on disk and it is not a type. Silence about a file the operator can see is the failure this panel
+		// exists to prevent (src/agent/subagent-agents.ts, `agentRow`).
+		const why = agentRow(0).querySelector('[data-role="agent-invalid"]')?.textContent ?? "";
+		expect(why).toContain("not a type");
+		expect(why).toContain("plugin-scoped names");
+		// And no `runs …`: the loader skips this file, so there is no run to name a model for.
+		expect(agentRow(0).querySelector('[data-role="agent-runs"]')).toBeNull();
+		expect(agentRow(0).querySelector('[data-role="agent-unmatched"]')).toBeNull();
+	});
+
+	it("says so when the rows came back half answered, and when there are no rows at all", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		// `ModelRuntime.create` swallows a broken `models.json` and answers an empty set, so the one sentence
+		// that names the operator's own file is what stops five rows blaming five agent files.
+		await answered(transport, { ...AGENTS, rows: [], errors: ["/data/.flypi/agent/models.json defines no model flypi can serve — check that file before blaming an agent file"] });
+
+		const errors = document.querySelector('[data-role="agents-errors"]');
+		expect(errors?.getAttribute("role")).toBe("alert");
+		expect(errors?.textContent).toContain("before blaming an agent file");
+		// An empty dir with a source to import from is a state, not an error.
+		expect(document.querySelector('[data-role="agents"] .cfg-none')?.textContent).toContain("nothing here yet");
+	});
+
+	it("says which directory is missing, in its own words, and keeps the import disabled", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		// The dev container's permanent state (live row 4): no `~/.pi/agent/agents` there at all.
+		await answered(transport, { ...AGENTS, rows: [], source: { path: "/home/flypi/.pi/agent/agents", exists: false } });
+
+		expect((document.querySelector('[data-role="agents-import"]') as HTMLButtonElement).disabled).toBe(true);
+		// The button alone is not enough — a keyboard and a screen-reader user has to be told why, with the path
+		// as the machine really has it. `~` is nothing to `ls` inside a container.
+		const reason = document.querySelector('[data-role="agents-import-reason"]');
+		expect(reason?.textContent).toContain("/home/flypi/.pi/agent/agents");
+		expect(reason?.textContent).toContain("does not exist");
+		expect(document.querySelector('[data-role="agents-import-report"]')).toBeNull();
+	});
+
+	it("imports when the source is there, and names the files it copied and the ones it would not overwrite", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport);
+
+		expect((document.querySelector('[data-role="agents-import"]') as HTMLButtonElement).disabled).toBe(false);
+		await importClicked(transport);
+		// The wait is said rather than looked stuck through: one copy is fast, five with a cold dir is not.
+		const busy = document.querySelector('[data-role="agents-import"]') as HTMLButtonElement;
+		expect(busy.disabled).toBe(true);
+		expect(busy.textContent).toContain("Importing");
+
+		await answered(transport, {
+			...AGENTS,
+			copied: ["/data/.flypi/agent/agents/coder.md", "/data/.flypi/agent/agents/tester.md"],
+			skipped: ["scout"],
+			ignored: ["draft.txt"],
+		});
+
+		const report = document.querySelector('[data-role="agents-import-report"]')?.textContent ?? "";
+		expect(report).toMatch(/copied: [^;]*coder\.md[^;]*tester\.md/);
+		// The "we did not overwrite yours" guarantee, in the names: `skipped` is the only list that proves it
+		// (src/agent/subagent-agents.ts's first rule), and the refreshed list on its own cannot say it.
+		expect(report).toMatch(/left exactly as yours[^;]*scout/);
+		expect(report).toMatch(/ignored[^;]*draft\.txt/);
+		// New conversations, not this one: the `Agent` tool's description is built once, at registration
+		// (@tintinweb/pi-subagents/src/index.ts:1501, :1691), even though each spawn re-reads the dir (`:1887`).
+		expect(report).toContain("new conversations");
+		expect(report).toContain("already open");
+		// The reply is the ack, so the button is pressable again…
+		expect((document.querySelector('[data-role="agents-import"]') as HTMLButtonElement).disabled).toBe(false);
+		// …and a plain read, which carries no lists, prints no report.
+		await answered(transport, AGENTS);
+		expect(document.querySelector('[data-role="agents-import-report"]')).toBeNull();
+	});
+
+	it("says so when an import copied nothing new", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport);
+		await importClicked(transport);
+		// The second click over an unchanged dir: nothing written, everything kept. "Nothing copied" without the
+		// kept names would read as a broken button.
+		await answered(transport, { ...AGENTS, copied: [], skipped: ["coder", "scout"], ignored: [] });
+
+		const report = document.querySelector('[data-role="agents-import-report"]')?.textContent ?? "";
+		expect(report).toContain("copied: nothing");
+		expect(report).toMatch(/left exactly as yours[^;]*coder[^;]*scout/);
+		expect(report).toContain("ignored: nothing");
+	});
+
+	it("clears the wait when the server refuses, and says why in this view", async () => {
+		const transport = await mount();
+		await openSettings(transport);
+		await answered(transport);
+		// The disabled button is a convenience, not a guard: a socket can still be asked to import from a dir
+		// that is not there, and `resources-server.ts` answers that with a sentence — an `error` frame.
+		const requestId = await importClicked(transport);
+		transport.emit({ type: "error", requestId, message: "/home/flypi/.pi/agent/agents does not exist — there is nothing to import from it" });
+		await tick();
+
+		// Said in the settings view, because that is the lane the request registered on
+		// (`#resourceRequest("config")`, ui/lib/app-state.svelte.ts): the chat's error strip is not on screen here.
+		expect(document.querySelector('[data-role="save-error"]')?.textContent).toContain("does not exist");
+		// And the write is over: a refusal must not leave the panel saying `Importing…` at a person who is now
+		// supposed to fix the directory and try again.
+		const button = document.querySelector('[data-role="agents-import"]') as HTMLButtonElement;
+		expect(button.disabled).toBe(false);
+		expect(button.textContent).toContain("Import from");
 	});
 });

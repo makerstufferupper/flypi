@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from "svelte";
 	import type { FlypiAppState } from "./lib/app-state.svelte.ts";
-	import type { EndpointEdit, EndpointRow, McpEdit, McpExposure, McpRow, McpStatusRow, PackageRow } from "../src/server/protocol.ts";
+	import type { EndpointEdit, EndpointRow, McpEdit, McpExposure, McpRow, McpStatusRow, PackageRow, SubagentAgentsRow } from "../src/server/protocol.ts";
 
 	let { app }: { app: FlypiAppState } = $props();
 
@@ -13,12 +13,59 @@
 		app.showConfig();
 		app.checkMcp();
 		app.showPackages();
+		app.showSubagentAgents();
 		app.showPiVersions();
 	});
 
 	const endpoints = $derived(app.config?.endpoints ?? []);
 	const servers = $derived(app.config?.mcpServers ?? []);
 	const packages = $derived(app.packages?.packages ?? []);
+	const agents = $derived(app.subagentAgents?.rows ?? []);
+	/** The directory an import would read from, or nothing until the read answers. */
+	const agentsSource = $derived(app.subagentAgents?.source);
+	/**
+	 * Why the import is disabled, as text. Decision 9 is literal about this: `disabled` alone tells a keyboard
+	 * and a screen-reader user nothing, and a `title=` tooltip is not the reason either. The path is printed as
+	 * the machine really has it — `/home/flypi/.pi/agent/agents` in the container — because `~` is not a path
+	 * anybody can `ls` there, and "the directory is not there" is only actionable with its name.
+	 */
+	const importReason = $derived(agentsSource && !agentsSource.exists ? `${agentsSource.path} does not exist — there is nothing to import from it.` : "");
+	/**
+	 * What the import that produced this snapshot did. The three lists come **only** on the write's reply
+	 * (`SubagentAgentsSnapshot`, src/server/protocol.ts), so their presence is what says a click just ran — and
+	 * `skipped` is named out full because it is the list that proves an existing file was left byte for byte
+	 * (src/agent/subagent-agents.ts's first rule). Saying only "copied 2" would leave the operator unable to
+	 * tell "kept yours" from "overwrote yours".
+	 *
+	 * The second half is what the panel cannot fix by reloading: the extension re-reads the dir on every spawn
+	 * (`@tintinweb/pi-subagents/src/index.ts:1887`) but the `Agent` tool's *description* — the type list the
+	 * model is offered — is built once, at registration (`:1501-1502`, `:1691`). So the new types reach **new**
+	 * conversations, and the one already open keeps the list it started with.
+	 */
+	const importReport = $derived.by(() => {
+		const snapshot = app.subagentAgents;
+		if (!snapshot?.copied) return "";
+		// A write answers with all three lists together (`importAgentFiles`, src/agent/subagent-agents.ts), so
+		// the `!`s are the module's own promise rather than a guess about a half-filled frame.
+		const line = (label: string, names: string[]): string => `${label}: ${names.length ? names.join(", ") : "nothing"}`;
+		return `${line("copied", snapshot.copied)}; ${line("left exactly as yours", snapshot.skipped!)}; ${line("ignored", snapshot.ignored!)} — new conversations list these types; a conversation already open keeps the type list its Agent tool was registered with.`;
+	});
+	/**
+	 * The sentence beside a file whose model flypi could not match.
+	 *
+	 * It says **could not match**, never "does not exist": flypi repeats only the extension's first resolution
+	 * tier and deliberately does not clone its scoring tail (src/agent/subagent-agents.ts, `resolveAgentModel`),
+	 * so the extension may well fuzzy-match what the file asked for. The claim flypi *can* make is the one this
+	 * sentence makes — and it has to be made, because the degrade it describes is silent in the extension
+	 * (`@tintinweb/pi-subagents/src/index.ts:1965-1972`).
+	 *
+	 * With no `runsOn` there is no model to name: a root whose `settings.json` configures no default has nothing
+	 * flypi may promise a run lands on, so the second arm names no model at all.
+	 */
+	const unmatched = (row: SubagentAgentsRow): string =>
+		row.runsOn
+			? `flypi could not match ${row.model} among the models this root can serve; a run of ${row.type} lands on ${row.runsOn} instead`
+			: "flypi could not match the model this file asks for, and this root configures no default model for a run to fall back on";
 	/**
 	 * One stamp for both checks. The daemon writes `pi-check.json` and `package-check.json` in the same daily
 	 * pass (src/daemon/index.ts `updatePass`), so they are the same moment; either one alone answers when the
@@ -607,6 +654,72 @@
 					</li>
 				{:else}
 					<li class="cfg-none">none installed</li>
+				{/each}
+			</ul>
+		</section>
+
+		<section>
+			<div class="cfg-section">
+				<h3>Agent types</h3>
+				<!-- The disabled state and its reason are two separate things on purpose (decision 9): the control
+				     stays in the tab order as `disabled`, and the sentence below is what a keyboard and a
+				     screen-reader user actually hear. `agentsSource` is undefined until the read answers, which is
+				     the same "nothing known yet" state as "no directory to read" for the button's purposes. -->
+				<button
+					type="button"
+					data-role="agents-import"
+					onclick={() => app.importSubagentAgents()}
+					disabled={app.subagentAgentsBusy || !agentsSource?.exists}
+				>
+					{app.subagentAgentsBusy ? "Importing…" : "Import from ~/.pi/agent/agents"}
+				</button>
+			</div>
+			<p class="cfg-note">
+				<code>.flypi/agent/agents/*.md</code> — the agent types flypi's subagent extension can spawn. The
+				import copies <code>*.md</code> from the host's own <code>~/.pi/agent/agents</code> and leaves a
+				name that is already there byte for byte.
+			</p>
+			{#if importReason}
+				<p class="cfg-note" data-role="agents-import-reason">{importReason}</p>
+			{/if}
+			{#if app.subagentAgents?.errors.length}
+				<!-- Half-answered rows get a reason, not a shrug: a `models.json` pi would not parse leaves every
+				     row with no model claim (src/agent/subagent-agents.ts, `readAgentTypes`), and that sentence
+				     names the operator's own file rather than blaming an agent file. -->
+				<ul class="cfg-errors" role="alert" data-role="agents-errors">
+					{#each app.subagentAgents.errors as error}<li class="error">{error}</li>{/each}
+				</ul>
+			{/if}
+			{#if importReport}
+				<p class="cfg-note" data-role="agents-import-report">{importReport}</p>
+			{/if}
+			<ul class="cfg-list" data-role="agents">
+				{#each agents as row (row.file)}
+					<li data-role="agent-row">
+						<code data-role="agent-name">{row.type}{row.description ? ` — ${row.description}` : ""}</code>
+						{#if row.invalid}
+							<!-- It is on disk and it will never be a type, so it gets a row that says so — and no model
+							     chips, because `readAgentTypes` answers the model questions off the *file's* facts and a
+							     file the loader skips has no ask to answer: "runs …" here would be a claim about a run
+							     that can never happen (src/agent/subagent-agents.ts, `agentRow`). -->
+							<code class="cfg-state-error" data-role="agent-invalid">not a type: {row.invalid}</code>
+						{:else}
+							<!-- Always the model the run lands on, when flypi can name one. `runsOn` is absent when the
+							     root has no configured default, and then the row says nothing about a model at all —
+							     a guessed one is a claim, not an answer. -->
+							{#if row.runsOn}<span class="cfg-state" data-role="agent-runs">runs {row.runsOn}</span>{/if}
+							{#if row.resolvable === false}
+								<span class="cfg-state failed" data-role="agent-unmatched">model not matched</span>
+								<code class="cfg-state-error" data-role="agent-warning">{unmatched(row)}</code>
+							{/if}
+							{#if row.thinkingUnsupported}<span class="cfg-state failed" data-role="agent-thinking">cannot think at {row.thinking}</span>{/if}
+							{#if row.inherited}<span class="cfg-state" data-role="agent-inherited">inherits the conversation's model</span>{/if}
+						{/if}
+					</li>
+				{:else}
+					<!-- An empty dir is a state, not an error: flypi never creates it (decision 13), and the import
+					     above is the way to fill it. -->
+					<li class="cfg-none">nothing here yet</li>
 				{/each}
 			</ul>
 		</section>

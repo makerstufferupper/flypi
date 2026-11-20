@@ -15,7 +15,7 @@ import type { FlypiAttachment } from "../../src/shared/attachments.ts";
 import { emptyTranscript, applyEvent, type Transcript } from "../../src/shared/transcript.ts";
 import { applyPerfEvent, emptyPerf, hasMeasurement, type Perf } from "../../src/shared/metrics.ts";
 import { loadLastAnswer, forgetLastAnswer, modelName, saveLastAnswer } from "./last-answer.ts";
-import type { ClientCommand, ConfigFileEdit, ConfigSnapshot, DebugInfo, DefaultsEdit, EndpointEdit, ExtensionUiFrame, McpEdit, McpStatusSnapshot, MemoryEdit, MemorySnapshot, PackagesSnapshot, PiVersions as PiVersionsSnapshot, SchedulerSnapshot, SecretEdit, SecretsSnapshot, ServerFrame, SessionSummary } from "../../src/server/protocol.ts";
+import type { ClientCommand, ConfigFileEdit, ConfigSnapshot, DebugInfo, DefaultsEdit, EndpointEdit, ExtensionUiFrame, McpEdit, McpStatusSnapshot, MemoryEdit, MemorySnapshot, PackagesSnapshot, PiVersions as PiVersionsSnapshot, SchedulerSnapshot, SecretEdit, SecretsSnapshot, ServerFrame, SessionSummary, SubagentAgentsSnapshot } from "../../src/server/protocol.ts";
 import type { ResourceName } from "../../src/shared/resources.ts";
 import type { View } from "./route.ts";
 import type { FlypiThinkingLevel } from "../../src/agent/runtime.ts";
@@ -120,6 +120,15 @@ export class FlypiAppState {
 	 */
 	packages = $state<PackagesSnapshot | undefined>(undefined);
 	packagesBusy = $state(false);
+	/**
+	 * The agent types the subagent extension can spawn (`.flypi/agent/agents/*.md`), the model each run lands
+	 * on, and the host directory an import would read. Asked when the settings view opens, never polled: the
+	 * answer joins two files and pi's own catalog (src/agent/subagent-agents.ts), so the page has no reason to
+	 * ask twice for the same click. `subagentAgentsBusy` is the import in flight, which is the one half that
+	 * writes.
+	 */
+	subagentAgents = $state<SubagentAgentsSnapshot | undefined>(undefined);
+	subagentAgentsBusy = $state(false);
 	/**
 	 * The update the daemon reported (docs/architecture.md Phase 7): what its "install now" is doing, and what
 	 * it refused. The line itself comes from `/healthz` (App.svelte), not from here.
@@ -666,6 +675,28 @@ export class FlypiAppState {
 		void this.request({ type: "savePackages", ...edits, requestId: this.#resourceRequest("config") });
 	}
 
+	/**
+	 * The agent types the fleet can spawn, and whether there is anywhere to import them from. The `config` lane
+	 * again: a refusal here is a sentence about the settings view, and `resourceError("config")` is the line
+	 * that panel already has for those.
+	 */
+	showSubagentAgents(): void {
+		void this.request({ type: "subagentAgents", requestId: this.#resourceRequest("config") });
+	}
+
+	/**
+	 * Copy the host `~/.pi/agent/agents/*.md` into flypi's own agents dir — the operator's one click, and the
+	 * only read flypi makes of the host tree (src/agent/subagent-agents.ts). The refreshed list comes back with
+	 * the ack **plus** what the run copied and what it refused to overwrite, which is what the section prints.
+	 * Nothing reloads, and the section says so instead: the extension re-reads the dir on every spawn, so a
+	 * conversation already open keeps the type list its `Agent` tool was registered with
+	 * (`@tintinweb/pi-subagents/src/index.ts:1501`, `:1691` vs `:1887`).
+	 */
+	importSubagentAgents(): void {
+		this.subagentAgentsBusy = true;
+		void this.request({ type: "importSubagentAgents", requestId: this.#resourceRequest("config") });
+	}
+
 	/** Which pi the server runs, and what it could move to. Reaches no network: the daemon's stamp answers. */
 	showPiVersions(): void {
 		void this.request({ type: "piVersions", requestId: this.#resourceRequest("config") });
@@ -931,6 +962,12 @@ export class FlypiAppState {
 					// stops being shown.
 					this.#errors.config = undefined;
 				}
+				if (frame.subagentAgents) {
+					this.subagentAgents = frame.subagentAgents;
+					// The write's own reply carries the refreshed list, so the click is over when this lands —
+					// and it is the reply holding `copied`/`skipped`/`ignored`, which the section prints.
+					this.subagentAgentsBusy = false;
+				}
 				this.#pendingRequest.get(frame.requestId)?.(frame);
 				this.#pendingRequest.delete(frame.requestId);
 				return;
@@ -982,6 +1019,9 @@ export class FlypiAppState {
 						// the button goes back to being pressable. Same for a pi version the server would not move to.
 						this.packagesBusy = false;
 						this.piBusy = false;
+						// And an import the server refused — today, a source directory that is not there — leaves the
+						// dir exactly as it was, so the click has to be possible again once the sentence is said.
+						this.subagentAgentsBusy = false;
 					} else if (lane === "secrets") {
 						// A reveal the vault refused (a name that is not there) leaves nothing to hide, and a failed
 						// write leaves the snapshot as it was — both are said once, in the panel that asked.
