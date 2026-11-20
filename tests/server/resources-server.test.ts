@@ -18,7 +18,8 @@ import { Type } from "typebox";
 import { startFlypiServer, type FlypiServerHandle } from "../../src/server/index.ts";
 import { ClientCommandSchema, SubagentAgentsRow, SubagentAgentsSnapshot } from "../../src/server/protocol.ts";
 import type { AgentTypeRow, AgentTypesSnapshot } from "../../src/agent/subagent-agents.ts";
-import type { ResourceEntry } from "../../src/server/resources-server.ts";
+import { commandTargets, resourceEntries, type ResourceEntry } from "../../src/server/resources-server.ts";
+import { flypiPaths } from "../../src/agent/paths.ts";
 import { harness, toolTurn } from "../helpers/flypi-harness.ts";
 import { homeEnv, withProviderConfig } from "../helpers/flypi-root.ts";
 
@@ -504,5 +505,57 @@ describe("the agent-types snapshot is the shape of the frame it travels in", () 
 		// `AgentTypeRow` is an empty alias (`extends AgentFileRow, AgentModelAnswer`), so its fields are those two.
 		const rowFields = [...new Set([...declared("AgentFileRow"), ...declared("AgentModelAnswer")])];
 		agree(rowFields, Object.keys(SubagentAgentsRow.properties), "AgentTypeRow");
+	});
+});
+
+/**
+ * A command may only exist if something answers it.
+ *
+ * `src/server/index.ts` dispatches a parsed command through `commandTargets` and then a `switch` with no `default`
+ * arm, so a type added to `ClientCommandSchema` that reaches neither answers **nothing at all**: the socket stays
+ * healthy, the next command is served, and the one that was sent is never mentioned again. A settings panel
+ * waiting on that frame waits forever with nothing in the log. The resource half of that mistake no longer survives
+ * a boot (`commandTargets` names the resource it could not find); this is the backstop for the other half. It is a
+ * test rather than a runtime `default:` arm on purpose: an orphan command cannot exist in the shipped protocol
+ * without being exactly this bug, so an arm guarding it could never be exercised — and an unreachable branch is
+ * coverage nobody earns.
+ */
+describe("every command in the protocol has something that answers it", () => {
+	/** The commands `src/server/index.ts`'s `switch` answers, listed by hand the way
+	 * `tests/shared/resources.test.ts` lists the `ResultFrame` fields that are not resources. */
+	const conversationCommands = [
+		"newSession",
+		"resume",
+		"unsubscribe",
+		"extensionReply",
+		"prompt",
+		"abort",
+		"switchSession",
+		"fork",
+		"setModel",
+		"setThinkingLevel",
+		"listSessions",
+		"renameSession",
+		"deleteSession",
+		"debug",
+		"installUpdate",
+		"mcpSignIn",
+		"mcpRedirect",
+		"revealSecret",
+	];
+
+	it("is answered by a resource or by the switch, for every type the union admits", () => {
+		// The built-in table as `startFlypiServer` builds it; the process bits are irrelevant to the command set.
+		const answered = new Set(
+			commandTargets(resourceEntries({ paths: flypiPaths(mkdtempSync(join(tmpdir(), "flypi-cmds-"))), reloadExtensions: async () => {} })).keys(),
+		);
+		const admitted = ClientCommandSchema.anyOf.map((arm) => (arm as { properties: { type: { const: string } } }).properties.type.const);
+		for (const type of admitted) {
+			expect(answered.has(type) || conversationCommands.includes(type), `${type} parses but nothing answers it — a client would hang`).toBe(true);
+		}
+		// The hand list cannot quietly outlive the protocol it describes, either.
+		for (const type of conversationCommands) {
+			expect(admitted.includes(type), `${type} is on the switch list but no longer in the protocol`).toBe(true);
+		}
 	});
 });

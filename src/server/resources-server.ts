@@ -266,8 +266,12 @@ export function commandTargets(resources: Record<string, ResourceEntry>): Map<st
 	});
 	const targets = new Map<string, ResourceTarget>();
 	for (const [command, name] of COMMAND_TO_RESOURCE) {
-		// The merge only ever replaces or extends a built-in, so every table name has an entry here.
-		const entry = resources[name]!;
+		// The merge only ever replaces or extends a built-in, so every table name has an entry here — and when it
+		// does not, that is a resource added to `RESOURCES` and not to `resourceEntries`, which used to arrive as
+		// `TypeError: Cannot read properties of undefined (reading 'field')` from inside `target`: it named no
+		// resource, and it took every other server test down with it. A table row is a promise about a handler.
+		const entry = resources[name];
+		if (!entry) throw new Error(`resource '${name}' has no entry in resourceEntries (src/server/resources-server.ts)`);
 		targets.set(command, target(entry, RESOURCES[name].write === command ? "write" : "read"));
 	}
 	for (const entry of Object.values(resources)) {
