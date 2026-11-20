@@ -2,7 +2,8 @@
 
 A local, multi-model agent tool with a browser UI and a personal knowledge wiki, built on the
 [pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) running in-process.
-Everything it reads or writes lives in `.flypi/` — never in `~/.pi`.
+It keeps its own state in `.flypi/` and never writes your pi configuration; the one thing it reads from
+`~/.pi` is the agent files it imports, `~/.pi/agent/agents` (see Configure, below).
 
 ![flypi in the browser: a session sidebar, the chat with its model and thinking selectors, and an activity panel](assets/screenshot.png)
 
