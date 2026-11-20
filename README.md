@@ -52,6 +52,13 @@ package — the same code `npm install -g` gives you. Build it yourself with `do
 the default pair. The settings page in the UI edits the same two files. Until you add a provider the
 UI comes up normally and the model turn says out loud that no default is set.
 
+`.flypi/agent/agents/*.md` are the agent types the subagent extension can spawn, and the settings
+page's Import copies `*.md` from `~/.pi/agent/agents` into it without overwriting a file that is
+already there, so your own edits are left alone. A file of the same name in the repo's `.pi/agents/`
+or `.agents/agents/` outranks the imported one, so an import can be silently outranked; importing a
+name that matches a built-in such as `Explore` takes that name back. Editing or importing re-pays the
+prompt cache on the next conversation; one already open keeps the type list it started with.
+
 ## What you get
 
 - A chat UI with thinking, tool output, sessions, and image paste.
